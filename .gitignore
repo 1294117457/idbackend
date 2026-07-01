@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+.pytest_cache/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 环境
+.env
+.env.local
+.env.*.local
+
+# 日志
+*.log
+
+# 数据库
+*.db
+*.sqlite
+
+# 临时文件
+tmp/
+temp/
