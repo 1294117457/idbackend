@@ -5,7 +5,6 @@ from typing import Optional
 from datetime import datetime
 
 from src.infra.jwt import create_token, verify_token, hash_password, verify_password, JWTError
-from src.infra.redis import RedisCache, get_redis
 from src.models import User
 
 
@@ -71,37 +70,6 @@ class AuthService:
         )
 
         return user, token
-
-    @staticmethod
-    async def send_verification_code(
-        email: str,
-        code_type: str,
-        expire_minutes: int = 5,
-    ) -> str:
-        """发送验证码"""
-        from infra.email import send_verification_code as send_email_code
-
-        code = await send_email_code(email, code_type, expire_minutes)
-        return code
-
-    @staticmethod
-    async def verify_code(
-        email: str,
-        code_type: str,
-        input_code: str,
-    ) -> bool:
-        """验证验证码"""
-        redis = await get_redis()
-        cache = RedisCache(redis)
-        key = f"email_code:{code_type}:{email}"
-        stored_code = await cache.get(key)
-
-        if not stored_code or stored_code != input_code:
-            return False
-
-        # 验证成功后删除
-        await cache.delete(key)
-        return True
 
     @staticmethod
     async def reset_password(

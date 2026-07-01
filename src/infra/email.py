@@ -1,105 +1,109 @@
-"""邮件服务"""
+"""邮箱验证码：限流 + 发送 + 验证"""
 import ssl
-import smtplib
 import asyncio
+import random
+import smtplib
+import string
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-import random
-import string
-from typing import Optional
+from typing import Tuple
 
-from .config import get_settings
 from .redis import RedisCache, get_redis
+from .config import get_settings
 
 settings = get_settings()
 
-
-class EmailService:
-    """邮件发送服务"""
-
-    def __init__(
-        self,
-        smtp_host: str,
-        smtp_port: int,
-        username: str,
-        password: str,
-        from_addr: Optional[str] = None,
-    ):
-        self.smtp_host = smtp_host
-        self.smtp_port = smtp_port
-        self.username = username
-        self.password = password
-        self.from_addr = from_addr or username
-
-    def send_code(self, to_email: str, code: str, expire_minutes: int = 5):
-        """发送验证码邮件（同步版本）"""
-        message = MIMEMultipart("alternative")
-        message["From"] = self.from_addr
-        message["To"] = to_email
-        message["Subject"] = "您的验证码"
-
-        html = f"""
-        <html>
-        <body>
-            <p>您的验证码是: <strong style="font-size: 24px;">{code}</strong></p>
-            <p>有效期 {expire_minutes} 分钟，请勿泄露给他人。</p>
-        </body>
-        </html>
-        """
-        message.attach(MIMEText(html, "html"))
-
-        try:
-            print(f"[EMAIL] 连接到 {self.smtp_host}:587...")
-            server = smtplib.SMTP(self.smtp_host, 587, timeout=60)
-            server.set_debuglevel(1)  # 开启调试
-            server.ehlo()
-            print("[EMAIL] STARTTLS...")
-            server.starttls()
-            server.ehlo()
-            print("[EMAIL] 登录...")
-            server.login(self.username, self.password)
-            print("[EMAIL] 发送邮件...")
-            server.send_message(message)
-            server.quit()
-            print(f"[EMAIL] 邮件发送成功到 {to_email}")
-        except Exception as e:
-            import traceback
-            print(f"[EMAIL ERROR] {type(e).__name__}: {e}")
-            traceback.print_exc()
-            raise
+_CODE_PREFIX = "email_code"
+_RL_1M_PREFIX = "rl:email_code:1m"
+_RL_1H_PREFIX = "rl:email_code:1h"
 
 
-def generate_code(length: int = 6) -> str:
-    """生成随机验证码"""
+def _smtp_send_code(to_email: str, code: str, expire_minutes: int = 5):
+    message = MIMEMultipart("alternative")
+    message["From"] = settings.SMTP_FROM or settings.SMTP_USERNAME
+    message["To"] = to_email
+    message["Subject"] = "您的验证码"
+    message.attach(MIMEText(
+        f"<html><body>"
+        f"<p>您的验证码是: <strong style='font-size:24px'>{code}</strong></p>"
+        f"<p>有效期 {expire_minutes} 分钟，请勿泄露给他人。</p>"
+        f"</body></html>",
+        "html",
+    ))
+
+    if settings.SMTP_PORT == 465:
+        server = smtplib.SMTP_SSL(
+            settings.SMTP_HOST, settings.SMTP_PORT,
+            context=ssl.create_default_context(), timeout=60,
+        )
+    else:
+        server = smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=60)
+        server.ehlo()
+        server.starttls()
+        server.ehlo()
+
+    try:
+        server.login(settings.SMTP_USERNAME, settings.SMTP_PASSWORD)
+        server.send_message(message)
+    finally:
+        server.quit()
+
+
+def _make_code(length: int = 6) -> str:
     return "".join(random.choices(string.digits, k=length))
 
 
-async def send_verification_code(
-    email: str,
-    email_type: str,
-    expire_minutes: int = 5,
-) -> str:
-    """发送验证码并存储到 Redis"""
-    code = generate_code()
+class EmailCode:
+    """邮箱验证码工具，返回 (ok: bool, msg: str)"""
 
-    # 存储到 Redis
-    redis = await get_redis()
-    cache = RedisCache(redis)
-    key = f"email_code:{email_type}:{email}"
-    await cache.set(key, code, expire=expire_minutes * 60)
+    @staticmethod
+    async def send(
+        email: str,
+        code_type: str,
+        expire_minutes: int = 5,
+    ) -> Tuple[bool, str]:
+        redis = await get_redis()
+        cache = RedisCache(redis)
 
-    # 发送邮件
-    email_service = EmailService(
-        smtp_host=settings.SMTP_HOST,
-        smtp_port=settings.SMTP_PORT,
-        username=settings.SMTP_USERNAME,
-        password=settings.SMTP_PASSWORD,
-        from_addr=settings.SMTP_FROM,
-    )
+        allowed, _ = await cache.rate_limit(
+            f"{_RL_1M_PREFIX}:{code_type}:{email}", max_count=1, window_seconds=60
+        )
+        if not allowed:
+            return False, "发送过于频繁，请 1 分钟后再试"
 
-    try:
-        await asyncio.to_thread(email_service.send_code, email, code, expire_minutes)
-    except Exception as e:
-        print(f"[EMAIL ERROR] {type(e).__name__}: {e}")
-        raise
-    return code
+        allowed, _ = await cache.rate_limit(
+            f"{_RL_1H_PREFIX}:{code_type}:{email}", max_count=5, window_seconds=3600
+        )
+        if not allowed:
+            return False, "发送次数已达上限，请 1 小时后再试"
+
+        code = _make_code()
+        code_key = f"{_CODE_PREFIX}:{code_type}:{email}"
+        await cache.set(code_key, code, expire=expire_minutes * 60)
+
+        try:
+            await asyncio.to_thread(_smtp_send_code, email, code, expire_minutes)
+        except Exception as e:
+            await cache.delete(code_key)
+            return False, f"邮件发送失败: {e}"
+
+        return True, code
+
+    @staticmethod
+    async def verify(
+        email: str,
+        code_type: str,
+        input_code: str,
+    ) -> Tuple[bool, str]:
+        redis = await get_redis()
+        cache = RedisCache(redis)
+        key = f"{_CODE_PREFIX}:{code_type}:{email}"
+        stored = await cache.get(key)
+
+        if not stored:
+            return False, "验证码已过期，请重新获取"
+        if stored != input_code:
+            return False, "验证码错误"
+
+        await cache.delete(key)
+        return True, ""

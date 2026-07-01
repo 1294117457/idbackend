@@ -1,18 +1,22 @@
 """认证路由 - 兼容前端"""
-from fastapi import APIRouter, Depends, HTTPException
+
+from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 from typing import Optional
 
-from src.app.deps import get_db, get_current_user, CurrentUser
+from src.app.deps import get_db, get_current_user, CurrentUser, ip_rate_limit
 from src.app.response import success_response, error_response
 from src.services import AuthService, UserService
-from src.services.captcha_service import CaptchaService
+from src.infra.captcha import Captcha
+from src.infra.email import EmailCode
+
 
 router = APIRouter(prefix="/api/authserver", tags=["认证"])
 
 
 # ========== 请求/响应模型 ==========
+
 
 class LoginRequest(BaseModel):
     username: str
@@ -45,22 +49,30 @@ class ForgotPasswordRequest(BaseModel):
 
 # ========== 认证接口 ==========
 
+
 @router.post("/login")
 async def login(
     request: LoginRequest,
     db: AsyncSession = Depends(get_db),
+    _: None = Depends(ip_rate_limit("login", max_count=10, window_seconds=60)),
 ):
     """用户登录"""
+    # 图形验证码校验
+    if not request.captchaId or not request.verifyCode:
+        return error_response("请完成图形验证码", code=400)
+    is_valid, err = await Captcha.verify(request.captchaId, request.verifyCode)
+    if not is_valid:
+        return error_response(err, code=400)
+
     try:
-        user, token = await AuthService.login(
-            db, request.username, request.password
+        user, token = await AuthService.login(db, request.username, request.password)
+        return success_response(
+            {
+                "accessToken": token,
+                "refreshToken": token,  # TODO: 生成独立的 refresh token
+                "expiresIn": 86400,
+            }
         )
-        # 前端期望的响应格式
-        return success_response({
-            "accessToken": token,
-            "refreshToken": token,  # TODO: 生成独立的 refresh token
-            "expiresIn": 86400,  # 24小时
-        })
     except ValueError as e:
         return error_response(str(e), code=401)
 
@@ -72,18 +84,18 @@ async def register(
 ):
     """用户注册"""
     try:
-        # 验证邮箱验证码
-        is_valid = await AuthService.verify_code(request.username, "register", request.code)
-        if not is_valid:
-            return error_response("验证码错误", code=400)
+        # 前置校验：邮箱验证码
+        ok, err = await EmailCode.verify(request.username, "register", request.code)
+        if not ok:
+            return error_response(err, code=400)
 
-        user = await AuthService.register(
-            db, request.username, request.password
+        user = await AuthService.register(db, request.username, request.password)
+        return success_response(
+            {
+                "userId": user.id,
+                "username": user.username,
+            }
         )
-        return success_response({
-            "userId": user.id,
-            "username": user.username,
-        })
     except ValueError as e:
         return error_response(str(e), code=400)
 
@@ -101,11 +113,13 @@ async def refresh_token(
             username=payload.get("username"),
             role=payload.get("role"),
         )
-        return success_response({
-            "accessToken": new_token,
-            "refreshToken": new_token,
-            "expiresIn": 86400,
-        })
+        return success_response(
+            {
+                "accessToken": new_token,
+                "refreshToken": new_token,
+                "expiresIn": 86400,
+            }
+        )
     except Exception as e:
         return error_response(str(e), code=401)
 
@@ -113,29 +127,25 @@ async def refresh_token(
 @router.post("/sendEmailCode")
 async def send_email_code(
     request: SendCodeRequest,
+    _: None = Depends(ip_rate_limit("send_email_code", max_count=5, window_seconds=60)),
 ):
-    """发送邮箱验证码"""
-    try:
-        await AuthService.send_verification_code(
-            request.email, request.type
-        )
-        return success_response(msg="验证码已发送")
-    except Exception as e:
-        return error_response(str(e), code=500)
+    """发送邮箱验证码（注册用）"""
+    ok, err = await EmailCode.send(request.email, request.type)
+    if not ok:
+        return error_response(err, code=429)
+    return success_response(msg="验证码已发送")
 
 
 @router.post("/sendResetCode")
 async def send_reset_code(
     request: SendCodeRequest,
+    _: None = Depends(ip_rate_limit("send_reset_code", max_count=5, window_seconds=60)),
 ):
     """发送重置密码验证码"""
-    try:
-        await AuthService.send_verification_code(
-            request.email, "reset"
-        )
-        return success_response(msg="验证码已发送")
-    except Exception as e:
-        return error_response(str(e), code=500)
+    ok, err = await EmailCode.send(request.email, "reset")
+    if not ok:
+        return error_response(err, code=429)
+    return success_response(msg="验证码已发送")
 
 
 @router.post("/reset-password")
@@ -145,10 +155,10 @@ async def reset_password(
 ):
     """重置密码"""
     try:
-        # 验证验证码
-        is_valid = await AuthService.verify_code(request.username, "reset", request.code)
-        if not is_valid:
-            return error_response("验证码错误", code=400)
+        # 前置校验：重置密码验证码
+        ok, err = await EmailCode.verify(request.username, "reset", request.code)
+        if not ok:
+            return error_response(err, code=400)
 
         if request.newPassword != request.confirmPassword:
             return error_response("两次密码不一致", code=400)
@@ -161,29 +171,23 @@ async def reset_password(
 
 # ========== 图形验证码 ==========
 
+
 @router.get("/captcha/generate")
-async def get_captcha():
-    """获取图形验证码"""
-    captcha_id, base64_image = await CaptchaService.generate_captcha()
-    return success_response({
-        "captchaId": captcha_id,
-        "base64": f"data:image/png;base64,{base64_image}",
-    })
-
-
-@router.post("/captcha/verify")
-async def verify_captcha(
-    captchaId: str,
-    code: str,
+async def get_captcha(
+    _: None = Depends(ip_rate_limit("captcha", max_count=20, window_seconds=60)),
 ):
-    """验证图形验证码"""
-    is_valid, error_msg = await CaptchaService.validate_captcha(captchaId, code)
-    if not is_valid:
-        return error_response(error_msg, code=400)
-    return success_response(msg="验证成功")
+    """获取图形验证码"""
+    captcha_id, base64_image = await Captcha.generate()
+    return success_response(
+        {
+            "captchaId": captcha_id,
+            "base64": f"data:image/png;base64,{base64_image}",
+        }
+    )
 
 
 # ========== 当前用户 ==========
+
 
 @router.get("/me")
 async def get_current_user_info(
@@ -195,11 +199,13 @@ async def get_current_user_info(
     if not db_user:
         return error_response("用户不存在", code=404)
 
-    return success_response({
-        "userId": db_user.id,
-        "username": db_user.username,
-        "role": db_user.role,
-        "fullName": db_user.full_name,
-        "studentId": db_user.student_id,
-        "isConfirmed": db_user.is_confirmed,
-    })
+    return success_response(
+        {
+            "userId": db_user.id,
+            "username": db_user.username,
+            "role": db_user.role,
+            "fullName": db_user.full_name,
+            "studentId": db_user.student_id,
+            "isConfirmed": db_user.is_confirmed,
+        }
+    )

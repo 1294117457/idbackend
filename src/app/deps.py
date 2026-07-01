@@ -1,5 +1,5 @@
 """依赖注入"""
-from fastapi import Depends, HTTPException, Header
+from fastapi import Depends, HTTPException, Header, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 from dataclasses import dataclass
@@ -8,6 +8,7 @@ from typing import Optional
 from infra.database import get_db
 from infra.jwt import verify_token, JWTError
 from infra.config import get_settings
+from infra.redis import get_redis, RedisCache
 
 settings = get_settings()
 security = HTTPBearer(auto_error=False)
@@ -60,3 +61,16 @@ def require_role(*allowed_roles: str):
 # 常用的角色检查
 require_admin = require_role("admin", "super_admin")
 require_reviewer = require_role("reviewer", "admin", "super_admin")
+
+
+def ip_rate_limit(action: str, max_count: int, window_seconds: int):
+    """IP 维度限流 Depends 工厂，超限时直接抛 429"""
+    async def _check(request: Request):
+        client_ip = request.client.host if request.client else "unknown"
+        cache = RedisCache(await get_redis())
+        allowed, _ = await cache.rate_limit(
+            f"rl:ip:{action}:{client_ip}", max_count=max_count, window_seconds=window_seconds
+        )
+        if not allowed:
+            raise HTTPException(status_code=429, detail="请求过于频繁，请稍后再试")
+    return _check
