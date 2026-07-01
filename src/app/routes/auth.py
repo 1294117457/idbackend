@@ -84,6 +84,35 @@ async def login(
         return error_response(str(e), code=401)
 
 
+@router.post("/admin/login")
+async def admin_login(
+    request: LoginRequest,
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(ip_rate_limit("admin_login", max_count=10, window_seconds=60)),
+):
+    """管理员登录"""
+    # 图形验证码校验
+    if not request.captchaId or not request.verifyCode:
+        return error_response("请完成图形验证码", code=400)
+    is_valid, err = await Captcha.verify(request.captchaId, request.verifyCode)
+    if not is_valid:
+        return error_response(err, code=400)
+
+    try:
+        user, access_token, refresh_token = await AuthService.admin_login(
+            db, request.username, request.password
+        )
+        return success_response(
+            {
+                "accessToken": access_token,
+                "refreshToken": refresh_token,
+                "expiresIn": 86400,
+            }
+        )
+    except ValueError as e:
+        return error_response(str(e), code=401)
+
+
 @router.post("/register")
 async def register(
     request: RegisterRequest,

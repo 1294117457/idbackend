@@ -81,6 +81,46 @@ class AuthService:
         return user, access_token, refresh_token
 
     @staticmethod
+    async def admin_login(
+        db: AsyncSession,
+        username: str,
+        password: str,
+    ) -> tuple[User, str, str]:
+        """管理员登录，返回 (用户, access_token, refresh_token)"""
+        result = await db.execute(
+            select(User).where(User.username == username)
+        )
+        user = result.scalar_one_or_none()
+
+        if not user:
+            raise ValueError("用户名或密码错误")
+
+        if not verify_password(password, user.password):
+            raise ValueError("用户名或密码错误")
+
+        if user.status != "active":
+            raise ValueError("账户已被禁用")
+
+        if user.role != "admin":
+            raise ValueError("无管理员权限")
+
+        user.last_login_at = datetime.utcnow().isoformat()
+        await db.commit()
+
+        access_token = create_token(
+            user_id=user.id,
+            username=user.username,
+            role=user.role,
+        )
+        refresh_token = create_refresh_token(
+            user_id=user.id,
+            username=user.username,
+            role=user.role,
+        )
+
+        return user, access_token, refresh_token
+
+    @staticmethod
     async def refresh(
         db: AsyncSession,
         refresh_token: str,
