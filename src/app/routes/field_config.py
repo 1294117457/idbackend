@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, Query, Body
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
 from pydantic import BaseModel
+import json
 
 from src.app.deps import get_db, get_current_user, CurrentUser
 from src.app.response import success_response, error_response
@@ -16,7 +17,7 @@ class FieldConfigCreate(BaseModel):
     display_name: str
     field_type: str
     max_score: Optional[float] = None
-    conditions: Optional[list] = None
+    conditions: Optional[str] = None  # JSON string, not list
     description: Optional[str] = None
     college_code: Optional[str] = None
     academic_year: Optional[int] = None
@@ -28,7 +29,7 @@ class FieldConfigUpdate(BaseModel):
     display_name: Optional[str] = None
     field_type: Optional[str] = None
     max_score: Optional[float] = None
-    conditions: Optional[list] = None
+    conditions: Optional[str] = None  # JSON string, not list
     description: Optional[str] = None
     college_code: Optional[str] = None
     academic_year: Optional[int] = None
@@ -71,7 +72,8 @@ async def get_field_config_list(
             "displayName": c.display_name,
             "fieldType": c.field_type,
             "maxScore": c.max_score,
-            "conditions": c.conditions,
+            # 转换为 JSON string 供前端使用
+            "conditions": json.dumps(c.conditions) if c.conditions else "[]",
             "description": c.description,
             "collegeCode": c.college_code,
             "academicYear": c.academic_year,
@@ -96,7 +98,7 @@ async def get_all_field_configs(
             "displayName": c.display_name,
             "fieldType": c.field_type,
             "maxScore": c.max_score,
-            "conditions": c.conditions,
+            "conditions": json.dumps(c.conditions) if c.conditions else "[]",
             "description": c.description,
             "collegeCode": c.college_code,
             "academicYear": c.academic_year,
@@ -140,13 +142,18 @@ async def create_field_config(
     db: AsyncSession = Depends(get_db),
 ):
     """创建字段配置"""
+    # 转换 conditions: 如果是列表则转为 JSON string
+    conditions = data.conditions
+    if conditions and isinstance(conditions, list):
+        conditions = json.dumps(conditions)
+
     config = await TemplateService.create_field_config(
         db=db,
         field_key=data.field_key,
         display_name=data.display_name,
         field_type=data.field_type,
         max_score=data.max_score,
-        conditions=data.conditions,
+        conditions=conditions,
         description=data.description,
         college_code=data.college_code,
         academic_year=data.academic_year,

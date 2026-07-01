@@ -2,6 +2,7 @@
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional, List
+import json
 
 from src.models import ScoreTemplate, ScoreTemplateRule, RuleAttribute, DemandTemplate, FieldConfig, FieldSubcategory
 
@@ -160,7 +161,7 @@ class TemplateService:
         display_name: str,
         field_type: str,
         max_score: Optional[float] = None,
-        conditions: Optional[list] = None,
+        conditions: Optional[str] = None,  # JSON string
         description: Optional[str] = None,
         college_code: Optional[str] = None,
         academic_year: Optional[int] = None,
@@ -168,12 +169,20 @@ class TemplateService:
         created_by: str = "system",
     ) -> FieldConfig:
         """创建字段配置"""
+        # 解析 JSON string 为列表
+        conditions_list = None
+        if conditions:
+            try:
+                conditions_list = json.loads(conditions)
+            except:
+                conditions_list = [conditions]
+
         config = FieldConfig(
             field_key=field_key,
             display_name=display_name,
             field_type=field_type,
             max_score=max_score,
-            conditions=conditions or [],
+            conditions=conditions_list,
             description=description,
             college_code=college_code,
             academic_year=academic_year,
