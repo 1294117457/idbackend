@@ -3,7 +3,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional, List
 
-from src.models import ScoreTemplate, ScoreTemplateRule, RuleAttribute, DemandTemplate, FieldConfig
+from src.models import ScoreTemplate, ScoreTemplateRule, RuleAttribute, DemandTemplate, FieldConfig, FieldSubcategory
 
 
 class TemplateService:
@@ -141,3 +141,164 @@ class TemplateService:
         query = query.order_by(FieldConfig.sort_order)
         result = await db.execute(query)
         return list(result.scalars().all())
+
+    @staticmethod
+    async def get_field_config_by_id(
+        db: AsyncSession,
+        config_id: int,
+    ) -> Optional[FieldConfig]:
+        """根据ID获取字段配置"""
+        result = await db.execute(
+            select(FieldConfig).where(FieldConfig.id == config_id)
+        )
+        return result.scalar_one_or_none()
+
+    @staticmethod
+    async def create_field_config(
+        db: AsyncSession,
+        field_key: str,
+        display_name: str,
+        field_type: str,
+        max_score: Optional[float] = None,
+        conditions: Optional[list] = None,
+        description: Optional[str] = None,
+        college_code: Optional[str] = None,
+        academic_year: Optional[int] = None,
+        sort_order: int = 0,
+        created_by: str = "system",
+    ) -> FieldConfig:
+        """创建字段配置"""
+        config = FieldConfig(
+            field_key=field_key,
+            display_name=display_name,
+            field_type=field_type,
+            max_score=max_score,
+            conditions=conditions or [],
+            description=description,
+            college_code=college_code,
+            academic_year=academic_year,
+            sort_order=sort_order,
+            created_by=created_by,
+        )
+        db.add(config)
+        await db.commit()
+        await db.refresh(config)
+        return config
+
+    @staticmethod
+    async def update_field_config(
+        db: AsyncSession,
+        config_id: int,
+        **kwargs,
+    ) -> Optional[FieldConfig]:
+        """更新字段配置"""
+        config = await TemplateService.get_field_config_by_id(db, config_id)
+        if not config:
+            return None
+
+        for key, value in kwargs.items():
+            if hasattr(config, key) and value is not None:
+                setattr(config, key, value)
+
+        await db.commit()
+        await db.refresh(config)
+        return config
+
+    @staticmethod
+    async def delete_field_config(
+        db: AsyncSession,
+        config_id: int,
+    ) -> bool:
+        """删除字段配置"""
+        config = await TemplateService.get_field_config_by_id(db, config_id)
+        if not config:
+            return False
+
+        config.is_active = False
+        await db.commit()
+        return True
+
+    # ========== FieldSubcategory ==========
+
+    @staticmethod
+    async def get_subcategories(
+        db: AsyncSession,
+        field_id: Optional[int] = None,
+    ) -> List[FieldSubcategory]:
+        """获取字段细分"""
+        query = select(FieldSubcategory).where(FieldSubcategory.is_active == True)
+
+        if field_id:
+            query = query.where(FieldSubcategory.field_id == field_id)
+
+        query = query.order_by(FieldSubcategory.sort_order)
+        result = await db.execute(query)
+        return list(result.scalars().all())
+
+    @staticmethod
+    async def get_subcategory_by_id(
+        db: AsyncSession,
+        subcategory_id: int,
+    ) -> Optional[FieldSubcategory]:
+        """根据ID获取字段细分"""
+        result = await db.execute(
+            select(FieldSubcategory).where(FieldSubcategory.id == subcategory_id)
+        )
+        return result.scalar_one_or_none()
+
+    @staticmethod
+    async def create_subcategory(
+        db: AsyncSession,
+        field_id: int,
+        sub_key: str,
+        display_name: str,
+        max_score: float,
+        description: Optional[str] = None,
+        sort_order: int = 0,
+    ) -> FieldSubcategory:
+        """创建字段细分"""
+        subcategory = FieldSubcategory(
+            field_id=field_id,
+            sub_key=sub_key,
+            display_name=display_name,
+            max_score=max_score,
+            description=description,
+            sort_order=sort_order,
+        )
+        db.add(subcategory)
+        await db.commit()
+        await db.refresh(subcategory)
+        return subcategory
+
+    @staticmethod
+    async def update_subcategory(
+        db: AsyncSession,
+        subcategory_id: int,
+        **kwargs,
+    ) -> Optional[FieldSubcategory]:
+        """更新字段细分"""
+        subcategory = await TemplateService.get_subcategory_by_id(db, subcategory_id)
+        if not subcategory:
+            return None
+
+        for key, value in kwargs.items():
+            if hasattr(subcategory, key) and value is not None:
+                setattr(subcategory, key, value)
+
+        await db.commit()
+        await db.refresh(subcategory)
+        return subcategory
+
+    @staticmethod
+    async def delete_subcategory(
+        db: AsyncSession,
+        subcategory_id: int,
+    ) -> bool:
+        """删除字段细分"""
+        subcategory = await TemplateService.get_subcategory_by_id(db, subcategory_id)
+        if not subcategory:
+            return False
+
+        subcategory.is_active = False
+        await db.commit()
+        return True

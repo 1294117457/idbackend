@@ -120,3 +120,28 @@ class FieldConfig(Base, TimestampMixin):
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_by: Mapped[str] = mapped_column(String(50), default="system")
+
+    # 关系
+    subcategories: Mapped[List["FieldSubcategory"]] = relationship(
+        "FieldSubcategory", back_populates="field_config", cascade="all, delete-orphan"
+    )
+
+
+class FieldSubcategory(Base, TimestampMixin):
+    """字段细分表"""
+    __tablename__ = "field_subcategory"
+
+    field_id: Mapped[int] = mapped_column(
+        ForeignKey("field_config.id", ondelete="CASCADE")
+    )
+    sub_key: Mapped[str] = mapped_column(String(50), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    max_score: Mapped[float] = mapped_column(DECIMAL(5, 2), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(String(255))
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    # 关系
+    field_config: Mapped["FieldConfig"] = relationship(
+        "FieldConfig", back_populates="subcategories"
+    )

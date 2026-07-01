@@ -19,6 +19,7 @@ from src.app.routes.application import router as application_router
 from src.app.routes.template import router as template_router
 from src.app.routes.file import router as file_router
 from src.app.routes.health import router as health_router
+from src.app.routes.field_config import router as field_config_router
 
 settings = get_settings()
 
@@ -63,6 +64,7 @@ app.include_router(user_router)
 app.include_router(application_router)
 app.include_router(template_router)
 app.include_router(file_router)
+app.include_router(field_config_router)
 
 
 if __name__ == "__main__":

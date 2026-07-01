@@ -43,7 +43,7 @@ def create_token(
     role: str,
     expires_hours: Optional[int] = None,
 ) -> str:
-    """创建 JWT token"""
+    """创建 access token (短期)"""
     expire = datetime.utcnow() + timedelta(
         hours=expires_hours or settings.JWT_EXPIRE_HOURS
     )
@@ -51,6 +51,30 @@ def create_token(
         "userId": user_id,
         "username": username,
         "role": role,
+        "type": "access",
+        "exp": expire,
+    }
+    return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
+
+
+def create_refresh_token(
+    user_id: int,
+    username: str,
+    role: str,
+    expires_days: Optional[int] = None,
+) -> str:
+    """创建 refresh token (长期)，包含 jti 便于撤销"""
+    import uuid
+    jti = str(uuid.uuid4())
+    expire = datetime.utcnow() + timedelta(
+        days=expires_days or settings.JWT_REFRESH_EXPIRE_DAYS
+    )
+    payload = {
+        "userId": user_id,
+        "username": username,
+        "role": role,
+        "type": "refresh",
+        "jti": jti,
         "exp": expire,
     }
     return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)

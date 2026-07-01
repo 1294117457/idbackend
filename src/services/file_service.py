@@ -122,6 +122,7 @@ class FileService:
         db: AsyncSession,
         user_id: Optional[int] = None,
         category: Optional[str] = None,
+        filename_keyword: Optional[str] = None,
         page: int = 1,
         size: int = 20,
     ) -> tuple[List[FileMetadata], int]:
@@ -132,6 +133,8 @@ class FileService:
             query = query.where(FileMetadata.upload_user_id == user_id)
         if category:
             query = query.where(FileMetadata.file_category == category)
+        if filename_keyword:
+            query = query.where(FileMetadata.original_name.ilike(f"%{filename_keyword}%"))
 
         # 获取总数
         from sqlalchemy import func

@@ -77,6 +77,80 @@ async def get_preview_url(
     return success_response(url)
 
 
+@router.get("/search")
+async def search_files(
+    fileName: str = Query(None, description="文件名模糊查询"),
+    fileCategory: str = Query(None, description="文件分类"),
+    uploadUserId: int = Query(None, description="上传用户ID"),
+    startTime: str = Query(None, description="开始时间"),
+    endTime: str = Query(None, description="结束时间"),
+    pageNum: int = Query(1, ge=1, description="页码"),
+    pageSize: int = Query(20, ge=1, le=100, description="每页大小"),
+    user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """搜索文件列表(分页)"""
+    files, total = await FileService.search_files(
+        db=db,
+        user_id=uploadUserId,
+        category=fileCategory,
+        filename_keyword=fileName,
+        page=pageNum,
+        size=pageSize,
+    )
+
+    def format_size(size: int) -> str:
+        if size < 1024:
+            return f"{size}B"
+        elif size < 1024 * 1024:
+            return f"{size / 1024:.1f}KB"
+        else:
+            return f"{size / (1024 * 1024):.1f}MB"
+
+    return success_response({
+        "list": [
+            {
+                "id": f.id,
+                "originalName": f.original_name,
+                "fileSize": f.file_size,
+                "fileSizeFormatted": format_size(f.file_size),
+                "contentType": f.content_type,
+                "fileExtension": f.file_extension,
+                "fileCategory": f.file_category,
+                "filePurpose": f.file_purpose,
+                "uploadUserId": f.upload_user_id,
+                "uploadTime": str(f.created_at),
+            }
+            for f in files
+        ],
+        "total": total,
+        "pageNum": pageNum,
+        "pageSize": pageSize,
+        "pages": (total + pageSize - 1) // pageSize if total > 0 else 0,
+    })
+
+
+@router.get("/download/{file_id}")
+async def download_file_legacy(
+    file_id: int,
+    user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """下载文件 (兼容 /download/{fileId} 格式)"""
+    result = await FileService.download_file(db, file_id)
+    if not result:
+        return error_response("文件不存在", code=404)
+
+    file_data, content_type = result
+    return StreamingResponse(
+        io.BytesIO(file_data),
+        media_type=content_type,
+        headers={
+            "Content-Disposition": f"attachment; filename=file"
+        }
+    )
+
+
 @router.get("/{file_id}/download")
 async def download_file(
     file_id: int,

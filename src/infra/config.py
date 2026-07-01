@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     JWT_SECRET: str = "change-me-in-production"
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRE_HOURS: int = 24
+    JWT_REFRESH_EXPIRE_DAYS: int = 7
 
     # LLM
     QWEN3_API_KEY: str = ""

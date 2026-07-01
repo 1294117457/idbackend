@@ -4,7 +4,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
 from datetime import datetime
 
-from src.infra.jwt import create_token, verify_token, hash_password, verify_password, JWTError
+from src.infra.jwt import (
+    create_token,
+    create_refresh_token,
+    verify_token,
+    hash_password,
+    verify_password,
+    JWTError,
+)
+from src.infra.redis import RedisCache, get_redis
 from src.models import User
 
 
@@ -18,14 +26,12 @@ class AuthService:
         password: str,
     ) -> User:
         """注册用户"""
-        # 检查用户名是否存在
         result = await db.execute(
             select(User).where(User.username == username)
         )
         if result.scalar_one_or_none():
             raise ValueError("用户名已存在")
 
-        # 创建用户
         user = User(
             username=username,
             password=hash_password(password),
@@ -42,8 +48,8 @@ class AuthService:
         db: AsyncSession,
         username: str,
         password: str,
-    ) -> tuple[User, str]:
-        """登录"""
+    ) -> tuple[User, str, str]:
+        """登录，返回 (用户, access_token, refresh_token)"""
         result = await db.execute(
             select(User).where(User.username == username)
         )
@@ -58,18 +64,85 @@ class AuthService:
         if user.status != "active":
             raise ValueError("账户已被禁用")
 
-        # 更新最后登录时间
         user.last_login_at = datetime.utcnow().isoformat()
         await db.commit()
 
-        # 生成 token
-        token = create_token(
+        access_token = create_token(
+            user_id=user.id,
+            username=user.username,
+            role=user.role,
+        )
+        refresh_token = create_refresh_token(
             user_id=user.id,
             username=user.username,
             role=user.role,
         )
 
-        return user, token
+        return user, access_token, refresh_token
+
+    @staticmethod
+    async def refresh(
+        db: AsyncSession,
+        refresh_token: str,
+    ) -> tuple[str, str]:
+        """刷新 token，返回 (新的 access_token, 新的 refresh_token)"""
+        # 1. 解析并验证 refresh token
+        payload = verify_token(refresh_token)
+        if payload.get("type") != "refresh":
+            raise JWTError("无效的 refresh token 类型")
+
+        jti = payload.get("jti")
+        if not jti:
+            raise JWTError("Refresh token 缺少 jti")
+
+        # 2. 检查是否已撤销
+        redis = await get_redis()
+        cache = RedisCache(redis)
+        if await cache.is_refresh_token_revoked(jti):
+            raise JWTError("Refresh token 已失效")
+
+        # 3. 检查用户是否仍然有效
+        user_id = payload.get("userId")
+        result = await db.execute(select(User).where(User.id == user_id))
+        user = result.scalar_one_or_none()
+        if not user or user.status != "active":
+            raise JWTError("用户不存在或已禁用")
+
+        # 4. 撤销旧 refresh token (rotation)
+        await cache.revoke_refresh_token(jti)
+
+        # 5. 签发新 token 对
+        new_access_token = create_token(
+            user_id=user.id,
+            username=user.username,
+            role=user.role,
+        )
+        new_refresh_token = create_refresh_token(
+            user_id=user.id,
+            username=user.username,
+            role=user.role,
+        )
+        return new_access_token, new_refresh_token
+
+    @staticmethod
+    async def revoke_refresh_token(refresh_token: str) -> None:
+        """撤销指定的 refresh token（登出时调用）"""
+        payload = verify_token(refresh_token)
+        if payload.get("type") != "refresh":
+            return
+        jti = payload.get("jti")
+        if not jti:
+            return
+        redis = await get_redis()
+        cache = RedisCache(redis)
+        await cache.revoke_refresh_token(jti)
+
+    @staticmethod
+    async def revoke_all_user_tokens(user_id: int) -> int:
+        """撤销用户所有 refresh tokens（密码修改/账户禁用时调用）"""
+        redis = await get_redis()
+        cache = RedisCache(redis)
+        return await cache.revoke_all_user_refresh_tokens(user_id)
 
     @staticmethod
     async def reset_password(

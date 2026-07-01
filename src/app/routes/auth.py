@@ -8,6 +8,7 @@ from typing import Optional
 from src.app.deps import get_db, get_current_user, CurrentUser, ip_rate_limit
 from src.app.response import success_response, error_response
 from src.services import AuthService, UserService
+from src.infra.jwt import JWTError
 from src.infra.captcha import Captcha
 from src.infra.email import EmailCode
 
@@ -40,6 +41,10 @@ class RefreshTokenRequest(BaseModel):
     refreshToken: str
 
 
+class LogoutRequest(BaseModel):
+    refreshToken: str
+
+
 class ForgotPasswordRequest(BaseModel):
     username: str
     code: str
@@ -65,11 +70,13 @@ async def login(
         return error_response(err, code=400)
 
     try:
-        user, token = await AuthService.login(db, request.username, request.password)
+        user, access_token, refresh_token = await AuthService.login(
+            db, request.username, request.password
+        )
         return success_response(
             {
-                "accessToken": token,
-                "refreshToken": token,  # TODO: 生成独立的 refresh token
+                "accessToken": access_token,
+                "refreshToken": refresh_token,
                 "expiresIn": 86400,
             }
         )
@@ -103,25 +110,34 @@ async def register(
 @router.post("/refresh")
 async def refresh_token(
     request: RefreshTokenRequest,
+    db: AsyncSession = Depends(get_db),
 ):
     """刷新Token"""
     try:
-        # TODO: 实现真正的 refresh token 机制
-        payload = await AuthService.verify_refresh_token(request.refreshToken)
-        new_token = await AuthService.create_token(
-            user_id=payload.get("userId"),
-            username=payload.get("username"),
-            role=payload.get("role"),
+        new_access, new_refresh = await AuthService.refresh(
+            db, request.refreshToken
         )
         return success_response(
             {
-                "accessToken": new_token,
-                "refreshToken": new_token,
+                "accessToken": new_access,
+                "refreshToken": new_refresh,
                 "expiresIn": 86400,
             }
         )
+    except JWTError as e:
+        return error_response(str(e), code=401)
     except Exception as e:
         return error_response(str(e), code=401)
+
+
+@router.post("/logout")
+async def logout(
+    request: LogoutRequest,
+    user: CurrentUser = Depends(get_current_user),
+):
+    """登出，撤销 refresh token"""
+    await AuthService.revoke_refresh_token(request.refreshToken)
+    return success_response(msg="已登出")
 
 
 @router.post("/sendEmailCode")
