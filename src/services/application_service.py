@@ -1,5 +1,5 @@
 """加分申请服务"""
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional, List
 from datetime import datetime
@@ -10,6 +10,14 @@ from src.models import (
     User,
     FileMetadata,
 )
+
+
+class ApplicationStatus:
+    PENDING = 0
+    APPROVED = 1
+    REJECTED = 2
+    CANCELLED = 3
+    REVOKED = 4
 
 
 class ApplicationService:
@@ -280,3 +288,121 @@ class ApplicationService:
         await db.commit()
         await db.refresh(application)
         return application
+
+    @staticmethod
+    async def get_pending_applications_paged(
+        db: AsyncSession,
+        page: int = 1,
+        size: int = 20,
+        student_id: Optional[str] = None,
+        student_name: Optional[str] = None,
+        major: Optional[str] = None,
+    ) -> tuple[List[Application], int]:
+        """分页获取待审核申请"""
+        query = select(Application).where(
+            Application.status == ApplicationStatus.PENDING.value
+        )
+
+        # 筛选条件
+        if student_id:
+            query = query.where(Application.student_id.like(f"%{student_id}%"))
+        if student_name:
+            query = query.where(Application.student_name.like(f"%{student_name}%"))
+        if major:
+            query = query.where(Application.major.like(f"%{major}%"))
+
+        # 获取总数
+        count_query = select(func.count()).select_from(query.subquery())
+        count_result = await db.execute(count_query)
+        total = count_result.scalar() or 0
+
+        # 分页
+        query = query.order_by(Application.created_at.desc())
+        query = query.offset((page - 1) * size).limit(size)
+
+        result = await db.execute(query)
+        return list(result.scalars().all()), total
+
+    @staticmethod
+    async def get_audit_history_paged(
+        db: AsyncSession,
+        page: int = 1,
+        size: int = 20,
+        student_id: Optional[str] = None,
+        student_name: Optional[str] = None,
+        major: Optional[str] = None,
+    ) -> tuple[List[Application], int]:
+        """分页获取审核历史（已审核的）"""
+        query = select(Application).where(
+            Application.status.in_([ApplicationStatus.APPROVED.value, ApplicationStatus.REJECTED.value, ApplicationStatus.REVOKED.value])
+        )
+
+        # 筛选条件
+        if student_id:
+            query = query.where(Application.student_id.like(f"%{student_id}%"))
+        if student_name:
+            query = query.where(Application.student_name.like(f"%{student_name}%"))
+        if major:
+            query = query.where(Application.major.like(f"%{major}%"))
+
+        # 获取总数
+        count_query = select(func.count()).select_from(query.subquery())
+        count_result = await db.execute(count_query)
+        total = count_result.scalar() or 0
+
+        # 分页
+        query = query.order_by(Application.created_at.desc())
+        query = query.offset((page - 1) * size).limit(size)
+
+        result = await db.execute(query)
+        return list(result.scalars().all()), total
+
+    @staticmethod
+    async def revoke_application(
+        db: AsyncSession,
+        application_id: int,
+        reviewer_id: int,
+        reason: str,
+    ) -> bool:
+        """撤销已通过的申请"""
+        application = await ApplicationService.get_application_by_id(db, application_id)
+        if not application:
+            return False
+
+        if application.status != ApplicationStatus.APPROVED.value:
+            return False
+
+        # 扣减用户积分
+        gain_score = application.gain_score or application.apply_score or 0
+        await ApplicationService._deduct_user_score(db, application.user_id, gain_score)
+
+        # 更新状态
+        application.status = ApplicationStatus.REVOKED.value
+
+        # 记录撤销原因
+        review_records = application.review_records or []
+        review_records.append({
+            "reviewerId": reviewer_id,
+            "action": "revoked",
+            "comment": reason,
+            "time": datetime.utcnow().isoformat(),
+        })
+        application.review_records = review_records
+
+        await db.commit()
+        return True
+
+    @staticmethod
+    async def _deduct_user_score(
+        db: AsyncSession,
+        user_id: int,
+        score: float,
+    ) -> None:
+        """扣减用户学业成绩"""
+        user_result = await db.execute(
+            select(User).where(User.id == user_id)
+        )
+        user = user_result.scalar_one_or_none()
+        if user:
+            user.academic_score = max(0, (user.academic_score or 0) - score)
+            await db.commit()

@@ -20,6 +20,10 @@ from src.app.routes.template import router as template_router
 from src.app.routes.file import router as file_router
 from src.app.routes.health import router as health_router
 from src.app.routes.field_config import router as field_config_router
+from src.app.routes.attribute import router as attribute_router
+from src.app.routes.proof import router as proof_router
+from src.app.routes.demand_template import router as demand_template_router
+from src.app.routes.demand_application import router as demand_application_router
 
 settings = get_settings()
 
@@ -65,6 +69,10 @@ app.include_router(application_router)
 app.include_router(template_router)
 app.include_router(file_router)
 app.include_router(field_config_router)
+app.include_router(attribute_router)
+app.include_router(proof_router)
+app.include_router(demand_template_router)
+app.include_router(demand_application_router)
 
 
 if __name__ == "__main__":

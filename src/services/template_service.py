@@ -311,3 +311,17 @@ class TemplateService:
         subcategory.is_active = False
         await db.commit()
         return True
+
+    @staticmethod
+    async def get_template_type_by_name(
+        db: AsyncSession,
+        template_name: str,
+    ) -> str:
+        """根据模板名称获取模板类型"""
+        result = await db.execute(
+            select(ScoreTemplate.template_type).where(
+                ScoreTemplate.template_name == template_name
+            )
+        )
+        template_type = result.scalar_one_or_none()
+        return template_type or "CONDITION"

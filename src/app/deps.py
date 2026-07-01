@@ -5,10 +5,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from dataclasses import dataclass
 from typing import Optional
 
-from infra.database import get_db
-from infra.jwt import verify_token, JWTError
-from infra.config import get_settings
-from infra.redis import get_redis, RedisCache
+from src.infra.database import get_db
+from src.infra.jwt import verify_token, JWTError
+from src.infra.config import get_settings
+from src.infra.redis import get_redis, RedisCache
 
 settings = get_settings()
 security = HTTPBearer(auto_error=False)

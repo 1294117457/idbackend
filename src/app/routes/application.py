@@ -1,6 +1,7 @@
 """申请路由 - 兼容前端"""
-from fastapi import APIRouter, Depends, Query, Body
+from fastapi import APIRouter, Depends, Query, Path, Body
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, func, and_
 from pydantic import BaseModel
 from typing import Optional, List
 
@@ -150,33 +151,129 @@ async def get_pending(
     })
 
 
-@router.post("/approve/{application_id}")
+# ========== 审核员接口 ==========
+
+class AuditRequest(BaseModel):
+    recordId: int
+    comment: Optional[str] = None
+
+
+class RevokeRequest(BaseModel):
+    recordId: int
+    reason: str
+
+
+@router.get("/audit/pending")
+async def get_pending_applications(
+    page: int = Query(1, ge=1),
+    size: int = Query(20, ge=1, le=100),
+    studentId: Optional[str] = Query(None),
+    studentName: Optional[str] = Query(None),
+    major: Optional[str] = Query(None),
+    _: CurrentUser = Depends(require_reviewer),
+    db: AsyncSession = Depends(get_db),
+):
+    """分页获取待审核列表"""
+    applications, total = await ApplicationService.get_pending_applications_paged(
+        db, page, size, studentId, studentName, major
+    )
+    return success_response({
+        "records": [format_application(a) for a in applications],
+        "total": total,
+    })
+
+
+@router.get("/audit/history")
+async def get_audit_history(
+    page: int = Query(1, ge=1),
+    size: int = Query(20, ge=1, le=100),
+    studentId: Optional[str] = Query(None),
+    studentName: Optional[str] = Query(None),
+    major: Optional[str] = Query(None),
+    _: CurrentUser = Depends(require_reviewer),
+    db: AsyncSession = Depends(get_db),
+):
+    """分页获取审核历史"""
+    applications, total = await ApplicationService.get_audit_history_paged(
+        db, page, size, studentId, studentName, major
+    )
+    return success_response({
+        "records": [format_application(a) for a in applications],
+        "total": total,
+    })
+
+
+@router.post("/audit/approve")
 async def approve_application(
-    application_id: int,
-    request: ReviewRequest,
+    request: AuditRequest,
     user: CurrentUser = Depends(require_reviewer),
     db: AsyncSession = Depends(get_db),
 ):
     """审核通过"""
     application = await ApplicationService.approve_application(
-        db, application_id, user.user_id, request.comment
+        db, request.recordId, user.user_id, request.comment
     )
     if not application:
         return error_response("申请不存在", code=404)
     return success_response(msg="审核通过")
 
 
-@router.post("/reject/{application_id}")
+@router.post("/audit/reject")
 async def reject_application(
-    application_id: int,
-    request: ReviewRequest,
+    request: AuditRequest,
     user: CurrentUser = Depends(require_reviewer),
     db: AsyncSession = Depends(get_db),
 ):
     """审核驳回"""
     application = await ApplicationService.reject_application(
-        db, application_id, user.user_id, request.comment
+        db, request.recordId, user.user_id, request.comment
     )
     if not application:
         return error_response("申请不存在", code=404)
     return success_response(msg="已驳回")
+
+
+@router.post("/audit/revoke")
+async def revoke_application(
+    request: RevokeRequest,
+    user: CurrentUser = Depends(require_reviewer),
+    db: AsyncSession = Depends(get_db),
+):
+    """撤销已通过的申请"""
+    result = await ApplicationService.revoke_application(
+        db, request.recordId, user.user_id, request.reason
+    )
+    if not result:
+        return error_response("撤销失败", code=400)
+    return success_response(msg="撤销成功")
+
+
+def format_application(a) -> dict:
+    """格式化申请记录"""
+    from src.services import TemplateService
+    template_type = TemplateService.get_template_type_by_name(a.template_name) if a.template_name else "CONDITION"
+    return {
+        "id": a.id,
+        "studentId": a.student_id or "",
+        "studentName": a.student_name or "",
+        "major": a.major or "",
+        "enrollmentYear": a.enrollment_year or 0,
+        "templateName": a.template_name or "",
+        "templateType": template_type,
+        "scoreType": a.score_type or 0,
+        "applyScore": float(a.apply_score) if a.apply_score else 0,
+        "applyInput": float(a.apply_input) if a.apply_input else None,
+        "proofsInput": float(a.proofs_input) if a.proofs_input else 0,
+        "gainScore": float(a.gain_score) if a.gain_score else None,
+        "status": a.status or 0,
+        "statusText": get_status_text(a.status),
+        "submitTime": a.created_at.strftime("%Y-%m-%d %H:%M:%S") if a.created_at else None,
+        "remark": a.remark,
+        "reviewCount": a.review_count or 1,
+        "currentReviewCount": a.current_review_count or 0,
+        "reviewRecords": a.review_records,
+    }
+
+
+def get_status_text(status: int) -> str:
+    return {0: "待审核", 1: "已通过", 2: "已驳回", 4: "已撤销"}.get(status, "未知")
