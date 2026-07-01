@@ -7,6 +7,7 @@ from typing import Optional
 from src.app.deps import get_db, get_current_user, CurrentUser
 from src.app.response import success_response, error_response
 from src.services import AuthService, UserService
+from src.services.captcha_service import CaptchaService
 
 router = APIRouter(prefix="/api/authserver", tags=["认证"])
 
@@ -163,11 +164,23 @@ async def reset_password(
 @router.get("/captcha/generate")
 async def get_captcha():
     """获取图形验证码"""
-    # TODO: 实现图形验证码
+    captcha_id, base64_image = await CaptchaService.generate_captcha()
     return success_response({
-        "captchaId": "captcha_" + str(hash(str(__import__('time').time()))),
-        "base64": "",  # 实际应返回 base64 图片
+        "captchaId": captcha_id,
+        "base64": f"data:image/png;base64,{base64_image}",
     })
+
+
+@router.post("/captcha/verify")
+async def verify_captcha(
+    captchaId: str,
+    code: str,
+):
+    """验证图形验证码"""
+    is_valid, error_msg = await CaptchaService.validate_captcha(captchaId, code)
+    if not is_valid:
+        return error_response(error_msg, code=400)
+    return success_response(msg="验证成功")
 
 
 # ========== 当前用户 ==========

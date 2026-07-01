@@ -79,19 +79,9 @@ class AuthService:
         expire_minutes: int = 5,
     ) -> str:
         """发送验证码"""
-        from infra.email import generate_code
+        from infra.email import send_verification_code as send_email_code
 
-        code = generate_code()
-
-        # 存储到 Redis
-        redis = await get_redis()
-        cache = RedisCache(redis)
-        key = f"email_code:{code_type}:{email}"
-        await cache.set(code, expire=expire_minutes * 60)
-
-        # TODO: 实际发送邮件
-        print(f"[DEBUG] 验证码 {code} 已发送给 {email}")
-
+        code = await send_email_code(email, code_type, expire_minutes)
         return code
 
     @staticmethod

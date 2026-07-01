@@ -1,5 +1,7 @@
 """邮件服务"""
-import aiosmtplib
+import ssl
+import smtplib
+import asyncio
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import random
@@ -29,8 +31,8 @@ class EmailService:
         self.password = password
         self.from_addr = from_addr or username
 
-    async def send_code(self, to_email: str, code: str, expire_minutes: int = 5):
-        """发送验证码邮件"""
+    def send_code(self, to_email: str, code: str, expire_minutes: int = 5):
+        """发送验证码邮件（同步版本）"""
         message = MIMEMultipart("alternative")
         message["From"] = self.from_addr
         message["To"] = to_email
@@ -46,13 +48,25 @@ class EmailService:
         """
         message.attach(MIMEText(html, "html"))
 
-        await aiosmtplib.send(
-            message,
-            hostname=self.smtp_host,
-            port=self.smtp_port,
-            username=self.username,
-            password=self.password,
-        )
+        try:
+            print(f"[EMAIL] 连接到 {self.smtp_host}:587...")
+            server = smtplib.SMTP(self.smtp_host, 587, timeout=60)
+            server.set_debuglevel(1)  # 开启调试
+            server.ehlo()
+            print("[EMAIL] STARTTLS...")
+            server.starttls()
+            server.ehlo()
+            print("[EMAIL] 登录...")
+            server.login(self.username, self.password)
+            print("[EMAIL] 发送邮件...")
+            server.send_message(message)
+            server.quit()
+            print(f"[EMAIL] 邮件发送成功到 {to_email}")
+        except Exception as e:
+            import traceback
+            print(f"[EMAIL ERROR] {type(e).__name__}: {e}")
+            traceback.print_exc()
+            raise
 
 
 def generate_code(length: int = 6) -> str:
@@ -72,7 +86,7 @@ async def send_verification_code(
     redis = await get_redis()
     cache = RedisCache(redis)
     key = f"email_code:{email_type}:{email}"
-    await cache.set(code, expire=expire_minutes * 60)
+    await cache.set(key, code, expire=expire_minutes * 60)
 
     # 发送邮件
     email_service = EmailService(
@@ -83,5 +97,9 @@ async def send_verification_code(
         from_addr=settings.SMTP_FROM,
     )
 
-    await email_service.send_code(email, code, expire_minutes)
+    try:
+        await asyncio.to_thread(email_service.send_code, email, code, expire_minutes)
+    except Exception as e:
+        print(f"[EMAIL ERROR] {type(e).__name__}: {e}")
+        raise
     return code
