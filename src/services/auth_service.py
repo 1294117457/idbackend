@@ -14,6 +14,7 @@ from src.infra.jwt import (
 )
 from src.infra.redis import RedisCache, get_redis
 from src.models import User, Role, UserRole
+from src.services.rbac_service import RbacService
 
 
 class AuthService:
@@ -36,7 +37,6 @@ class AuthService:
             username=username,
             password=hash_password(password),
             status="active",
-            role="user",
         )
         db.add(user)
         await db.flush()
@@ -78,15 +78,32 @@ class AuthService:
         user.last_login_at = datetime.utcnow().isoformat()
         await db.commit()
 
+        # 获取用户角色
+        user_roles = await RbacService.get_user_roles(db, user.id)
+        primary_role = user_roles[0] if user_roles else "user"
+
+        # 检查是否为 system_user（白名单用户）
+        is_system = RbacService._is_admin(user.username)
+
+        # 获取权限
+        if is_system:
+            permissions = ["*"]
+            roles = ["system"]
+        else:
+            roles = user_roles
+            permissions = await RbacService.get_user_permissions(db, user.id)
+
         access_token = create_token(
             user_id=user.id,
             username=user.username,
-            role=user.role,
+            role=primary_role,
+            roles=roles,
+            permissions=permissions,
         )
         refresh_token = create_refresh_token(
             user_id=user.id,
             username=user.username,
-            role=user.role,
+            role=primary_role,
         )
 
         return user, access_token, refresh_token
@@ -112,21 +129,35 @@ class AuthService:
         if user.status != "active":
             raise ValueError("账户已被禁用")
 
-        if user.role != "admin":
-            raise ValueError("无管理员权限")
+        # 【关键】检查是否有管理端登录权限
+        # 1. 白名单用户直接允许
+        if RbacService._is_admin(user.username):
+            permissions = ["*"]
+            roles = ["system"]
+        else:
+            # 2. 检查是否有管理端登录权限
+            perms = await RbacService.get_user_permissions(db, user.id)
+            if "admin:login" not in perms and "*" not in perms:
+                raise ValueError("无管理端登录权限")
+            permissions = perms
+            roles = await RbacService.get_user_roles(db, user.id)
 
         user.last_login_at = datetime.utcnow().isoformat()
         await db.commit()
 
+        primary_role = roles[0] if roles else "admin"
+
         access_token = create_token(
             user_id=user.id,
             username=user.username,
-            role=user.role,
+            role=primary_role,
+            roles=roles,
+            permissions=permissions,
         )
         refresh_token = create_refresh_token(
             user_id=user.id,
             username=user.username,
-            role=user.role,
+            role=primary_role,
         )
 
         return user, access_token, refresh_token
@@ -162,16 +193,33 @@ class AuthService:
         # 4. 撤销旧 refresh token (rotation)
         await cache.revoke_refresh_token(jti)
 
-        # 5. 签发新 token 对
+        # 5. 获取用户角色
+        user_roles = await RbacService.get_user_roles(db, user.id)
+        primary_role = user_roles[0] if user_roles else "user"
+
+        # 检查是否为 system_user（白名单用户）
+        is_system = RbacService._is_admin(user.username)
+
+        # 获取权限
+        if is_system:
+            permissions = ["*"]
+            roles = ["system"]
+        else:
+            roles = user_roles
+            permissions = await RbacService.get_user_permissions(db, user.id)
+
+        # 6. 签发新 token 对
         new_access_token = create_token(
             user_id=user.id,
             username=user.username,
-            role=user.role,
+            role=primary_role,
+            roles=roles,
+            permissions=permissions,
         )
         new_refresh_token = create_refresh_token(
             user_id=user.id,
             username=user.username,
-            role=user.role,
+            role=primary_role,
         )
         return new_access_token, new_refresh_token
 
@@ -229,16 +277,3 @@ class AuthService:
     async def verify_refresh_token(token: str) -> dict:
         """验证刷新Token"""
         return verify_token(token)
-
-    @staticmethod
-    async def create_token(
-        user_id: int,
-        username: str,
-        role: str,
-    ) -> str:
-        """创建Token"""
-        return create_token(
-            user_id=user_id,
-            username=username,
-            role=role,
-        )

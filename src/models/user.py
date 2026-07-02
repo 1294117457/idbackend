@@ -52,27 +52,25 @@ class Role(Base, TimestampMixin):
 
 
 class Permission(Base, TimestampMixin):
-    """权限表（支持动态菜单）"""
+    """权限表"""
     __tablename__ = "permission"
 
-    permission_code: Mapped[str] = mapped_column(
-        String(100), unique=True, nullable=False
+    code: Mapped[str] = mapped_column(
+        String(100), unique=True, nullable=False, doc="权限编码，如 user:read"
     )
-    permission_name: Mapped[str] = mapped_column(String(100), nullable=False)
-    module: Mapped[str] = mapped_column(String(50), nullable=False)
+    name: Mapped[str] = mapped_column(String(100), nullable=False, doc="权限名称")
+    route_path: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True, doc="对应后端接口路径"
+    )
     description: Mapped[Optional[str]] = mapped_column(String(255))
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[bool] = mapped_column(Boolean, default=True)
 
-    # ========== 菜单相关字段 ==========
+    # 父子关系（支持树形权限分组）
     parent_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("permission.id", ondelete="SET NULL"),
-        doc="父级权限ID，NULL表示顶级菜单"
+        doc="父级权限ID，NULL表示顶级"
     )
-    is_menu: Mapped[bool] = mapped_column(Boolean, default=False, doc="是否显示为菜单")
-    icon: Mapped[Optional[str]] = mapped_column(String(100), doc="菜单图标")
-    route_path: Mapped[Optional[str]] = mapped_column(String(255), doc="前端路由路径")
-    component_path: Mapped[Optional[str]] = mapped_column(String(255), doc="Vue组件路径")
 
     # 关系
     roles: Mapped[List["Role"]] = relationship(
@@ -95,7 +93,6 @@ class User(Base, TimestampMixin):
     phone: Mapped[Optional[str]] = mapped_column(String(15))
     avatar: Mapped[Optional[str]] = mapped_column(String(500))
     status: Mapped[str] = mapped_column(String(20), default=UserStatus.ACTIVE.value)
-    role: Mapped[str] = mapped_column(String(50), default="user")
     last_login_at: Mapped[Optional[str]] = mapped_column(String(50))
 
     # 学生信息

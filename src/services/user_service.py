@@ -5,6 +5,7 @@ from typing import Optional, List
 from datetime import datetime
 
 from src.models import User, Role, Permission, Application
+from src.infra.jwt import hash_password
 
 
 class UserService:
@@ -137,9 +138,6 @@ class UserService:
         """获取用户列表"""
         query = select(User)
 
-        if role:
-            query = query.where(User.role == role)
-
         # 获取总数
         from sqlalchemy import func
 
@@ -154,6 +152,22 @@ class UserService:
         users = result.scalars().all()
 
         return list(users), total
+
+    @staticmethod
+    async def create_user(
+        db: AsyncSession,
+        username: str,
+        password: str,
+    ) -> User:
+        """创建用户"""
+        user = User(
+            username=username,
+            password=hash_password(password),
+        )
+        db.add(user)
+        await db.commit()
+        await db.refresh(user)
+        return user
 
     @staticmethod
     async def delete_user(

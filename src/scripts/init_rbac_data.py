@@ -24,7 +24,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from src.infra.database import AsyncSessionLocal
-from src.models.user import Role, Permission, UserRole
+from src.models.user import Role, Permission, UserRole, RolePermission
 from sqlalchemy import select
 
 
@@ -85,6 +85,15 @@ async def init_rbac_data():
 
             # ========== 2. 创建权限 ==========
             permissions_data = [
+                # ========== 管理端登录权限 ==========
+                {
+                    "permission_code": "admin:login",
+                    "permission_name": "管理端登录",
+                    "module": "system",
+                    "parent_id": None,
+                    "is_menu": False,
+                    "sort_order": 0,
+                },
                 # ========== 账户管理 (super_admin only) ==========
                 {
                     "permission_code": "account",
@@ -372,8 +381,19 @@ async def init_rbac_data():
 
             created_permissions = {}
             for perm_data in permissions_data:
+                # 映射旧字段名到新字段名
+                mapped_data = {
+                    "code": perm_data["permission_code"],
+                    "name": perm_data["permission_name"],
+                    "route_path": perm_data.get("route_path"),
+                    "description": None,
+                    "sort_order": perm_data.get("sort_order", 0),
+                    "status": True,
+                    "parent_id": None,
+                }
+
                 result = await db.execute(
-                    select(Permission).where(Permission.permission_code == perm_data["permission_code"])
+                    select(Permission).where(Permission.code == mapped_data["code"])
                 )
                 existing_perm = result.scalar_one_or_none()
 
@@ -381,7 +401,7 @@ async def init_rbac_data():
                     print(f"[跳过] 权限已存在: {perm_data['permission_code']}")
                     created_permissions[perm_data["permission_code"]] = existing_perm
                 else:
-                    permission = Permission(**{k: v for k, v in perm_data.items() if k != "parent_id"}, status=True)
+                    permission = Permission(**mapped_data)
                     db.add(permission)
                     await db.flush()
                     created_permissions[perm_data["permission_code"]] = permission
@@ -430,6 +450,7 @@ async def init_rbac_data():
             # super_admin: 全部权限
             super_admin_role = created_roles.get("super_admin")
             super_admin_perms = [
+                created_permissions.get("admin:login"),
                 created_permissions.get("account:view"),
                 created_permissions.get("account:create"),
                 created_permissions.get("account:edit"),
@@ -466,11 +487,12 @@ async def init_rbac_data():
                     if not result.scalar_one_or_none():
                         rp = RolePermission(role_id=super_admin_role.id, permission_id=perm.id)
                         db.add(rp)
-                        print(f"[分配] super_admin -> {perm.permission_code}")
+                        print(f"[分配] super_admin -> {perm.code}")
 
             # admin: 模板、学生、审核管理（不含账户和系统配置）
             admin_role = created_roles.get("admin")
             admin_perms = [
+                created_permissions.get("admin:login"),
                 created_permissions.get("template:view"),
                 created_permissions.get("template:create"),
                 created_permissions.get("template:edit"),
@@ -496,7 +518,7 @@ async def init_rbac_data():
                     if not result.scalar_one_or_none():
                         rp = RolePermission(role_id=admin_role.id, permission_id=perm.id)
                         db.add(rp)
-                        print(f"[分配] admin -> {perm.permission_code}")
+                        print(f"[分配] admin -> {perm.code}")
 
             # reviewer: 审核功能
             reviewer_role = created_roles.get("reviewer")
@@ -519,7 +541,7 @@ async def init_rbac_data():
                     if not result.scalar_one_or_none():
                         rp = RolePermission(role_id=reviewer_role.id, permission_id=perm.id)
                         db.add(rp)
-                        print(f"[分配] reviewer -> {perm.permission_code}")
+                        print(f"[分配] reviewer -> {perm.code}")
 
             # user: 申请权限
             user_role = created_roles.get("user")

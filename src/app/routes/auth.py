@@ -8,6 +8,7 @@ from typing import Optional
 from src.app.deps import get_db, get_current_user, CurrentUser, ip_rate_limit
 from src.app.response import success_response, error_response
 from src.services import AuthService, UserService
+from src.services.rbac_service import RbacService
 from src.infra.jwt import JWTError
 from src.infra.captcha import Captcha
 from src.infra.email import EmailCode
@@ -244,11 +245,14 @@ async def get_current_user_info(
     if not db_user:
         return error_response("用户不存在", code=404)
 
+    # 获取用户角色列表
+    roles = await RbacService.get_user_roles(db, user.user_id)
+
     return success_response(
         {
             "userId": db_user.id,
             "username": db_user.username,
-            "role": db_user.role,
+            "roles": roles,
             "fullName": db_user.full_name,
             "studentId": db_user.student_id,
             "isConfirmed": db_user.is_confirmed,

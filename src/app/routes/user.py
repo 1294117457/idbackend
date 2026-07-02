@@ -7,6 +7,7 @@ from typing import Optional
 from src.app.deps import get_db, get_current_user, CurrentUser, require_admin
 from src.app.response import success_response, error_response
 from src.services import UserService
+from src.services.rbac_service import RbacService
 
 router = APIRouter(prefix="/api/user", tags=["用户"])
 
@@ -32,6 +33,20 @@ class UpdateStudentRequest(BaseModel):
     graduationYear: Optional[int] = None
 
 
+class UpdateUserStatusRequest(BaseModel):
+    status: str
+
+
+class CreateUserRequest(BaseModel):
+    username: str
+    password: Optional[str] = None
+    role: Optional[str] = "user"  # 默认角色代码
+
+
+class BatchCreateUserRequest(BaseModel):
+    usernames: list[str]
+
+
 # ========== 用户基本信息 ==========
 
 @router.get("/profile")
@@ -44,12 +59,15 @@ async def get_profile(
     if not db_user:
         return error_response("用户不存在", code=404)
 
+    # 获取用户角色列表
+    roles = await RbacService.get_user_roles(db, user.user_id)
+
     return success_response({
         "userId": db_user.id,
         "username": db_user.username,
         "phone": db_user.phone,
         "avatar": db_user.avatar,
-        "role": db_user.role,
+        "roles": roles,
         "status": db_user.status,
     })
 
@@ -202,9 +220,11 @@ async def confirm_student(
 @router.get("/me/roles")
 async def get_my_roles(
     user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """获取我的角色"""
-    return success_response({"role": user.role})
+    roles = await RbacService.get_user_roles(db, user.user_id)
+    return success_response({"roles": roles})
 
 
 @router.get("/{user_id}/roles")
@@ -218,18 +238,24 @@ async def get_user_roles(
     if not db_user:
         return error_response("用户不存在", code=404)
 
-    return success_response({"role": db_user.role})
+    # 获取角色ID列表
+    role_ids = await RbacService.get_user_role_ids(db, user_id)
+    return success_response({"roles": role_ids})
 
 
 @router.post("/{user_id}/roles")
 async def assign_user_roles(
     user_id: int,
-    role_ids: list[int] = Body(...),
+    body: dict = Body(...),
     _: CurrentUser = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
     """分配用户角色 (管理员)"""
-    # TODO: 实现角色分配
+    role_ids = body.get("roleIds", [])
+    
+    # 调用 RBAC 服务分配角色
+    await RbacService.assign_roles_to_user(db, user_id, role_ids)
+    
     return success_response(msg="角色分配成功")
 
 
@@ -246,19 +272,26 @@ async def list_users(
 ):
     """获取用户列表 (管理员)"""
     users, total = await UserService.list_users(db, None, pageNum, pageSize)
-    return success_response({
-        "list": [{
+
+    # 获取每个用户的角色
+    user_list = []
+    for u in users:
+        roles = await RbacService.get_user_roles(db, u.id)
+        user_list.append({
             "userId": u.id,
             "username": u.username,
             "phone": u.phone,
-            "role": u.role,
+            "roles": roles,
             "status": u.status,
             "lastLoginAt": u.last_login_at,
             "fullName": u.full_name,
             "major": u.major,
             "grade": u.grade,
             "graduationYear": u.graduation_year,
-        } for u in users],
+        })
+
+    return success_response({
+        "list": user_list,
         "total": total,
         "pageNum": pageNum,
         "pageSize": pageSize,
@@ -281,12 +314,75 @@ async def delete_user_admin(
 @router.put("/admin/{user_id}/status")
 async def update_user_status_admin(
     user_id: int,
-    status: str = Body(..., embed=True),
+    request: UpdateUserStatusRequest,
     _: CurrentUser = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
     """更新用户状态 (管理员)"""
-    db_user = await UserService.update_user(db, user_id, status=status)
+    db_user = await UserService.update_user(db, user_id, status=request.status)
     if not db_user:
         return error_response("用户不存在", code=404)
     return success_response(msg="状态更新成功")
+
+
+@router.post("/admin/create")
+async def admin_create_user(
+    request: CreateUserRequest,
+    _: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """创建用户 (管理员)"""
+    # 检查用户是否已存在
+    existing = await UserService.get_user_by_username(db, request.username)
+    if existing:
+        return error_response("用户已存在", code=400)
+
+    # 生成随机密码
+    import secrets
+    import string
+    password = request.password or ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(12))
+
+    user = await UserService.create_user(db, request.username, password)
+
+    # 分配角色
+    if request.role:
+        role = await RbacService.get_role_by_code(db, request.role)
+        if role:
+            await RbacService.assign_roles_to_user(db, user.id, [role.id])
+
+    return success_response({
+        "userId": user.id,
+        "username": user.username,
+    }, msg="用户创建成功")
+
+
+@router.post("/admin/batch-create")
+async def admin_batch_create_users(
+    request: BatchCreateUserRequest,
+    _: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """批量创建用户 (管理员)"""
+    import secrets
+    import string
+
+    created = []
+    failed = []
+
+    for username in request.usernames:
+        try:
+            existing = await UserService.get_user_by_username(db, username)
+            if existing:
+                failed.append({"username": username, "reason": "用户已存在"})
+                continue
+
+            password = ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(12))
+            user = await UserService.create_user(db, username, password)
+            created.append({"username": username, "password": password})
+        except Exception as e:
+            failed.append({"username": username, "reason": str(e)})
+
+    return success_response({
+        "created": created,
+        "failed": failed,
+    })

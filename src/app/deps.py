@@ -28,8 +28,23 @@ async def get_current_user(
     authorization: Optional[str] = Header(None),
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> CurrentUser:
-    """获取当前登录用户"""
-    # 从 Authorization header 获取 token
+    """获取当前登录用户
+
+    优先从 ContextVar 获取（由中间件设置），否则从 Header 解析 JWT
+    """
+    # 1. 优先从 ContextVar 获取（由 AuthMiddleware 设置）
+    from src.app.context import get_current_user as get_ctx_user
+    ctx_user = get_ctx_user()
+    if ctx_user:
+        return CurrentUser(
+            user_id=ctx_user.get("user_id"),
+            username=ctx_user.get("username", ""),
+            role=ctx_user.get("roles", ["user"])[0] if ctx_user.get("roles") else "user",
+            role_codes=ctx_user.get("roles", []),
+            permissions=ctx_user.get("permissions", []),
+        )
+
+    # 2. 如果 ContextVar 没有，从 Header 解析 JWT
     token = None
     if authorization and authorization.startswith("Bearer "):
         token = authorization[7:]
@@ -37,17 +52,19 @@ async def get_current_user(
         token = credentials.credentials
 
     if not token:
-        raise HTTPException(status_code=401, detail="未登录，请先登录")
+        raise HTTPException(status_code=401, detail="请先登录")
 
     try:
         payload = verify_token(token)
     except JWTError as e:
-        raise HTTPException(status_code=401, detail=str(e))
+        raise HTTPException(status_code=401, detail="Token无效")
 
     return CurrentUser(
         user_id=payload.get("userId"),
         username=payload.get("username", payload.get("sub", "")),
         role=payload.get("role", "user"),
+        role_codes=payload.get("roles", [payload.get("role", "user")]),
+        permissions=payload.get("permissions", []),
     )
 
 

@@ -1,6 +1,6 @@
 """JWT 工具"""
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, List
 from jose import jwt, JWTError
 import hashlib
 
@@ -41,9 +41,20 @@ def create_token(
     user_id: int,
     username: str,
     role: str,
+    roles: List[str] = None,
+    permissions: List[str] = None,
     expires_hours: Optional[int] = None,
 ) -> str:
-    """创建 access token (短期)"""
+    """创建 access token (短期)
+
+    Args:
+        user_id: 用户ID
+        username: 用户名
+        role: 主角色
+        roles: 角色列表
+        permissions: 权限列表
+        expires_hours: 过期时间（小时）
+    """
     expire = datetime.utcnow() + timedelta(
         hours=expires_hours or settings.JWT_EXPIRE_HOURS
     )
@@ -51,6 +62,8 @@ def create_token(
         "userId": user_id,
         "username": username,
         "role": role,
+        "roles": roles or [role],
+        "permissions": permissions or [],
         "type": "access",
         "exp": expire,
     }

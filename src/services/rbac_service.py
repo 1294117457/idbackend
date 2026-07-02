@@ -40,8 +40,14 @@ class RbacService:
 
     @classmethod
     def _is_admin(cls, username: str) -> bool:
-        """检查用户名是否在白名单中"""
+        """检查用户名是否在白名单中（仅用于系统初始用户）"""
         return username in cls._get_admin_users()
+
+    @classmethod
+    async def _is_admin_by_user_id(cls, db: AsyncSession, user_id: int) -> bool:
+        """通过用户ID检查是否为管理员（基于RBAC）"""
+        user_roles = await cls.get_user_roles(db, user_id)
+        return "admin" in user_roles
 
     # ==================== 权限校验方法 ====================
 
@@ -107,7 +113,7 @@ class RbacService:
 
         # 查数据库
         result = await db.execute(
-            select(Permission.permission_code)
+            select(Permission.code)
             .join(RolePermission, Permission.id == RolePermission.permission_id)
             .join(UserRole, RolePermission.role_id == UserRole.role_id)
             .where(UserRole.user_id == user_id)
@@ -120,19 +126,19 @@ class RbacService:
         return perms
 
     @staticmethod
-    async def has_permission(db: AsyncSession, user_id: int, permission_code: str) -> bool:
+    async def has_permission(db: AsyncSession, user_id: int, code: str) -> bool:
         """检查用户是否拥有指定权限
 
         Args:
             db: 数据库会话
             user_id: 用户ID
-            permission_code: 权限代码
+            code: 权限代码
 
         Returns:
             是否拥有该权限
         """
         perms = await RbacService.get_user_permissions(db, user_id)
-        return "*" in perms or permission_code in perms
+        return "*" in perms or code in perms
 
     @staticmethod
     async def has_any_role(db: AsyncSession, user_id: int, *required_roles: str) -> bool:
@@ -151,7 +157,7 @@ class RbacService:
 
     @staticmethod
     async def is_admin(db: AsyncSession, user_id: int) -> bool:
-        """判断是否是管理员用户（白名单用户）
+        """判断是否是管理员用户（检查 admin 角色或白名单）
 
         Args:
             db: 数据库会话
@@ -163,7 +169,14 @@ class RbacService:
         user = await db.get(User, user_id)
         if not user:
             return False
-        return RbacService._is_admin(user.username)
+
+        # 优先检查白名单用户
+        if RbacService._is_admin(user.username):
+            return True
+
+        # 检查用户是否拥有 admin 角色
+        user_roles = await RbacService.get_user_roles(db, user_id)
+        return "admin" in user_roles
 
     @staticmethod
     async def clear_user_cache(user_id: int):
@@ -231,19 +244,6 @@ class RbacService:
         sort_order: int = 0,
         is_system: bool = False,
     ) -> Role:
-        """创建角色
-
-        Args:
-            db: 数据库会话
-            role_code: 角色代码（唯一）
-            role_name: 角色名称
-            description: 描述
-            sort_order: 排序
-            is_system: 是否系统角色
-
-        Returns:
-            创建的角色
-        """
         # 检查是否已存在
         existing = await RbacService.get_role_by_code(db, role_code)
         if existing:
@@ -360,25 +360,7 @@ class RbacService:
             权限列表
         """
         result = await db.execute(
-            select(Permission).order_by(Permission.module, Permission.sort_order, Permission.id)
-        )
-        return list(result.scalars().all())
-
-    @staticmethod
-    async def get_permissions_by_module(db: AsyncSession, module: str) -> List[Permission]:
-        """按模块获取权限
-
-        Args:
-            db: 数据库会话
-            module: 模块名
-
-        Returns:
-            权限列表
-        """
-        result = await db.execute(
-            select(Permission)
-            .where(Permission.module == module)
-            .order_by(Permission.sort_order, Permission.id)
+            select(Permission).order_by(Permission.sort_order, Permission.id)
         )
         return list(result.scalars().all())
 
@@ -396,27 +378,27 @@ class RbacService:
         return await db.get(Permission, permission_id)
 
     @staticmethod
-    async def get_permission_by_code(db: AsyncSession, permission_code: str) -> Optional[Permission]:
+    async def get_permission_by_code(db: AsyncSession, code: str) -> Optional[Permission]:
         """根据代码获取权限
 
         Args:
             db: 数据库会话
-            permission_code: 权限代码
+            code: 权限代码
 
         Returns:
             权限对象，不存在则返回 None
         """
         result = await db.execute(
-            select(Permission).where(Permission.permission_code == permission_code)
+            select(Permission).where(Permission.code == code)
         )
         return result.scalar_one_or_none()
 
     @staticmethod
     async def create_permission(
         db: AsyncSession,
-        permission_code: str,
-        permission_name: str,
-        module: str,
+        code: str,
+        name: str,
+        route_path: Optional[str] = None,
         description: Optional[str] = None,
         sort_order: int = 0,
     ) -> Permission:
@@ -424,24 +406,23 @@ class RbacService:
 
         Args:
             db: 数据库会话
-            permission_code: 权限代码（唯一）
-            permission_name: 权限名称
-            module: 模块
+            code: 权限代码（唯一）
+            name: 权限名称
+            route_path: 对应后端接口路径
             description: 描述
             sort_order: 排序
 
         Returns:
             创建的权限
         """
-        # 检查是否已存在
-        existing = await RbacService.get_permission_by_code(db, permission_code)
+        existing = await RbacService.get_permission_by_code(db, code)
         if existing:
-            raise ValueError(f"权限代码已存在: {permission_code}")
+            raise ValueError(f"权限代码已存在: {code}")
 
         permission = Permission(
-            permission_code=permission_code,
-            permission_name=permission_name,
-            module=module,
+            code=code,
+            name=name,
+            route_path=route_path,
             description=description,
             sort_order=sort_order,
             status=True,
@@ -449,15 +430,18 @@ class RbacService:
         db.add(permission)
         await db.commit()
         await db.refresh(permission)
+
+        # 重载中间件权限映射
+        await RbacService._reload_permission_map()
+
         return permission
 
     @staticmethod
     async def update_permission(
         db: AsyncSession,
         permission_id: int,
-        permission_code: Optional[str] = None,
-        permission_name: Optional[str] = None,
-        module: Optional[str] = None,
+        name: Optional[str] = None,
+        route_path: Optional[str] = None,
         description: Optional[str] = None,
         sort_order: Optional[int] = None,
         status: Optional[bool] = None,
@@ -467,9 +451,8 @@ class RbacService:
         Args:
             db: 数据库会话
             permission_id: 权限ID
-            permission_code: 权限代码（可选）
-            permission_name: 权限名称（可选）
-            module: 模块（可选）
+            name: 权限名称（可选）
+            route_path: 对应接口路径（可选）
             description: 描述（可选）
             sort_order: 排序（可选）
             status: 状态（可选）
@@ -481,12 +464,10 @@ class RbacService:
         if not permission:
             return None
 
-        if permission_code is not None:
-            permission.permission_code = permission_code
-        if permission_name is not None:
-            permission.permission_name = permission_name
-        if module is not None:
-            permission.module = module
+        if name is not None:
+            permission.name = name
+        if route_path is not None:
+            permission.route_path = route_path
         if description is not None:
             permission.description = description
         if sort_order is not None:
@@ -499,6 +480,9 @@ class RbacService:
 
         # 清除相关用户缓存
         await RbacService._clear_permission_users_cache(db, permission_id)
+
+        # 重载中间件权限映射
+        await RbacService._reload_permission_map()
 
         return permission
 
@@ -528,6 +512,9 @@ class RbacService:
         # 删除权限
         await db.delete(permission)
         await db.commit()
+
+        # 重载中间件权限映射
+        await RbacService._reload_permission_map()
 
         return True
 
@@ -667,25 +654,12 @@ class RbacService:
         # 1. 获取用户权限
         user_permissions = await RbacService.get_user_permissions(db, user_id)
 
-        # 2. 查询菜单权限
-        if "*" in user_permissions:
-            # 管理员返回完整菜单
-            result = await db.execute(
-                select(Permission)
-                .where(Permission.is_menu == True)
-                .where(Permission.status == True)
-                .order_by(Permission.sort_order)
-            )
-        else:
-            # 普通用户：根据权限过滤
-            result = await db.execute(
-                select(Permission)
-                .where(Permission.is_menu == True)
-                .where(Permission.status == True)
-                .where(Permission.permission_code.in_(user_permissions))
-                .order_by(Permission.sort_order)
-            )
-
+        # 2. 查询所有启用的权限
+        result = await db.execute(
+            select(Permission)
+            .where(Permission.status == True)
+            .order_by(Permission.sort_order)
+        )
         permissions = result.scalars().all()
 
         # 3. 构建菜单树
@@ -731,11 +705,9 @@ class RbacService:
 
         return {
             "id": permission.id,
-            "permissionCode": permission.permission_code,
-            "permissionName": permission.permission_name,
-            "icon": permission.icon,
+            "permissionCode": permission.code,
+            "permissionName": permission.name,
             "routePath": permission.route_path,
-            "componentPath": permission.component_path,
             "sortOrder": permission.sort_order,
             "children": sorted(children, key=lambda x: x.get("sortOrder", 0)) if children else [],
         }
@@ -775,3 +747,15 @@ class RbacService:
         # 查找所有拥有这些角色的用户
         for role_id in role_ids:
             await RbacService._clear_role_users_cache(db, role_id)
+
+    @staticmethod
+    async def _reload_permission_map():
+        """重载权限中间件的 route_path -> code 映射"""
+        try:
+            from src.app.middleware.permission_middleware import PermissionMiddleware
+            from src.infra.database import AsyncSessionLocal
+            async with AsyncSessionLocal() as session:
+                await PermissionMiddleware.reload_permission_map(session)
+        except Exception as e:
+            import logging
+            logging.warning(f"重载权限映射失败: {e}")

@@ -12,6 +12,8 @@ from contextlib import asynccontextmanager
 from src.infra.config import get_settings
 from src.infra.database import init_db, close_db
 from src.infra.redis import close_redis
+from src.app.middleware.auth_middleware import AuthMiddleware
+from src.app.middleware.permission_middleware import PermissionMiddleware
 
 from src.app.routes.auth import router as auth_router
 from src.app.routes.user import router as user_router
@@ -42,6 +44,15 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[idpython] 数据库初始化失败: {e}")
 
+    # 加载权限映射到中间件
+    try:
+        from src.infra.database import AsyncSessionLocal
+        async with AsyncSessionLocal() as session:
+            await PermissionMiddleware.load_permission_map(session)
+        print("[idpython] 权限映射加载完成")
+    except Exception as e:
+        print(f"[idpython] 权限映射加载失败: {e}")
+
     yield
 
     print("[idpython] 关闭中...")
@@ -64,6 +75,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 注册认证和权限中间件（后添加的先执行）
+app.add_middleware(PermissionMiddleware)
+app.add_middleware(AuthMiddleware)
 
 # 注册路由
 app.include_router(health_router)

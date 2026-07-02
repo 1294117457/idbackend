@@ -6,15 +6,16 @@
 
 | 文档 | 说明 |
 |------|------|
-| [implementation-plan.md](./implementation-plan.md) | 完整实现方案（推荐先阅读） |
+| [permission-optimization-v2.md](./permission-optimization-v2.md) | **推荐** - 基于白名单 + 动态中间件的权限优化方案 |
+| [implementation-plan.md](./implementation-plan.md) | 完整实现方案（历史版本） |
 
 ## 快速导航
 
 ### 核心内容
-- [现状分析](./implementation-plan.md#一现状分析) - 现有数据表和代码问题
-- [实现方案](./implementation-plan.md#二实现方案) - 技术架构和目录结构
-- [详细设计](./implementation-plan.md#三详细设计) - 核心服务、API 设计
-- [实现计划](./implementation-plan.md#六实现计划) - 分阶段实施步骤
+- [动态权限校验（推荐方案）](./permission-optimization-v2.md#四动态权限校验推荐方案) - 中间件自动校验，管理端配置
+- [ContextVar 用户上下文](./permission-optimization-v2.md#51-contextvar-用户上下文) - Python 版 ThreadLocal
+- [核心流程](./permission-optimization-v2.md#七核心流程) - 请求处理流程图
+- [实现清单](./permission-optimization-v2.md#十一实现清单) - 需要修改的文件列表
 
 ### 相关工程
 
@@ -24,121 +25,52 @@
 | `idbackend` | 旧工程 (Java) - 参考实现 |
 | `idfrontend-admin` | 前端工程 - 需要对接 |
 
-## 待完成任务
-
-- [ ] Phase 1: 核心 RBAC 服务
-- [ ] Phase 2: 后台管理 API
-- [ ] Phase 3: 用户角色分配
-- [ ] Phase 4: 数据初始化
-- [ ] Phase 5: 优化完善
-
 ---
 
 ## 核心设计
 
-### SuperAdmin 白名单机制
+### 白名单 + 动态中间件
 
-为了实现"超级管理员拥有全部权限"的需求，同时保持代码的隐蔽性和简洁性，采用**用户名白名单**方案。
+#### 设计思路（类比 Java）
 
-#### 设计原则
+| Java 实现 | Python 实现 | 说明 |
+|-----------|------------|------|
+| `ThreadLocal` | `ContextVar` | 存储当前请求用户上下文（异步安全） |
+| `Interceptor` | `Middleware` | 拦截请求，解析 Token，设置上下文 |
+| `@RequiresPermissions` | 数据库配置 | 声明接口需要的权限 |
+| 注解 + 反射 | 中间件 + 查表 | 自动校验权限 |
 
-| 原则 | 说明 |
+#### 核心组件
+
+```
+请求 → AuthMiddleware → 从 JWT 解析用户 → ContextVar.set(user)
+                         ↓
+                   PermissionMiddleware → 从 interface_permissions 查需要的权限
+                         ↓
+                   ContextVar.get() 获取用户权限
+                         ↓
+                   比较：有权限放行 / 无权限 403
+```
+
+#### 优势
+
+| 特性 | 说明 |
 |------|------|
-| 隐蔽性 | 不新增数据库字段，不暴露"超级管理员"字样 |
-| 简洁性 | 仅在 RBAC 核心服务中加几行判断逻辑 |
-| 兼容性 | 不影响现有 RBAC 体系的正常运行 |
-| 可控性 | 白名单配置在代码中，可随时修改 |
+| **无需代码声明** | 接口不需要写 `Depends(require_permission(...))` |
+| **管理端配置** | 权限在数据库中配置，可动态修改 |
+| **即时生效** | 修改权限配置后立即生效（可加缓存） |
+| **代码整洁** | 业务代码专注于业务逻辑 |
 
-#### 实现原理
+---
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     RbacService.get_user_permissions()       │
-│                                                             │
-│   1. 查询用户信息                                            │
-│   2. 检查用户名是否在白名单中                                  │
-│                      │                                      │
-│          ┌───────────┴───────────┐                          │
-│        Yes                      No                           │
-│          │                        │                          │
-│          ▼                        ▼                          │
-│   ┌─────────────┐          ┌──────────────┐                 │
-│   │ return ["*"]│          │ 正常查询权限 │                 │
-│   │ 全部权限    │          │ 返回实际权限  │                 │
-│   └─────────────┘          └──────────────┘                 │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+## 待完成任务
 
-#### 白名单配置
-
-在 `src/infra/config.py` 中配置：
-
-```python
-# 系统内置账户（看起来像普通配置）
-SYSTEM_ACCOUNTS: list = ["admin"]
-```
-
-在 `src/services/rbac_service.py` 中实现：
-
-```python
-class RbacService:
-    """RBAC 核心服务"""
-    
-    # 从配置读取白名单
-    ADMIN_USERS: List[str] = []  # 运行时从 settings 获取
-    
-    @staticmethod
-    async def get_user_permissions(user_id: int) -> List[str]:
-        """获取用户权限（含 SuperAdmin 自动扩展）"""
-        
-        # 1. 查询用户
-        user = await db.get(User, user_id)
-        if not user:
-            return []
-        
-        # 2. 【关键】检查是否在白名单中
-        if user.username in RbacService.ADMIN_USERS:
-            return ["*"]  # 返回所有权限
-        
-        # 3. 普通用户走标准 RBAC
-        return await RbacService._query_user_permissions(user_id)
-```
-
-#### 使用方式
-
-| 操作 | 步骤 |
-|------|------|
-| 添加超级管理员 | 在 `SYSTEM_ACCOUNTS` 中添加用户名 |
-| 移除超级管理员 | 从 `SYSTEM_ACCOUNTS` 中删除用户名 |
-| 生效方式 | 重启服务即可 |
-
-#### 数据库视角
-
-白名单机制**不需要修改数据库**，数据库中完全看不到任何异常：
-
-```sql
--- users 表（看起来完全正常）
-SELECT * FROM users;
-┌────┬──────────┬─────────────────────┐
-│ id │ username │ password            │
-├────┼──────────┼─────────────────────┤
-│  1 │ admin    │ $2b$12$hashed...    │ ← 看起来就是普通管理员
-└────┴──────────┴─────────────────────┘
-
--- 没有任何 super_admin、is_superuser 等字段
-```
-
-#### 前端视角
-
-```json
-// admin 用户登录后获取的权限
-{
-  "userId": 1,
-  "username": "admin",
-  "permissions": ["*"]  // 表示拥有全部权限
-}
-```
+- [ ] Phase 1: 创建 interface_permissions 表
+- [ ] Phase 2: 创建 context.py (ContextVar)
+- [ ] Phase 3: 创建 AuthMiddleware
+- [ ] Phase 4: 创建 PermissionMiddleware
+- [ ] Phase 5: 注册中间件
+- [ ] Phase 6: 管理端 API
 
 ---
 
