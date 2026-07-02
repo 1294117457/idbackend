@@ -7,6 +7,7 @@ from src.services.file_service import FileService
 from src.services.attribute_service import AttributeService
 from src.services.proof_service import ProofService
 from src.services.demand_service import DemandTemplateService
+from src.services.rbac_service import RbacService
 
 __all__ = [
     "AuthService",
@@ -17,4 +18,5 @@ __all__ = [
     "AttributeService",
     "ProofService",
     "DemandTemplateService",
+    "RbacService",
 ]

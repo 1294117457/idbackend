@@ -52,7 +52,7 @@ class Role(Base, TimestampMixin):
 
 
 class Permission(Base, TimestampMixin):
-    """权限表"""
+    """权限表（支持动态菜单）"""
     __tablename__ = "permission"
 
     permission_code: Mapped[str] = mapped_column(
@@ -64,9 +64,25 @@ class Permission(Base, TimestampMixin):
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[bool] = mapped_column(Boolean, default=True)
 
+    # ========== 菜单相关字段 ==========
+    parent_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("permission.id", ondelete="SET NULL"),
+        doc="父级权限ID，NULL表示顶级菜单"
+    )
+    is_menu: Mapped[bool] = mapped_column(Boolean, default=False, doc="是否显示为菜单")
+    icon: Mapped[Optional[str]] = mapped_column(String(100), doc="菜单图标")
+    route_path: Mapped[Optional[str]] = mapped_column(String(255), doc="前端路由路径")
+    component_path: Mapped[Optional[str]] = mapped_column(String(255), doc="Vue组件路径")
+
     # 关系
     roles: Mapped[List["Role"]] = relationship(
         "Role", secondary="role_permission", back_populates="permissions"
+    )
+    parent: Mapped[Optional["Permission"]] = relationship(
+        "Permission", remote_side="Permission.id", back_populates="children"
+    )
+    children: Mapped[List["Permission"]] = relationship(
+        "Permission", back_populates="parent", cascade="all, delete-orphan"
     )
 
 

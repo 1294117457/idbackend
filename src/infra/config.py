@@ -1,7 +1,8 @@
 """环境配置"""
 from pathlib import Path
 from functools import lru_cache
-from pydantic_settings import BaseSettings
+from typing import List
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 _ENV_FILE = Path(__file__).parent.parent.parent / ".env"
@@ -51,9 +52,21 @@ class Settings(BaseSettings):
     # 文件上传
     MAX_FILE_SIZE: int = 50 * 1024 * 1024  # 50MB
 
-    class Config:
-        env_file = str(_ENV_FILE)
-        env_file_encoding = "utf-8"
+    # 系统账户白名单（环境变量名：SYSTEM_ACCOUNTS，值如：zch 或 zch,admin）
+    system_accounts: str = "admin"
+
+    model_config = SettingsConfigDict(
+        env_file=str(_ENV_FILE),
+        env_file_encoding="utf-8",
+        extra="ignore",  # 忽略额外字段
+    )
+
+    @property
+    def SYSTEM_ACCOUNTS(self) -> List[str]:
+        """解析逗号分隔的账户列表"""
+        if not self.system_accounts:
+            return []
+        return [acc.strip() for acc in self.system_accounts.split(",") if acc.strip()]
 
 
 @lru_cache

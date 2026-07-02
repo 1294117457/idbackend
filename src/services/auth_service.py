@@ -13,7 +13,7 @@ from src.infra.jwt import (
     JWTError,
 )
 from src.infra.redis import RedisCache, get_redis
-from src.models import User
+from src.models import User, Role, UserRole
 
 
 class AuthService:
@@ -25,7 +25,7 @@ class AuthService:
         username: str,
         password: str,
     ) -> User:
-        """注册用户"""
+        """注册用户（自动分配 user 角色）"""
         result = await db.execute(
             select(User).where(User.username == username)
         )
@@ -39,6 +39,17 @@ class AuthService:
             role="user",
         )
         db.add(user)
+        await db.flush()
+
+        # 自动分配 user 角色
+        result = await db.execute(
+            select(Role).where(Role.role_code == "user")
+        )
+        user_role = result.scalar_one_or_none()
+        if user_role:
+            user_role_link = UserRole(user_id=user.id, role_id=user_role.id)
+            db.add(user_role_link)
+
         await db.commit()
         await db.refresh(user)
         return user

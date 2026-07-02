@@ -24,6 +24,10 @@ from src.app.routes.attribute import router as attribute_router
 from src.app.routes.proof import router as proof_router
 from src.app.routes.demand_template import router as demand_template_router
 from src.app.routes.demand_application import router as demand_application_router
+from src.app.routes.role import router as role_router
+from src.app.routes.permission import router as permission_router
+from src.app.routes.menu import router as menu_router
+from src.app.routes.system_config import router as system_config_router
 
 settings = get_settings()
 
@@ -73,6 +77,10 @@ app.include_router(attribute_router)
 app.include_router(proof_router)
 app.include_router(demand_template_router)
 app.include_router(demand_application_router)
+app.include_router(role_router)
+app.include_router(permission_router)
+app.include_router(menu_router)
+app.include_router(system_config_router)
 
 
 if __name__ == "__main__":
