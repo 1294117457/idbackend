@@ -389,7 +389,6 @@ async def init_rbac_data():
                     "description": None,
                     "sort_order": perm_data.get("sort_order", 0),
                     "status": True,
-                    "parent_id": None,
                 }
 
                 result = await db.execute(
@@ -406,42 +405,6 @@ async def init_rbac_data():
                     await db.flush()
                     created_permissions[perm_data["permission_code"]] = permission
                     print(f"[创建] 权限: {perm_data['permission_code']}")
-
-            await db.flush()
-
-            # ========== 3. 更新 parent_id ==========
-            parent_mapping = {
-                "account:view": "account",
-                "account:create": "account",
-                "account:edit": "account",
-                "account:delete": "account",
-                "account:assign_role": "account",
-                "account:role_manage": "account",
-                "account:permission_manage": "account",
-                "system_config:view": "system_config",
-                "system_config:agent": "system_config",
-                "system_config:smtp": "system_config",
-                "system_config:edit": "system_config",
-                "template:view": "template",
-                "template:create": "template",
-                "template:edit": "template",
-                "template:delete": "template",
-                "student:view": "student",
-                "student:edit": "student",
-                "review:pending": "review",
-                "review:approved": "review",
-                "apply:create": "apply",
-                "apply:my": "apply",
-                "apply:view": "apply",
-            }
-
-            for child_code, parent_code in parent_mapping.items():
-                if child_code in created_permissions and parent_code in created_permissions:
-                    child_perm = created_permissions[child_code]
-                    parent_perm = created_permissions[parent_code]
-                    if child_perm.parent_id is None:
-                        child_perm.parent_id = parent_perm.id
-                        print(f"[更新] {child_code} 的 parent_id -> {parent_code}")
 
             await db.commit()
 

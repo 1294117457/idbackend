@@ -58,7 +58,6 @@ async def get_permission_list(
             "description": p.description,
             "sortOrder": p.sort_order,
             "status": 1 if p.status else 0,
-            "parentId": p.parent_id,
             "createdAt": str(p.created_at) if p.created_at else None,
             "updatedAt": str(p.updated_at) if p.updated_at else None,
         } for p in permissions])

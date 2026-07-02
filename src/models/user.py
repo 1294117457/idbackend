@@ -66,21 +66,9 @@ class Permission(Base, TimestampMixin):
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[bool] = mapped_column(Boolean, default=True)
 
-    # 父子关系（支持树形权限分组）
-    parent_id: Mapped[Optional[int]] = mapped_column(
-        ForeignKey("permission.id", ondelete="SET NULL"),
-        doc="父级权限ID，NULL表示顶级"
-    )
-
     # 关系
     roles: Mapped[List["Role"]] = relationship(
         "Role", secondary="role_permission", back_populates="permissions"
-    )
-    parent: Mapped[Optional["Permission"]] = relationship(
-        "Permission", remote_side="Permission.id", back_populates="children"
-    )
-    children: Mapped[List["Permission"]] = relationship(
-        "Permission", back_populates="parent", cascade="all, delete-orphan"
     )
 
 

@@ -636,25 +636,9 @@ class RbacService:
 
     @staticmethod
     async def get_user_menu_tree(db: AsyncSession, user_id: int) -> List[dict]:
-        """获取用户可访问的菜单树
-
-        1. 获取用户权限列表
-        2. 管理员返回完整菜单
-        3. 普通用户根据权限过滤
-
-        Args:
-            db: 数据库会话
-            user_id: 用户ID
-
-        Returns:
-            菜单树列表
-        """
+        """获取用户可访问的权限列表（按 sort_order 排序）"""
         from src.models.user import Permission
 
-        # 1. 获取用户权限
-        user_permissions = await RbacService.get_user_permissions(db, user_id)
-
-        # 2. 查询所有启用的权限
         result = await db.execute(
             select(Permission)
             .where(Permission.status == True)
@@ -662,55 +646,16 @@ class RbacService:
         )
         permissions = result.scalars().all()
 
-        # 3. 构建菜单树
-        return RbacService._build_menu_tree(list(permissions))
-
-    @staticmethod
-    def _build_menu_tree(permissions: List["Permission"]) -> List[dict]:
-        """构建菜单树
-
-        Args:
-            permissions: 权限列表
-
-        Returns:
-            树形菜单列表
-        """
-        from src.models.user import Permission
-
-        permission_dict = {p.id: p for p in permissions}
-        tree = []
-
-        for p in permissions:
-            if p.parent_id is None:
-                tree.append(RbacService._permission_to_menu_dict(p, permission_dict))
-
-        return tree
-
-    @staticmethod
-    def _permission_to_menu_dict(permission: "Permission", permission_dict: dict) -> dict:
-        """将权限转换为菜单字典
-
-        Args:
-            permission: 权限对象
-            permission_dict: 权限字典 {id: permission}
-
-        Returns:
-            菜单字典
-        """
-        children = [
-            RbacService._permission_to_menu_dict(p, permission_dict)
-            for p in permission_dict.values()
-            if p.parent_id == permission.id
+        return [
+            {
+                "id": p.id,
+                "permissionCode": p.code,
+                "permissionName": p.name,
+                "routePath": p.route_path,
+                "sortOrder": p.sort_order,
+            }
+            for p in permissions
         ]
-
-        return {
-            "id": permission.id,
-            "permissionCode": permission.code,
-            "permissionName": permission.name,
-            "routePath": permission.route_path,
-            "sortOrder": permission.sort_order,
-            "children": sorted(children, key=lambda x: x.get("sortOrder", 0)) if children else [],
-        }
 
     # ==================== 辅助方法 ====================
 
@@ -750,12 +695,10 @@ class RbacService:
 
     @staticmethod
     async def _reload_permission_map():
-        """重载权限中间件的 route_path -> code 映射"""
+        """清除 Redis 权限路径缓存，下次请求时自动从 DB 重建"""
         try:
             from src.app.middleware.permission_middleware import PermissionMiddleware
-            from src.infra.database import AsyncSessionLocal
-            async with AsyncSessionLocal() as session:
-                await PermissionMiddleware.reload_permission_map(session)
+            await PermissionMiddleware.invalidate_cache()
         except Exception as e:
             import logging
-            logging.warning(f"重载权限映射失败: {e}")
+            logging.warning(f"清除权限缓存失败: {e}")

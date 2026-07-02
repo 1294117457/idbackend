@@ -44,15 +44,6 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[idpython] 数据库初始化失败: {e}")
 
-    # 加载权限映射到中间件
-    try:
-        from src.infra.database import AsyncSessionLocal
-        async with AsyncSessionLocal() as session:
-            await PermissionMiddleware.load_permission_map(session)
-        print("[idpython] 权限映射加载完成")
-    except Exception as e:
-        print(f"[idpython] 权限映射加载失败: {e}")
-
     yield
 
     print("[idpython] 关闭中...")
