@@ -1,11 +1,12 @@
 """迁移脚本：规范化 permission 表结构
 
-将数据库字段对齐到最新模型：
-- permission_code → code（重命名）
-- permission_name → name（重命名）
+将数据库字段对齐到当前模型：
+- code → permission_code（重命名）
+- name → permission_name（重命名）
+- route_path → api_path（重命名）
 - 删除：module, is_menu, icon, component_path
 
-最终保留字段：id, code, name, route_path, description, sort_order, status, created_at, updated_at
+最终保留字段：id, permission_code, permission_name, api_path, description, sort_order, status, created_at, updated_at
 
 执行前请备份数据库！
 """
@@ -40,21 +41,29 @@ def migrate():
         columns = get_columns(conn)
         print(f"当前字段: {columns}")
 
-        # 1. 重命名 permission_code -> code
-        if 'permission_code' in columns and 'code' not in columns:
-            conn.execute(text("ALTER TABLE permission RENAME COLUMN permission_code TO code"))
-            print("重命名: permission_code -> code")
-        elif 'code' in columns:
-            print("code 字段已存在，跳过重命名")
+        # 1. 重命名旧字段到当前模型字段
+        if 'code' in columns and 'permission_code' not in columns:
+            conn.execute(text("ALTER TABLE permission RENAME COLUMN code TO permission_code"))
+            print("重命名: code -> permission_code")
+        elif 'permission_code' in columns:
+            print("permission_code 字段已存在，跳过重命名")
 
-        # 2. 重命名 permission_name -> name
-        if 'permission_name' in columns and 'name' not in columns:
-            conn.execute(text("ALTER TABLE permission RENAME COLUMN permission_name TO name"))
-            print("重命名: permission_name -> name")
-        elif 'name' in columns:
-            print("name 字段已存在，跳过重命名")
+        # 2. 重命名 name -> permission_name
+        if 'name' in columns and 'permission_name' not in columns:
+            conn.execute(text("ALTER TABLE permission RENAME COLUMN name TO permission_name"))
+            print("重命名: name -> permission_name")
+        elif 'permission_name' in columns:
+            print("permission_name 字段已存在，跳过重命名")
 
-        # 3. 删除多余字段
+        # 3. route_path -> api_path
+        columns = get_columns(conn)
+        if 'route_path' in columns and 'api_path' not in columns:
+            conn.execute(text("ALTER TABLE permission RENAME COLUMN route_path TO api_path"))
+            print("重命名: route_path -> api_path")
+        elif 'api_path' in columns:
+            print("api_path 字段已存在，跳过重命名")
+
+        # 4. 删除多余字段
         columns = get_columns(conn)  # 重新读取（重命名后字段名变了）
         to_drop = ['module', 'is_menu', 'icon', 'component_path']
         for col in to_drop:
@@ -80,13 +89,17 @@ def rollback():
     with sync_engine.connect() as conn:
         columns = get_columns(conn)
 
-        if 'code' in columns and 'permission_code' not in columns:
-            conn.execute(text("ALTER TABLE permission RENAME COLUMN code TO permission_code"))
-            print("回滚: code -> permission_code")
+        if 'permission_code' in columns and 'code' not in columns:
+            conn.execute(text("ALTER TABLE permission RENAME COLUMN permission_code TO code"))
+            print("回滚: permission_code -> code")
 
-        if 'name' in columns and 'permission_name' not in columns:
-            conn.execute(text("ALTER TABLE permission RENAME COLUMN name TO permission_name"))
-            print("回滚: name -> permission_name")
+        if 'permission_name' in columns and 'name' not in columns:
+            conn.execute(text("ALTER TABLE permission RENAME COLUMN permission_name TO name"))
+            print("回滚: permission_name -> name")
+
+        if 'api_path' in columns and 'route_path' not in columns:
+            conn.execute(text("ALTER TABLE permission RENAME COLUMN api_path TO route_path"))
+            print("回滚: api_path -> route_path")
 
         conn.execute(text("ALTER TABLE permission ADD COLUMN IF NOT EXISTS module VARCHAR(50) NOT NULL DEFAULT 'default'"))
         conn.execute(text("ALTER TABLE permission ADD COLUMN IF NOT EXISTS is_menu BOOLEAN DEFAULT FALSE"))

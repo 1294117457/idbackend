@@ -88,7 +88,7 @@ class AuthService:
         # 获取权限
         if is_system:
             permissions = ["*"]
-            roles = ["system"]
+            roles = ["super_admin"]
         else:
             roles = user_roles
             permissions = await RbacService.get_user_permissions(db, user.id)
@@ -133,11 +133,11 @@ class AuthService:
         # 1. 白名单用户直接允许
         if RbacService._is_admin(user.username):
             permissions = ["*"]
-            roles = ["system"]
+            roles = ["super_admin"]
         else:
             # 2. 检查是否有管理端登录权限
             perms = await RbacService.get_user_permissions(db, user.id)
-            if "admin:login" not in perms and "*" not in perms:
+            if not await RbacService.has_any_role(db, user.id, "super_admin", "admin", "reviewer"):
                 raise ValueError("无管理端登录权限")
             permissions = perms
             roles = await RbacService.get_user_roles(db, user.id)

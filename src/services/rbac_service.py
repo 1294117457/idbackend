@@ -30,6 +30,8 @@ class RbacService:
     CACHE_TTL = 30  # 缓存过期时间(分钟)
     USER_ROLES_KEY = "rbac:user:roles:"
     USER_PERMS_KEY = "rbac:user:perms:"
+    # API 权限映射缓存 Key 前缀（与 PermissionMiddleware 保持一致）
+    API_PERM_KEY_PREFIX = "rbac:api:"
 
     # ========== 缓存键 ==========
 
@@ -113,7 +115,7 @@ class RbacService:
 
         # 查数据库
         result = await db.execute(
-            select(Permission.code)
+            select(Permission.permission_code)
             .join(RolePermission, Permission.id == RolePermission.permission_id)
             .join(UserRole, RolePermission.role_id == UserRole.role_id)
             .where(UserRole.user_id == user_id)
@@ -188,6 +190,13 @@ class RbacService:
         redis = await get_redis()
         await redis.delete(f"{RbacService.USER_ROLES_KEY}{user_id}")
         await redis.delete(f"{RbacService.USER_PERMS_KEY}{user_id}")
+
+    @staticmethod
+    async def clear_api_cache(api_path: str):
+        """清除指定接口的权限缓存"""
+        redis = await get_redis()
+        cache_key = f"{RbacService.API_PERM_KEY_PREFIX}{api_path}"
+        await redis.delete(cache_key)
 
     # ==================== 角色管理 ====================
 
@@ -389,7 +398,7 @@ class RbacService:
             权限对象，不存在则返回 None
         """
         result = await db.execute(
-            select(Permission).where(Permission.code == code)
+            select(Permission).where(Permission.permission_code == code)
         )
         return result.scalar_one_or_none()
 
@@ -420,9 +429,9 @@ class RbacService:
             raise ValueError(f"权限代码已存在: {code}")
 
         permission = Permission(
-            code=code,
-            name=name,
-            route_path=route_path,
+            permission_code=code,
+            permission_name=name,
+            api_path=route_path,
             description=description,
             sort_order=sort_order,
             status=True,
@@ -465,9 +474,9 @@ class RbacService:
             return None
 
         if name is not None:
-            permission.name = name
+            permission.permission_name = name
         if route_path is not None:
-            permission.route_path = route_path
+            permission.api_path = route_path
         if description is not None:
             permission.description = description
         if sort_order is not None:
@@ -649,9 +658,9 @@ class RbacService:
         return [
             {
                 "id": p.id,
-                "permissionCode": p.code,
-                "permissionName": p.name,
-                "routePath": p.route_path,
+                "permissionCode": p.permission_code,
+                "permissionName": p.permission_name,
+                "routePath": p.api_path,
                 "sortOrder": p.sort_order,
             }
             for p in permissions

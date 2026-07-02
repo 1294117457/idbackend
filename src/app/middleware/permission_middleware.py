@@ -13,6 +13,9 @@ from src.infra.redis import get_redis
 _PUBLIC = "__public__"  # 路径无需权限的 Redis 哨兵值
 _REDIS_TTL = 3600  # 缓存 1 小时，兜底防脏数据永久存活
 
+# Redis Key 前缀（与设计文档保持一致）
+_API_PERM_KEY_PREFIX = "rbac:api:"
+
 
 class PermissionMiddleware(BaseHTTPMiddleware):
 
@@ -24,12 +27,17 @@ class PermissionMiddleware(BaseHTTPMiddleware):
     }
 
     @staticmethod
+    def _build_api_key(path: str) -> str:
+        """构建接口权限映射的 Redis Key（与设计文档一致）"""
+        return f"{_API_PERM_KEY_PREFIX}{path}"
+
+    @staticmethod
     async def get_required_permission(path: str) -> Optional[str]:
         """查 Redis 获取路径所需权限码；未命中则查 DB 并回写 Redis"""
         from src.infra.database import AsyncSessionLocal
 
         redis = await get_redis()
-        key = f"perm:path:{path}"
+        key = PermissionMiddleware._build_api_key(path)
 
         cached = await redis.get(key)
         if cached is not None:
@@ -38,8 +46,8 @@ class PermissionMiddleware(BaseHTTPMiddleware):
         # Redis miss → 查 DB 所有有效绑定
         async with AsyncSessionLocal() as db:
             result = await db.execute(
-                select(Permission.route_path, Permission.code)
-                .where(Permission.route_path.isnot(None))
+                select(Permission.api_path, Permission.permission_code)
+                .where(Permission.api_path.isnot(None))
                 .where(Permission.status == True)
             )
             rows = result.all()
@@ -75,7 +83,7 @@ class PermissionMiddleware(BaseHTTPMiddleware):
     async def invalidate_cache():
         """清除所有路径权限缓存（权限变更时调用）"""
         redis = await get_redis()
-        async for key in redis.scan_iter("perm:path:*"):
+        async for key in redis.scan_iter(f"{_API_PERM_KEY_PREFIX}*"):
             await redis.delete(key)
 
     async def dispatch(self, request: Request, call_next):

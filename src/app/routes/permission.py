@@ -23,9 +23,9 @@ router = APIRouter(prefix="/api/system/permission", tags=["权限管理"])
 
 class PermissionCreate(BaseModel):
     """创建权限请求"""
-    code: str
-    name: str
-    routePath: Optional[str] = None
+    permissionCode: str
+    permissionName: str
+    apiPath: Optional[str] = None
     description: Optional[str] = None
     sortOrder: int = 0
 
@@ -33,8 +33,9 @@ class PermissionCreate(BaseModel):
 class PermissionUpdate(BaseModel):
     """更新权限请求"""
     id: int
-    name: Optional[str] = None
-    routePath: Optional[str] = None
+    permissionCode: Optional[str] = None
+    permissionName: Optional[str] = None
+    apiPath: Optional[str] = None
     description: Optional[str] = None
     sortOrder: Optional[int] = None
     status: Optional[int] = None
@@ -52,9 +53,9 @@ async def get_permission_list(
         permissions = await RbacService.get_all_permissions(db)
         return success_response([{
             "id": p.id,
-            "code": p.code,
-            "name": p.name,
-            "routePath": p.route_path,
+            "permissionCode": p.permission_code,
+            "permissionName": p.permission_name,
+            "apiPath": p.api_path,
             "description": p.description,
             "sortOrder": p.sort_order,
             "status": 1 if p.status else 0,
@@ -75,17 +76,17 @@ async def create_permission(
     try:
         permission = await RbacService.create_permission(
             db=db,
-            code=data.code,
-            name=data.name,
-            route_path=data.routePath,
+            code=data.permissionCode,
+            name=data.permissionName,
+            route_path=data.apiPath,
             description=data.description,
             sort_order=data.sortOrder,
         )
         return success_response({
             "id": permission.id,
-            "code": permission.code,
-            "name": permission.name,
-            "routePath": permission.route_path,
+            "permissionCode": permission.permission_code,
+            "permissionName": permission.permission_name,
+            "apiPath": permission.api_path,
             "description": permission.description,
             "sortOrder": permission.sort_order,
             "status": 1 if permission.status else 0,
@@ -107,8 +108,8 @@ async def update_permission(
         permission = await RbacService.update_permission(
             db=db,
             permission_id=data.id,
-            name=data.name,
-            route_path=data.routePath,
+            name=data.permissionName,
+            route_path=data.apiPath,
             description=data.description,
             sort_order=data.sortOrder,
             status=bool(data.status) if data.status is not None else None,

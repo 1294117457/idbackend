@@ -80,7 +80,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # 5. system_user 自动授予全部权限
         if RbacService._is_admin(user["username"]):
             user["permissions"] = ["*"]
-            user["roles"] = ["system"]
+            user["roles"] = ["super_admin"]
 
         # 6. 设置到 ContextVar
         set_current_user(user)

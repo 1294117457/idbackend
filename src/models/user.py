@@ -55,16 +55,30 @@ class Permission(Base, TimestampMixin):
     """权限表"""
     __tablename__ = "permission"
 
-    code: Mapped[str] = mapped_column(
+    permission_code: Mapped[str] = mapped_column(
         String(100), unique=True, nullable=False, doc="权限编码，如 user:read"
     )
-    name: Mapped[str] = mapped_column(String(100), nullable=False, doc="权限名称")
-    route_path: Mapped[Optional[str]] = mapped_column(
+    permission_name: Mapped[str] = mapped_column(
+        String(100), nullable=False, doc="权限名称"
+    )
+    api_path: Mapped[Optional[str]] = mapped_column(
         String(255), nullable=True, doc="对应后端接口路径"
     )
     description: Mapped[Optional[str]] = mapped_column(String(255))
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    @property
+    def code(self) -> str:
+        return self.permission_code
+
+    @property
+    def name(self) -> str:
+        return self.permission_name
+
+    @property
+    def route_path(self) -> Optional[str]:
+        return self.api_path
 
     # 关系
     roles: Mapped[List["Role"]] = relationship(

@@ -99,9 +99,9 @@ async def get_role_detail(
             "updatedAt": str(role.updated_at) if role.updated_at else None,
             "permissions": [{
                 "id": p.id,
-                "permissionCode": p.code,
-                "permissionName": p.name,
-                "routePath": p.route_path,
+                "permissionCode": p.permission_code,
+                "permissionName": p.permission_name,
+                "routePath": p.api_path,
                 "description": p.description,
             } for p in permissions]
         })
@@ -194,9 +194,9 @@ async def get_role_permissions(
         permissions = await RbacService.get_role_permissions(db, role_id)
         return success_response([{
             "id": p.id,
-            "permissionCode": p.code,
-            "permissionName": p.name,
-            "routePath": p.route_path,
+            "permissionCode": p.permission_code,
+            "permissionName": p.permission_name,
+            "routePath": p.api_path,
             "description": p.description,
             "sortOrder": p.sort_order,
             "status": 1 if p.status else 0,
