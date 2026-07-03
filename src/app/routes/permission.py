@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 from typing import Optional, List
 
-from src.app.deps import get_db, CurrentUser, require_admin
+from src.app.deps import get_db, CurrentUser, get_current_user
 from src.app.response import success_response, error_response
 from src.services.rbac_service import RbacService
 
@@ -45,7 +45,7 @@ class PermissionUpdate(BaseModel):
 
 @router.get("/list")
 async def get_permission_list(
-    _: CurrentUser = Depends(require_admin),
+    _: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """获取所有权限列表"""
@@ -69,7 +69,7 @@ async def get_permission_list(
 @router.post("/create")
 async def create_permission(
     data: PermissionCreate,
-    _: CurrentUser = Depends(require_admin),
+    _: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """创建权限"""
@@ -100,7 +100,7 @@ async def create_permission(
 @router.put("/update")
 async def update_permission(
     data: PermissionUpdate,
-    _: CurrentUser = Depends(require_admin),
+    _: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """更新权限"""
@@ -124,7 +124,7 @@ async def update_permission(
 @router.delete("/{permission_id}")
 async def delete_permission(
     permission_id: int,
-    _: CurrentUser = Depends(require_admin),
+    _: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """删除权限"""
@@ -141,7 +141,7 @@ async def delete_permission(
 
 @router.get("/interfaces")
 async def get_all_interfaces(
-    _: CurrentUser = Depends(require_admin),
+    _: CurrentUser = Depends(get_current_user),
 ):
     """获取所有可用的 API 接口列表"""
     from src.main import app
@@ -214,7 +214,7 @@ def _extract_permission_code(path: str, method: str) -> str:
 
 @router.post("/scan-interfaces")
 async def scan_interfaces(
-    _: CurrentUser = Depends(require_admin),
+    _: CurrentUser = Depends(get_current_user),
 ):
     """扫描并生成权限代码建议
 

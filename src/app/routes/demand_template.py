@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 from typing import Optional, List
 
-from src.app.deps import get_db, get_current_user, CurrentUser, require_admin
+from src.app.deps import get_db, get_current_user, CurrentUser
 from src.app.response import success_response, error_response
 from src.services.demand_service import DemandTemplateService
 
@@ -43,7 +43,7 @@ async def get_active(
 
 @router.get("/list")
 async def get_all(
-    user: CurrentUser = Depends(require_admin),
+    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """管理端 - 获取所有模板"""
@@ -62,7 +62,7 @@ async def get_all(
 @router.post("/create")
 async def create(
     data: DemandTemplateCreate,
-    user: CurrentUser = Depends(require_admin),
+    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """创建需求模板"""
@@ -81,7 +81,7 @@ async def create(
 async def update(
     template_id: int = Path(..., description="模板ID"),
     data: DemandTemplateUpdate = ...,
-    user: CurrentUser = Depends(require_admin),
+    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """更新需求模板"""
@@ -106,7 +106,7 @@ async def update(
 @router.delete("/{template_id}")
 async def delete(
     template_id: int = Path(..., description="模板ID"),
-    user: CurrentUser = Depends(require_admin),
+    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """删除需求模板"""

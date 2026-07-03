@@ -195,7 +195,9 @@ class RbacService:
     async def clear_api_cache(api_path: str):
         """清除指定接口的权限缓存"""
         redis = await get_redis()
-        cache_key = f"{RbacService.API_PERM_KEY_PREFIX}{api_path}"
+        # 与 PermissionMiddleware 中的 key 保持一致：
+        # rbac:api:perm:{path}
+        cache_key = f"rbac:api:perm:{api_path}"
         await redis.delete(cache_key)
 
     # ==================== 角色管理 ====================
@@ -440,8 +442,9 @@ class RbacService:
         await db.commit()
         await db.refresh(permission)
 
-        # 重载中间件权限映射
-        await RbacService._reload_permission_map()
+        # 按 path 单删 api 权限缓存
+        if permission.api_path:
+            await RbacService.clear_api_cache(permission.api_path)
 
         return permission
 
@@ -473,6 +476,8 @@ class RbacService:
         if not permission:
             return None
 
+        api_path_before = permission.api_path
+
         if name is not None:
             permission.permission_name = name
         if route_path is not None:
@@ -490,8 +495,11 @@ class RbacService:
         # 清除相关用户缓存
         await RbacService._clear_permission_users_cache(db, permission_id)
 
-        # 重载中间件权限映射
-        await RbacService._reload_permission_map()
+        # 按 path 单删 api 权限缓存（删除旧 path / 新增新 path）
+        if api_path_before:
+            await RbacService.clear_api_cache(api_path_before)
+        if permission.api_path and permission.api_path != api_path_before:
+            await RbacService.clear_api_cache(permission.api_path)
 
         return permission
 
@@ -510,6 +518,8 @@ class RbacService:
         if not permission:
             return False
 
+        api_path = permission.api_path
+
         # 清除相关用户缓存
         await RbacService._clear_permission_users_cache(db, permission_id)
 
@@ -522,8 +532,9 @@ class RbacService:
         await db.delete(permission)
         await db.commit()
 
-        # 重载中间件权限映射
-        await RbacService._reload_permission_map()
+        # 按 path 单删 api 权限缓存
+        if api_path:
+            await RbacService.clear_api_cache(api_path)
 
         return True
 
@@ -701,13 +712,3 @@ class RbacService:
         # 查找所有拥有这些角色的用户
         for role_id in role_ids:
             await RbacService._clear_role_users_cache(db, role_id)
-
-    @staticmethod
-    async def _reload_permission_map():
-        """清除 Redis 权限路径缓存，下次请求时自动从 DB 重建"""
-        try:
-            from src.app.middleware.permission_middleware import PermissionMiddleware
-            await PermissionMiddleware.invalidate_cache()
-        except Exception as e:
-            import logging
-            logging.warning(f"清除权限缓存失败: {e}")

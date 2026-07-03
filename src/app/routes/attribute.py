@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 from typing import Optional, List
 
-from src.app.deps import get_db, CurrentUser, require_admin
+from src.app.deps import get_db, CurrentUser, get_current_user
 from src.app.response import success_response, error_response
 from src.services.attribute_service import AttributeService
 
@@ -41,7 +41,7 @@ def format_attr(attr) -> dict:
 
 @router.get("/list")
 async def list_attributes(
-    user: CurrentUser = Depends(require_admin),
+    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """获取所有启用的属性"""
@@ -52,7 +52,7 @@ async def list_attributes(
 @router.get("/list-by-type/{type}")
 async def list_by_type(
     type: str = Path(..., description="属性类型 CONDITION/TRANSFORM"),
-    user: CurrentUser = Depends(require_admin),
+    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """根据类型获取属性"""
@@ -63,7 +63,7 @@ async def list_by_type(
 @router.get("/list-by-code/{code}")
 async def list_by_code(
     code: str = Path(..., description="属性编码"),
-    user: CurrentUser = Depends(require_admin),
+    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """根据编码获取属性"""
@@ -74,7 +74,7 @@ async def list_by_code(
 @router.get("/{attribute_id}")
 async def get_detail(
     attribute_id: int = Path(..., description="属性ID"),
-    user: CurrentUser = Depends(require_admin),
+    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """获取属性详情"""
@@ -87,7 +87,7 @@ async def get_detail(
 @router.post("/create")
 async def create(
     data: RuleAttributeRequest,
-    user: CurrentUser = Depends(require_admin),
+    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """创建属性"""
@@ -112,7 +112,7 @@ async def create(
 async def update(
     attribute_id: int = Path(..., description="属性ID"),
     data: RuleAttributeRequest = ...,
-    user: CurrentUser = Depends(require_admin),
+    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """更新属性"""
@@ -145,7 +145,7 @@ async def update(
 @router.delete("/{attribute_id}")
 async def delete(
     attribute_id: int = Path(..., description="属性ID"),
-    user: CurrentUser = Depends(require_admin),
+    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """删除属性"""

@@ -14,7 +14,6 @@ from starlette.responses import JSONResponse
 
 from src.app.context import set_current_user, clear_current_user
 from src.infra.jwt import verify_token, JWTError
-from src.services.rbac_service import RbacService
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -69,20 +68,13 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 content={"code": 401, "msg": "Token无效"}
             )
 
-        # 4. 构建用户对象
+        # 4. 构建用户对象（仅身份信息；权限/角色由 PermissionMiddleware 实时判定）
         user = {
             "user_id": payload.get("userId"),
             "username": payload.get("username"),
-            "roles": payload.get("roles", [payload.get("role", "user")]),
-            "permissions": payload.get("permissions", []),
         }
 
-        # 5. system_user 自动授予全部权限
-        if RbacService._is_admin(user["username"]):
-            user["permissions"] = ["*"]
-            user["roles"] = ["super_admin"]
-
-        # 6. 设置到 ContextVar
+        # 5. 设置到 ContextVar
         set_current_user(user)
 
         try:

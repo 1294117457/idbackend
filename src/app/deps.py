@@ -1,27 +1,43 @@
-"""依赖注入"""
-from fastapi import Depends, HTTPException, Header, Request
+"""依赖注入
+
+- get_db: 数据库会话
+- get_current_user: 从 ContextVar 提取完整用户信息（由 PermissionMiddleware 设置）
+- CurrentUser: 当前登录用户 dataclass（包含 roles / permissions，不再查 DB）
+- ip_rate_limit: IP 限流
+
+鉴权判定已全部收敛到 PermissionMiddleware，路由层不再需要鉴权类 Depends。
+"""
+from fastapi import Depends, Header, HTTPException, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
-from dataclasses import dataclass, field
-from typing import Optional, List
+from dataclasses import dataclass
+from typing import Optional, List, Dict, Any
 
 from src.infra.database import get_db
 from src.infra.jwt import verify_token, JWTError
-from src.infra.config import get_settings
 from src.infra.redis import get_redis, RedisCache
 
-settings = get_settings()
 security = HTTPBearer(auto_error=False)
 
 
 @dataclass
 class CurrentUser:
-    """当前登录用户"""
+    """当前登录用户（所有字段均从 ContextVar 直接获取，无额外 DB 调用）"""
     user_id: int
     username: str
-    role: str
-    role_codes: List[str] = field(default_factory=list)
-    permissions: List[str] = field(default_factory=list)
+    is_admin: bool = False
+    roles: List[Dict[str, Any]] = None   # [{"role_id": 1, "role_name": "审核员"}, ...]
+    permissions: List[str] = None         # ["system:user:list", ...]
+
+    def __post_init__(self):
+        if self.roles is None:
+            self.roles = []
+        if self.permissions is None:
+            self.permissions = []
+
+    def has_permission(self, code: str) -> bool:
+        """检查是否持有指定权限码（含通配符 *）"""
+        return "*" in self.permissions or code in self.permissions
 
 
 async def get_current_user(
@@ -30,21 +46,21 @@ async def get_current_user(
 ) -> CurrentUser:
     """获取当前登录用户
 
-    优先从 ContextVar 获取（由中间件设置），否则从 Header 解析 JWT
+    优先从 ContextVar 获取（由 PermissionMiddleware 在鉴权链路中设置）；
+    ContextVar 缺失时回退到 Header 解析 JWT（用于中间件异常穿透场景）。
     """
-    # 1. 优先从 ContextVar 获取（由 AuthMiddleware 设置）
-    from src.app.context import get_current_user as get_ctx_user
-    ctx_user = get_ctx_user()
-    if ctx_user:
+    from src.app.context import get_current_user_full
+    ctx = get_current_user_full()
+    if ctx:
         return CurrentUser(
-            user_id=ctx_user.get("user_id"),
-            username=ctx_user.get("username", ""),
-            role=ctx_user.get("roles", ["user"])[0] if ctx_user.get("roles") else "user",
-            role_codes=ctx_user.get("roles", []),
-            permissions=ctx_user.get("permissions", []),
+            user_id=ctx["user_id"],
+            username=ctx["username"],
+            is_admin=ctx.get("is_admin", False),
+            roles=ctx.get("roles", []),
+            permissions=ctx.get("permissions", []),
         )
 
-    # 2. 如果 ContextVar 没有，从 Header 解析 JWT
+    # 兜底：从 JWT token 解析（只含身份信息，不含 roles/permissions）
     token = None
     if authorization and authorization.startswith("Bearer "):
         token = authorization[7:]
@@ -56,79 +72,33 @@ async def get_current_user(
 
     try:
         payload = verify_token(token)
-    except JWTError as e:
+    except JWTError:
         raise HTTPException(status_code=401, detail="Token无效")
 
     return CurrentUser(
-        user_id=payload.get("userId"),
-        username=payload.get("username", payload.get("sub", "")),
-        role=payload.get("role", "user"),
-        role_codes=payload.get("roles", [payload.get("role", "user")]),
-        permissions=payload.get("permissions", []),
+        user_id=payload.get("userId") or payload.get("user_id", 0),
+        username=payload.get("username", ""),
+        is_admin=False,
+        roles=[],
+        permissions=[],
     )
-
-
-def require_role(*allowed_roles: str):
-    """角色权限检查装饰器（支持 SuperAdmin 白名单自动通过）"""
-    async def checker(
-        user: CurrentUser = Depends(get_current_user),
-        db: AsyncSession = Depends(get_db),
-    ) -> CurrentUser:
-        # 从 RbacService 导入放在这里避免循环导入
-        from src.services.rbac_service import RbacService
-
-        # 首先检查是否是管理员（白名单用户自动通过）
-        if await RbacService.is_admin(db, user.user_id):
-            user.role_codes = ["admin"]
-            user.permissions = ["*"]
-            return user
-
-        # 检查角色列表
-        user_roles = await RbacService.get_user_roles(db, user.user_id)
-        user.role_codes = user_roles
-
-        if not any(r in user_roles for r in allowed_roles):
-            raise HTTPException(status_code=403, detail="权限不足")
-        return user
-    return checker
-
-
-def require_permission(*required_permissions: str):
-    """权限检查装饰器（支持 SuperAdmin 白名单自动通过）"""
-    async def checker(
-        user: CurrentUser = Depends(get_current_user),
-        db: AsyncSession = Depends(get_db),
-    ) -> CurrentUser:
-        from src.services.rbac_service import RbacService
-
-        # 首先检查是否是管理员
-        if await RbacService.is_admin(db, user.user_id):
-            user.permissions = ["*"]
-            return user
-
-        # 检查权限列表
-        permissions = await RbacService.get_user_permissions(db, user.user_id)
-        user.permissions = permissions
-
-        if not any(p in permissions for p in required_permissions):
-            raise HTTPException(status_code=403, detail="权限不足")
-        return user
-    return checker
-
-
-# 常用的角色检查
-require_admin = require_role("admin")
-require_reviewer = require_role("reviewer", "admin")
 
 
 def ip_rate_limit(action: str, max_count: int, window_seconds: int):
     """IP 维度限流 Depends 工厂，超限时直接抛 429"""
     async def _check(request: Request):
+        import time as _time
+        import sys
+        t0 = _time.perf_counter()
         client_ip = request.client.host if request.client else "unknown"
         cache = RedisCache(await get_redis())
+        t1 = _time.perf_counter()
         allowed, _ = await cache.rate_limit(
             f"rl:ip:{action}:{client_ip}", max_count=max_count, window_seconds=window_seconds
         )
+        t2 = _time.perf_counter()
+        sys.stderr.write(f"[rate_limit {action}] get_redis={int((t1-t0)*1000)}ms pipeline={int((t2-t1)*1000)}ms\n")
+        sys.stderr.flush()
         if not allowed:
             raise HTTPException(status_code=429, detail="请求过于频繁，请稍后再试")
     return _check

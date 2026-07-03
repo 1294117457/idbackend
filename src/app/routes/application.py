@@ -5,7 +5,7 @@ from sqlalchemy import select, func, and_
 from pydantic import BaseModel
 from typing import Optional, List
 
-from src.app.deps import get_db, get_current_user, CurrentUser, require_reviewer
+from src.app.deps import get_db, get_current_user, CurrentUser
 from src.app.response import success_response, error_response
 from src.services import ApplicationService, TemplateService
 
@@ -132,7 +132,7 @@ async def resubmit_application(
 async def get_pending(
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),
-    _: CurrentUser = Depends(require_reviewer),
+    _: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """获取待审核列表"""
@@ -170,7 +170,7 @@ async def get_pending_applications(
     studentId: Optional[str] = Query(None),
     studentName: Optional[str] = Query(None),
     major: Optional[str] = Query(None),
-    _: CurrentUser = Depends(require_reviewer),
+    _: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """分页获取待审核列表"""
@@ -190,7 +190,7 @@ async def get_audit_history(
     studentId: Optional[str] = Query(None),
     studentName: Optional[str] = Query(None),
     major: Optional[str] = Query(None),
-    _: CurrentUser = Depends(require_reviewer),
+    _: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """分页获取审核历史"""
@@ -206,7 +206,7 @@ async def get_audit_history(
 @router.post("/audit/approve")
 async def approve_application(
     request: AuditRequest,
-    user: CurrentUser = Depends(require_reviewer),
+    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """审核通过"""
@@ -221,7 +221,7 @@ async def approve_application(
 @router.post("/audit/reject")
 async def reject_application(
     request: AuditRequest,
-    user: CurrentUser = Depends(require_reviewer),
+    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """审核驳回"""
@@ -236,7 +236,7 @@ async def reject_application(
 @router.post("/audit/revoke")
 async def revoke_application(
     request: RevokeRequest,
-    user: CurrentUser = Depends(require_reviewer),
+    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """撤销已通过的申请"""

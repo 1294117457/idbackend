@@ -1,13 +1,17 @@
 """FastAPI 应用入口"""
 import sys
 import os
+import time
+import logging
 
 # 添加项目根目录到路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+
+logger = logging.getLogger("uvicorn.access")
 
 from src.infra.config import get_settings
 from src.infra.database import init_db, close_db
@@ -59,6 +63,26 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+
+@app.middleware("http")
+async def log_request_time(request: Request, call_next):
+    """记录每个请求的耗时，超过 500ms 打警告"""
+    import sys
+    start = time.perf_counter()
+    response = await call_next(request)
+    elapsed_ms = (time.perf_counter() - start) * 1000
+    status = response.status_code
+    path = request.url.path
+    line = f"{elapsed_ms:7.0f}ms | {status} | {request.method} {path}\n"
+    if elapsed_ms > 500 or status >= 400:
+        sys.stderr.write("SLOW " + line)
+    else:
+        sys.stdout.write(line)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    return response
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -67,7 +91,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 注册认证和权限中间件（后添加的先执行）
+# 中间件执行顺序：后添加的先执行，所以 AuthMiddleware 在外层（先执行），PermissionMiddleware 在内层（后执行）
+# AuthMiddleware 负责解析 JWT 并设置 user_id/username 到 ContextVar
+# PermissionMiddleware 负责读 ContextVar 身份信息 + 查 DB 鉴权
+# 如果顺序颠倒（PermissionMiddleware 在外层），则 PermissionMiddleware 先执行时 AuthMiddleware 还未设置 ContextVar
 app.add_middleware(PermissionMiddleware)
 app.add_middleware(AuthMiddleware)
 
@@ -97,4 +124,6 @@ if __name__ == "__main__":
         host=settings.HOST,
         port=settings.PORT,
         reload=settings.DEBUG,
+        access_log=True,
+        log_level="info",
     )

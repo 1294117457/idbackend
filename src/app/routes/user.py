@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 from typing import Optional
 
-from src.app.deps import get_db, get_current_user, CurrentUser, require_admin
+from src.app.deps import get_db, get_current_user, CurrentUser
 from src.app.response import success_response, error_response
 from src.services import UserService
 from src.services.rbac_service import RbacService
@@ -230,7 +230,7 @@ async def get_my_roles(
 @router.get("/{user_id}/roles")
 async def get_user_roles(
     user_id: int,
-    _: CurrentUser = Depends(require_admin),
+    _: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """获取用户角色 (管理员)"""
@@ -247,7 +247,7 @@ async def get_user_roles(
 async def assign_user_roles(
     user_id: int,
     body: dict = Body(...),
-    _: CurrentUser = Depends(require_admin),
+    _: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """分配用户角色 (管理员)"""
@@ -267,7 +267,7 @@ async def list_users(
     pageSize: int = Query(20, ge=1, le=100, alias="pageSize"),
     username: Optional[str] = Query(None),
     fullName: Optional[str] = Query(None, alias="fullName"),
-    _: CurrentUser = Depends(require_admin),
+    _: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """获取用户列表 (管理员)"""
@@ -301,7 +301,7 @@ async def list_users(
 @router.delete("/admin/{user_id}")
 async def delete_user_admin(
     user_id: int,
-    _: CurrentUser = Depends(require_admin),
+    _: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """删除用户 (管理员)"""
@@ -315,7 +315,7 @@ async def delete_user_admin(
 async def update_user_status_admin(
     user_id: int,
     request: UpdateUserStatusRequest,
-    _: CurrentUser = Depends(require_admin),
+    _: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """更新用户状态 (管理员)"""
@@ -328,7 +328,7 @@ async def update_user_status_admin(
 @router.post("/admin/create")
 async def admin_create_user(
     request: CreateUserRequest,
-    _: CurrentUser = Depends(require_admin),
+    _: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """创建用户 (管理员)"""
@@ -359,7 +359,7 @@ async def admin_create_user(
 @router.post("/admin/batch-create")
 async def admin_batch_create_users(
     request: BatchCreateUserRequest,
-    _: CurrentUser = Depends(require_admin),
+    _: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """批量创建用户 (管理员)"""

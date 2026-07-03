@@ -40,19 +40,20 @@ def verify_password(plain: str, hashed: str) -> bool:
 def create_token(
     user_id: int,
     username: str,
-    role: str,
+    role: str = "user",
     roles: List[str] = None,
     permissions: List[str] = None,
     expires_hours: Optional[int] = None,
 ) -> str:
     """创建 access token (短期)
 
+    最小化 payload：仅含身份信息 + 过期。
+    权限/角色不在 token 内携带，由 PermissionMiddleware + Redis 实时判定。
+
     Args:
         user_id: 用户ID
         username: 用户名
-        role: 主角色
-        roles: 角色列表
-        permissions: 权限列表
+        role/roles/permissions: 已废弃，保留仅为兼容旧调用方，不再写入 payload
         expires_hours: 过期时间（小时）
     """
     expire = datetime.utcnow() + timedelta(
@@ -61,9 +62,6 @@ def create_token(
     payload = {
         "userId": user_id,
         "username": username,
-        "role": role,
-        "roles": roles or [role],
-        "permissions": permissions or [],
         "type": "access",
         "exp": expire,
     }
@@ -73,10 +71,17 @@ def create_token(
 def create_refresh_token(
     user_id: int,
     username: str,
-    role: str,
+    role: str = "user",
     expires_days: Optional[int] = None,
 ) -> str:
-    """创建 refresh token (长期)，包含 jti 便于撤销"""
+    """创建 refresh token (长期)，包含 jti 便于撤销
+
+    Args:
+        user_id: 用户ID
+        username: 用户名
+        role: 已废弃，仅保留兼容
+        expires_days: 过期时间（天）
+    """
     import uuid
     jti = str(uuid.uuid4())
     expire = datetime.utcnow() + timedelta(
@@ -85,7 +90,6 @@ def create_refresh_token(
     payload = {
         "userId": user_id,
         "username": username,
-        "role": role,
         "type": "refresh",
         "jti": jti,
         "exp": expire,

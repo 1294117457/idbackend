@@ -15,7 +15,6 @@ from pydantic import BaseModel
 from typing import Optional
 
 from src.app.deps import get_db, get_current_user, CurrentUser
-from src.services.rbac_service import RbacService
 from src.app.response import success_response, error_response
 
 router = APIRouter(prefix="/api/system/config", tags=["系统配置"])
@@ -41,22 +40,12 @@ class SystemConfigUpdate(BaseModel):
     smtp: Optional[SmtpConfig] = None
 
 
-def require_super_admin(current_user: CurrentUser, db: AsyncSession):
-    """权限检查：仅 super_admin 可访问"""
-    if not RbacService._is_admin(current_user.username):
-        # 也检查 super_admin 角色
-        raise HTTPException(status_code=403, detail="需要超级管理员权限")
-
-
 @router.get("")
 async def get_config(
     current_user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """获取系统配置"""
-    if not RbacService._is_admin(current_user.username):
-        raise HTTPException(status_code=403, detail="需要超级管理员权限")
-
     try:
         from src.infra.config import get_settings
         settings = get_settings()
@@ -86,9 +75,6 @@ async def get_agent_config(
     db: AsyncSession = Depends(get_db),
 ):
     """获取 Agent 配置"""
-    if not RbacService._is_admin(current_user.username):
-        raise HTTPException(status_code=403, detail="需要超级管理员权限")
-
     try:
         from src.infra.config import get_settings
         settings = get_settings()
@@ -110,9 +96,6 @@ async def update_agent_config(
     db: AsyncSession = Depends(get_db),
 ):
     """更新 Agent 配置"""
-    if not RbacService._is_admin(current_user.username):
-        raise HTTPException(status_code=403, detail="需要超级管理员权限")
-
     try:
         # 更新 .env 文件
         env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), ".env")
@@ -152,9 +135,6 @@ async def get_smtp_config(
     db: AsyncSession = Depends(get_db),
 ):
     """获取 SMTP 配置"""
-    if not RbacService._is_admin(current_user.username):
-        raise HTTPException(status_code=403, detail="需要超级管理员权限")
-
     try:
         from src.infra.config import get_settings
         settings = get_settings()
@@ -177,9 +157,6 @@ async def update_smtp_config(
     db: AsyncSession = Depends(get_db),
 ):
     """更新 SMTP 配置"""
-    if not RbacService._is_admin(current_user.username):
-        raise HTTPException(status_code=403, detail="需要超级管理员权限")
-
     try:
         # 更新 .env 文件
         env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), ".env")

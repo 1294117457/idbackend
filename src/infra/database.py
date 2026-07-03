@@ -20,7 +20,7 @@ def _make_async_url(url: str) -> str:
 # 异步引擎 (主要使用)
 async_engine = create_async_engine(
     _make_async_url(settings.DATABASE_URL),
-    echo=settings.DEBUG,
+    echo=False,
     pool_pre_ping=True,
     pool_size=10,
     max_overflow=20,

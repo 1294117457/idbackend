@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 from typing import Optional, List
 
-from src.app.deps import get_db, get_current_user, CurrentUser, require_admin
+from src.app.deps import get_db, get_current_user, CurrentUser
 from src.app.response import success_response, error_response
 from src.services.rbac_service import RbacService
 
@@ -51,7 +51,7 @@ class RolePermissionAssign(BaseModel):
 
 @router.get("/list")
 async def get_role_list(
-    _: CurrentUser = Depends(require_admin),
+    _: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """获取所有角色列表"""
@@ -75,7 +75,7 @@ async def get_role_list(
 @router.get("/{role_id}")
 async def get_role_detail(
     role_id: int,
-    _: CurrentUser = Depends(require_admin),
+    _: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """获取角色详情"""
@@ -112,7 +112,7 @@ async def get_role_detail(
 @router.post("/create")
 async def create_role(
     data: RoleCreate,
-    _: CurrentUser = Depends(require_admin),
+    _: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """创建角色"""
@@ -142,7 +142,7 @@ async def create_role(
 @router.put("/update")
 async def update_role(
     data: RoleUpdate,
-    _: CurrentUser = Depends(require_admin),
+    _: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """更新角色"""
@@ -166,7 +166,7 @@ async def update_role(
 @router.delete("/{role_id}")
 async def delete_role(
     role_id: int,
-    _: CurrentUser = Depends(require_admin),
+    _: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """删除角色"""
@@ -186,7 +186,7 @@ async def delete_role(
 @router.get("/{role_id}/permissions")
 async def get_role_permissions(
     role_id: int,
-    _: CurrentUser = Depends(require_admin),
+    _: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """获取角色的权限列表"""
@@ -208,7 +208,7 @@ async def get_role_permissions(
 @router.post("/assignPermissions")
 async def assign_permissions_to_role(
     data: RolePermissionAssign,
-    _: CurrentUser = Depends(require_admin),
+    _: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """为角色分配权限"""

@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 from typing import Optional
 
-from src.app.deps import get_db, CurrentUser, require_reviewer
+from src.app.deps import get_db, CurrentUser, get_current_user
 from src.app.response import success_response, error_response
 from src.services.proof_service import ProofService, get_proof_status_text
 
@@ -27,7 +27,7 @@ class ResubmitProofRequest(BaseModel):
 @router.get("/list/{application_id}")
 async def list_proofs(
     application_id: int = Path(..., description="申请ID"),
-    user: CurrentUser = Depends(require_reviewer),
+    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """获取申请的证明材料列表"""
@@ -56,7 +56,7 @@ async def list_proofs(
 async def approve(
     proof_id: int = Path(..., description="证明材料ID"),
     comment: Optional[str] = Query(None),
-    user: CurrentUser = Depends(require_reviewer),
+    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """审核证明材料通过"""
@@ -73,7 +73,7 @@ async def approve(
 async def reject(
     proof_id: int = Path(..., description="证明材料ID"),
     comment: Optional[str] = Query(None),
-    user: CurrentUser = Depends(require_reviewer),
+    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """审核证明材料驳回"""
@@ -90,7 +90,7 @@ async def reject(
 async def add_proof(
     application_id: int = Path(..., description="申请ID"),
     data: AddProofRequest = ...,
-    user: CurrentUser = Depends(require_reviewer),
+    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """追加证明材料"""
@@ -115,7 +115,7 @@ async def add_proof(
 async def resubmit(
     proof_id: int = Path(..., description="证明材料ID"),
     data: ResubmitProofRequest = ...,
-    user: CurrentUser = Depends(require_reviewer),
+    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """重新提交被驳回的证明材料"""
@@ -140,7 +140,7 @@ async def override(
     proof_id: int = Path(..., description="证明材料ID"),
     status: int = Query(..., ge=1, le=2),
     comment: Optional[str] = Query(None),
-    user: CurrentUser = Depends(require_reviewer),
+    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """审核员覆盖修改状态"""

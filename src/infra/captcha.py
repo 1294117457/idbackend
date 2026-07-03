@@ -92,16 +92,24 @@ class Captcha:
         生成验证码，存入 Redis。
         Returns: (captcha_id, base64_image)
         """
+        import time as _time
+        import sys
+        t0 = _time.perf_counter()
         code = cls._generate_code()
         captcha_id = f"captcha:{uuid.uuid4().hex}"
 
+        t1 = _time.perf_counter()
         buffer = io.BytesIO()
         cls._generate_image(code).save(buffer, format="PNG")
         base64_image = base64.b64encode(buffer.getvalue()).decode()
+        t2 = _time.perf_counter()
 
         redis = await get_redis()
         await redis.set(captcha_id, code.lower(), ex=cls.CAPTCHA_EXPIRE)
+        t3 = _time.perf_counter()
 
+        sys.stderr.write(f"[captcha] gen={int((t1-t0)*1000)}ms img={int((t2-t1)*1000)}ms redis={int((t3-t2)*1000)}ms\n")
+        sys.stderr.flush()
         return captcha_id, base64_image
 
     @classmethod

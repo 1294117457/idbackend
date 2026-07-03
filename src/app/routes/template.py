@@ -5,7 +5,7 @@ from sqlalchemy import delete
 from pydantic import BaseModel
 from typing import Optional, List
 
-from src.app.deps import get_db, get_current_user, CurrentUser, require_admin
+from src.app.deps import get_db, get_current_user, CurrentUser
 from src.app.response import success_response, error_response
 from src.services import TemplateService
 from src.services.attribute_service import AttributeService
@@ -78,7 +78,7 @@ class CreateTemplateRequest(BaseModel):
 @router.post("/create")
 async def create_template(
     request: CreateTemplateRequest,
-    user: CurrentUser = Depends(require_admin),
+    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """创建模板 (管理员)"""
@@ -127,7 +127,7 @@ class UpdateTemplateRequest(BaseModel):
 async def update_template(
     template_id: int = Path(..., description="模板ID"),
     request: UpdateTemplateRequest = ...,
-    user: CurrentUser = Depends(require_admin),
+    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """更新模板 (管理员)"""
@@ -200,7 +200,7 @@ async def update_template(
 @router.delete("/{template_id}")
 async def delete_template(
     template_id: int = Path(..., description="模板ID"),
-    user: CurrentUser = Depends(require_admin),
+    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """删除模板 (管理员)"""

@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime
 
-from src.app.deps import get_db, get_current_user, CurrentUser, require_reviewer
+from src.app.deps import get_db, get_current_user, CurrentUser
 from src.app.response import success_response, error_response
 from src.models import DemandApplication
 
@@ -123,7 +123,7 @@ async def delete_my(
 
 @router.get("/all")
 async def get_all(
-    user: CurrentUser = Depends(require_reviewer),
+    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """获取所有需求申请"""

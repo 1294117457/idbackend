@@ -60,7 +60,10 @@ class AuthService:
         username: str,
         password: str,
     ) -> tuple[User, str, str]:
-        """登录，返回 (用户, access_token, refresh_token)"""
+        """登录，返回 (用户, access_token, refresh_token)
+
+        权限/角色不再写入 token，由 PermissionMiddleware + Redis 实时判定。
+        """
         result = await db.execute(
             select(User).where(User.username == username)
         )
@@ -78,33 +81,8 @@ class AuthService:
         user.last_login_at = datetime.utcnow().isoformat()
         await db.commit()
 
-        # 获取用户角色
-        user_roles = await RbacService.get_user_roles(db, user.id)
-        primary_role = user_roles[0] if user_roles else "user"
-
-        # 检查是否为 system_user（白名单用户）
-        is_system = RbacService._is_admin(user.username)
-
-        # 获取权限
-        if is_system:
-            permissions = ["*"]
-            roles = ["super_admin"]
-        else:
-            roles = user_roles
-            permissions = await RbacService.get_user_permissions(db, user.id)
-
-        access_token = create_token(
-            user_id=user.id,
-            username=user.username,
-            role=primary_role,
-            roles=roles,
-            permissions=permissions,
-        )
-        refresh_token = create_refresh_token(
-            user_id=user.id,
-            username=user.username,
-            role=primary_role,
-        )
+        access_token = create_token(user_id=user.id, username=user.username)
+        refresh_token = create_refresh_token(user_id=user.id, username=user.username)
 
         return user, access_token, refresh_token
 
@@ -114,7 +92,11 @@ class AuthService:
         username: str,
         password: str,
     ) -> tuple[User, str, str]:
-        """管理员登录，返回 (用户, access_token, refresh_token)"""
+        """管理员登录，返回 (用户, access_token, refresh_token)
+
+        中间件未持有 token 鉴权，因此登录资格判定放在服务层：
+        - 密码正确 + 是白名单用户 / 拥有 super_admin / admin / reviewer 角色 → 放行
+        """
         result = await db.execute(
             select(User).where(User.username == username)
         )
@@ -129,36 +111,18 @@ class AuthService:
         if user.status != "active":
             raise ValueError("账户已被禁用")
 
-        # 【关键】检查是否有管理端登录权限
-        # 1. 白名单用户直接允许
-        if RbacService._is_admin(user.username):
-            permissions = ["*"]
-            roles = ["super_admin"]
-        else:
-            # 2. 检查是否有管理端登录权限
-            perms = await RbacService.get_user_permissions(db, user.id)
-            if not await RbacService.has_any_role(db, user.id, "super_admin", "admin", "reviewer"):
-                raise ValueError("无管理端登录权限")
-            permissions = perms
-            roles = await RbacService.get_user_roles(db, user.id)
+        # 鉴权：是否有管理端登录资格
+        is_whitelist = RbacService._is_admin(user.username)
+        if not is_whitelist and not await RbacService.has_any_role(
+            db, user.id, "super_admin", "admin", "reviewer"
+        ):
+            raise ValueError("无管理端登录权限")
 
         user.last_login_at = datetime.utcnow().isoformat()
         await db.commit()
 
-        primary_role = roles[0] if roles else "admin"
-
-        access_token = create_token(
-            user_id=user.id,
-            username=user.username,
-            role=primary_role,
-            roles=roles,
-            permissions=permissions,
-        )
-        refresh_token = create_refresh_token(
-            user_id=user.id,
-            username=user.username,
-            role=primary_role,
-        )
+        access_token = create_token(user_id=user.id, username=user.username)
+        refresh_token = create_refresh_token(user_id=user.id, username=user.username)
 
         return user, access_token, refresh_token
 
@@ -167,7 +131,10 @@ class AuthService:
         db: AsyncSession,
         refresh_token: str,
     ) -> tuple[str, str]:
-        """刷新 token，返回 (新的 access_token, 新的 refresh_token)"""
+        """刷新 token，返回 (新的 access_token, 新的 refresh_token)
+
+        不再查询角色/权限，新 token 只含身份信息。
+        """
         # 1. 解析并验证 refresh token
         payload = verify_token(refresh_token)
         if payload.get("type") != "refresh":
@@ -193,34 +160,9 @@ class AuthService:
         # 4. 撤销旧 refresh token (rotation)
         await cache.revoke_refresh_token(jti)
 
-        # 5. 获取用户角色
-        user_roles = await RbacService.get_user_roles(db, user.id)
-        primary_role = user_roles[0] if user_roles else "user"
-
-        # 检查是否为 system_user（白名单用户）
-        is_system = RbacService._is_admin(user.username)
-
-        # 获取权限
-        if is_system:
-            permissions = ["*"]
-            roles = ["system"]
-        else:
-            roles = user_roles
-            permissions = await RbacService.get_user_permissions(db, user.id)
-
-        # 6. 签发新 token 对
-        new_access_token = create_token(
-            user_id=user.id,
-            username=user.username,
-            role=primary_role,
-            roles=roles,
-            permissions=permissions,
-        )
-        new_refresh_token = create_refresh_token(
-            user_id=user.id,
-            username=user.username,
-            role=primary_role,
-        )
+        # 5. 签发新 token 对（仅身份信息）
+        new_access_token = create_token(user_id=user.id, username=user.username)
+        new_refresh_token = create_refresh_token(user_id=user.id, username=user.username)
         return new_access_token, new_refresh_token
 
     @staticmethod

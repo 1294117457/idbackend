@@ -42,11 +42,8 @@ async def get_my_permissions(
     用于前端按钮级权限控制
     """
     try:
-        # 优先使用 ContextVar 中已有的权限（由 AuthMiddleware 设置）
-        if current_user.permissions:
-            return success_response(current_user.permissions)
-
-        # 如果 ContextVar 没有，从数据库获取
+        # 权限由 PermissionMiddleware 通过 Redis 实时获取；
+        # 路由层直接调 service 拿真实权限，避免依赖 ContextVar 中已废弃字段。
         permissions = await RbacService.get_user_permissions(db, current_user.user_id)
         return success_response(permissions)
     except Exception as e:
@@ -63,19 +60,21 @@ async def get_current_user_info(
     返回用户基本信息、角色和权限
     """
     try:
-        # 获取完整用户信息
         from src.services.user_service import UserService
         user = await UserService.get_user_by_id(db, current_user.user_id)
         if not user:
             return error_response("用户不存在", code=404)
+
+        roles = await RbacService.get_user_roles(db, current_user.user_id)
+        permissions = await RbacService.get_user_permissions(db, current_user.user_id)
 
         return success_response({
             "userId": user.id,
             "username": user.username,
             "fullName": user.full_name,
             "avatar": user.avatar,
-            "roles": current_user.role_codes,
-            "permissions": current_user.permissions,
+            "roles": roles,
+            "permissions": permissions,
         })
     except Exception as e:
         return error_response(str(e))
