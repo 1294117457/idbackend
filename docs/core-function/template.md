@@ -10,7 +10,69 @@ template-rule-attribute和application-proof的模型应该没什么问题把
 
 不过这里换算公式实际可能有不同区间时多个公式，比如0到60分一个公式，61-100一个分数，
 
-你觉得怎么做合适呢
+你觉得怎么做合适呢  
+
+2.关于template-rule-attribute
+
+你觉得这里template需要具体其显示区分类别吗，实际只是有不同的计算方式对应到不同的attribute上
+
+是不是可以直接就去除template和rule的类别，然后template_rule表记录template和rule的关系
+
+rule_attribute记录rule和attribute的关系，后续使用时，有什么attribute就显示到对应的template中，
+
+具体就是一个rule会有多个attribute，每个rule就是一个下拉选择框，如果对应attribute是条件匹配类型就直接选择，如果是分数计算类型的，就根据选择框，在右侧显示对应的一个输入框，
+
+这样是不是可以简化template-rule-attribute，职责单一，attribute就是实现不同的分数计算属性，rule用于聚合这些属性，template是最终的聚合根  
+
+这里是不是template保留
+
+  id,name,categoryid,max_score,description,review_count,isactive,create_at,updated_at并加一个sort_order就够了
+  input_unit和create_by可以去除简化
+
+然后的rule
+  priority改名为sort_order，同步名称,并且去除template_id
+
+attribute中，
+  需要code吗，是不是也可以去除，
+  然后直接一个name-value,
+  value如果是condition类型则是匹配的对应分数，如果是transform则是对应公式，
+  description则是必须的，用于描述公式；
+  然后必须开闭区间吗，开闭区间是不是也可以由公式调整避免，
+  比如0-60的闭区间实际就是1-59,这里的input_min就是最小值1，input_max就是最大值60，
+  然后display_order改名sort_order，
+
+最后attribute就只需要，  
+  id,name,value,input_min,input_max,sort_order,description,is_active,create_at,updated_at
+
+这里总体类似rbac模式一样用template_rule和rule_attribute绑定template-rule-attribute，还能实现复用，
+
+你觉得呢  
+
+
+
+直接给templatecategory增加一个判断是否是叶子节点的字段，默认是null，
+
+当增加了子节点时，改为false
+
+然后当一个templatecategory增加了对应的绑定了template时，将这个字段改为true，
+
+如果时false时提示不能绑定template，如果是true校验不能增加子节点
+
+这样可以减少代码逻辑优化性能吗
+
+你觉得怎么样，
+
+
+
+## **is_leaf 的收益重新评估**
+
+
+| **操作**          | **无 is_leaf**              | **有 is_leaf**             |
+| --------------- | -------------------------- | ------------------------- |
+| 绑定 template 时校验 | 查 template_category（有无子节点） | 直接读字段，0 额外查询 ✅            |
+| 添加子分类时校验（父有子）   | 查 template 表               | 读字段=FALSE，直接放行，0 查询 ✅     |
+| 添加子分类时校验（父无子）   | 查 template 表               | 读字段=TRUE，还需查 template 表 ❌ |
+
 
 ---
 
@@ -37,6 +99,7 @@ RuleAttribute
 ```
 
 **CONDITION 数据示例：**
+
 ```
 Template(type=CONDITION, max_score=10)
   Rule(priority=1, rule_score=10)
@@ -46,6 +109,7 @@ Template(type=CONDITION, max_score=10)
 ```
 
 **TRANSFORM 数据示例（多区间公式）：**
+
 ```
 Template(type=TRANSFORM, max_score=30)
   Rule(priority=1, rule_score=null)
@@ -190,3 +254,4 @@ TemplateCalculatorRegistry._calculators["WEIGHTED"] = WeightedCalculator()
 # 3. 数据库 template_type 字段允许新值即可
 # 其余代码（application_service、路由层）完全不需要改动
 ```
+
