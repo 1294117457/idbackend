@@ -1,15 +1,68 @@
 """用户服务"""
+
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 
 from src.models import User, Role, Permission, Application
+from src.models.user import UserRole, RolePermission, UserStatus
 from src.infra.jwt import hash_password
+from src.infra.database import AsyncSessionLocal
 
 
 class UserService:
     """用户服务"""
+
+    @staticmethod
+    async def load_user_auth_info(user_id: int) -> Optional[Dict[str, Any]]:
+        """加载用户鉴权所需的数据库信息（状态 + 角色 + 权限），专供 PermissionMiddleware 调用。
+
+        Returns:
+            None  → 账号已被禁用，中间件应返回 401
+            dict  → 包含 user_id / username / roles / permissions
+        """
+        async with AsyncSessionLocal() as db:
+            user = await db.get(User, user_id)
+            if not user:
+                return {
+                    "user_id": user_id,
+                    "username": "",
+                    "is_admin": False,
+                    "roles": [],
+                    "permissions": [],
+                }
+
+            if user.status != UserStatus.ACTIVE.value:
+                return None  # 账号禁用 → 触发 401
+
+            result = await db.execute(
+                select(
+                    Role.id, Role.role_code, Role.role_name, Permission.permission_code
+                )
+                .select_from(UserRole)
+                .join(Role, UserRole.role_id == Role.id)
+                .join(RolePermission, RolePermission.role_id == Role.id)
+                .join(Permission, RolePermission.permission_id == Permission.id)
+                .where(UserRole.user_id == user_id)
+                .where(Role.status == True)
+                .where(Permission.status == True)
+            )
+            rows = result.all()
+
+            role_map: Dict[int, dict] = {}
+            perm_set: set = set()
+            for role_id, role_code, role_name, perm_code in rows:
+                role_map[role_id] = {"roleCode": role_code, "roleName": role_name}
+                perm_set.add(perm_code)
+
+            return {
+                "user_id": user.id,
+                "username": user.username,
+                "is_admin": False,
+                "roles": list(role_map.values()),
+                "permissions": sorted(perm_set),
+            }
 
     @staticmethod
     async def get_user_by_id(
@@ -17,9 +70,7 @@ class UserService:
         user_id: int,
     ) -> Optional[User]:
         """根据ID获取用户"""
-        result = await db.execute(
-            select(User).where(User.id == user_id)
-        )
+        result = await db.execute(select(User).where(User.id == user_id))
         return result.scalar_one_or_none()
 
     @staticmethod
@@ -28,9 +79,7 @@ class UserService:
         username: str,
     ) -> Optional[User]:
         """根据用户名获取用户"""
-        result = await db.execute(
-            select(User).where(User.username == username)
-        )
+        result = await db.execute(select(User).where(User.username == username))
         return result.scalar_one_or_none()
 
     @staticmethod
@@ -40,9 +89,7 @@ class UserService:
         **kwargs,
     ) -> Optional[User]:
         """更新用户信息"""
-        result = await db.execute(
-            select(User).where(User.id == user_id)
-        )
+        result = await db.execute(select(User).where(User.id == user_id))
         user = result.scalar_one_or_none()
         if not user:
             return None
@@ -103,8 +150,8 @@ class UserService:
             "specialty": user.specialty_score or 0,
             "comprehensive": user.comprehensive_score or 0,
             "total": (user.academic_score or 0)
-                    + (user.specialty_score or 0)
-                    + (user.comprehensive_score or 0),
+            + (user.specialty_score or 0)
+            + (user.comprehensive_score or 0),
         }
 
     @staticmethod
@@ -141,9 +188,7 @@ class UserService:
         # 获取总数
         from sqlalchemy import func
 
-        count_result = await db.execute(
-            select(func.count()).select_from(User)
-        )
+        count_result = await db.execute(select(func.count()).select_from(User))
         total = count_result.scalar()
 
         # 分页
@@ -175,9 +220,7 @@ class UserService:
         user_id: int,
     ) -> bool:
         """删除用户"""
-        result = await db.execute(
-            select(User).where(User.id == user_id)
-        )
+        result = await db.execute(select(User).where(User.id == user_id))
         user = result.scalar_one_or_none()
         if not user:
             return False

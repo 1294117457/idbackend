@@ -5,8 +5,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 from typing import Optional
 
-from src.app.deps import get_db, get_current_user, CurrentUser, ip_rate_limit
-from src.app.response import success_response, error_response
+from src.app.deps import get_db, ip_rate_limit
+from src.app.context import get_user_id, get_user_roles
+from src.app import response as R
 from src.services import AuthService, UserService
 from src.services.rbac_service import RbacService
 from src.infra.jwt import JWTError
@@ -63,26 +64,23 @@ async def login(
     _: None = Depends(ip_rate_limit("login", max_count=10, window_seconds=60)),
 ):
     """用户登录"""
-    # 图形验证码校验
     if not request.captchaId or not request.verifyCode:
-        return error_response("请完成图形验证码", code=400)
+        return R.bad_request_resp("请完成图形验证码")
     is_valid, err = await Captcha.verify(request.captchaId, request.verifyCode)
     if not is_valid:
-        return error_response(err, code=400)
+        return R.bad_request_resp(err)
 
     try:
         user, access_token, refresh_token = await AuthService.login(
             db, request.username, request.password
         )
-        return success_response(
-            {
-                "accessToken": access_token,
-                "refreshToken": refresh_token,
-                "expiresIn": 86400,
-            }
-        )
+        return R.success_resp({
+            "accessToken": access_token,
+            "refreshToken": refresh_token,
+            "expiresIn": 86400,
+        })
     except ValueError as e:
-        return error_response(str(e), code=401)
+        return R.unauthorized_resp(str(e))
 
 
 @router.post("/admin/login")
@@ -92,26 +90,23 @@ async def admin_login(
     _: None = Depends(ip_rate_limit("admin_login", max_count=10, window_seconds=60)),
 ):
     """管理员登录"""
-    # 图形验证码校验
     if not request.captchaId or not request.verifyCode:
-        return error_response("请完成图形验证码", code=400)
+        return R.bad_request_resp("请完成图形验证码")
     is_valid, err = await Captcha.verify(request.captchaId, request.verifyCode)
     if not is_valid:
-        return error_response(err, code=400)
+        return R.bad_request_resp(err)
 
     try:
         user, access_token, refresh_token = await AuthService.admin_login(
             db, request.username, request.password
         )
-        return success_response(
-            {
-                "accessToken": access_token,
-                "refreshToken": refresh_token,
-                "expiresIn": 86400,
-            }
-        )
+        return R.success_resp({
+            "accessToken": access_token,
+            "refreshToken": refresh_token,
+            "expiresIn": 86400,
+        })
     except ValueError as e:
-        return error_response(str(e), code=401)
+        return R.unauthorized_resp(str(e))
 
 
 @router.post("/register")
@@ -120,21 +115,18 @@ async def register(
     db: AsyncSession = Depends(get_db),
 ):
     """用户注册"""
-    try:
-        # 前置校验：邮箱验证码
-        ok, err = await EmailCode.verify(request.username, "register", request.code)
-        if not ok:
-            return error_response(err, code=400)
+    ok, err = await EmailCode.verify(request.username, "register", request.code)
+    if not ok:
+        return R.bad_request_resp(err)
 
+    try:
         user = await AuthService.register(db, request.username, request.password)
-        return success_response(
-            {
-                "userId": user.id,
-                "username": user.username,
-            }
-        )
+        return R.created_resp({
+            "userId": user.id,
+            "username": user.username,
+        })
     except ValueError as e:
-        return error_response(str(e), code=400)
+        return R.bad_request_resp(str(e))
 
 
 @router.post("/refresh")
@@ -147,27 +139,20 @@ async def refresh_token(
         new_access, new_refresh = await AuthService.refresh(
             db, request.refreshToken
         )
-        return success_response(
-            {
-                "accessToken": new_access,
-                "refreshToken": new_refresh,
-                "expiresIn": 86400,
-            }
-        )
-    except JWTError as e:
-        return error_response(str(e), code=401)
-    except Exception as e:
-        return error_response(str(e), code=401)
+        return R.success_resp({
+            "accessToken": new_access,
+            "refreshToken": new_refresh,
+            "expiresIn": 86400,
+        })
+    except (JWTError, Exception) as e:
+        return R.unauthorized_resp(str(e))
 
 
 @router.post("/logout")
-async def logout(
-    request: LogoutRequest,
-    user: CurrentUser = Depends(get_current_user),
-):
+async def logout(request: LogoutRequest):
     """登出，撤销 refresh token"""
     await AuthService.revoke_refresh_token(request.refreshToken)
-    return success_response(msg="已登出")
+    return R.success_resp(msg="已登出")
 
 
 @router.post("/sendEmailCode")
@@ -178,8 +163,8 @@ async def send_email_code(
     """发送邮箱验证码（注册用）"""
     ok, err = await EmailCode.send(request.email, request.type)
     if not ok:
-        return error_response(err, code=429)
-    return success_response(msg="验证码已发送")
+        return R.too_many_requests_resp(err)
+    return R.success_resp(msg="验证码已发送")
 
 
 @router.post("/sendResetCode")
@@ -190,8 +175,8 @@ async def send_reset_code(
     """发送重置密码验证码"""
     ok, err = await EmailCode.send(request.email, "reset")
     if not ok:
-        return error_response(err, code=429)
-    return success_response(msg="验证码已发送")
+        return R.too_many_requests_resp(err)
+    return R.success_resp(msg="验证码已发送")
 
 
 @router.post("/reset-password")
@@ -200,19 +185,18 @@ async def reset_password(
     db: AsyncSession = Depends(get_db),
 ):
     """重置密码"""
+    ok, err = await EmailCode.verify(request.username, "reset", request.code)
+    if not ok:
+        return R.bad_request_resp(err)
+
+    if request.newPassword != request.confirmPassword:
+        return R.bad_request_resp("两次密码不一致")
+
     try:
-        # 前置校验：重置密码验证码
-        ok, err = await EmailCode.verify(request.username, "reset", request.code)
-        if not ok:
-            return error_response(err, code=400)
-
-        if request.newPassword != request.confirmPassword:
-            return error_response("两次密码不一致", code=400)
-
         await AuthService.reset_password(db, request.username, request.newPassword)
-        return success_response(msg="密码重置成功")
+        return R.success_resp(msg="密码重置成功")
     except ValueError as e:
-        return error_response(str(e), code=400)
+        return R.bad_request_resp(str(e))
 
 
 # ========== 图形验证码 ==========
@@ -224,37 +208,27 @@ async def get_captcha(
 ):
     """获取图形验证码"""
     captcha_id, base64_image = await Captcha.generate()
-    return success_response(
-        {
-            "captchaId": captcha_id,
-            "base64": f"data:image/png;base64,{base64_image}",
-        }
-    )
+    return R.success_resp({
+        "captchaId": captcha_id,
+        "base64": f"data:image/png;base64,{base64_image}",
+    })
 
 
 # ========== 当前用户 ==========
 
 
 @router.get("/me")
-async def get_current_user_info(
-    user: CurrentUser = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
+async def get_current_user_info(db: AsyncSession = Depends(get_db)):
     """获取当前用户信息"""
-    db_user = await UserService.get_user_by_id(db, user.user_id)
+    db_user = await UserService.get_user_by_id(db, get_user_id())
     if not db_user:
-        return error_response("用户不存在", code=404)
+        return R.not_found_resp("用户不存在")
 
-    # 获取用户角色列表
-    roles = await RbacService.get_user_roles(db, user.user_id)
-
-    return success_response(
-        {
-            "userId": db_user.id,
-            "username": db_user.username,
-            "roles": roles,
-            "fullName": db_user.full_name,
-            "studentId": db_user.student_id,
-            "isConfirmed": db_user.is_confirmed,
-        }
-    )
+    return R.success_resp({
+        "userId": db_user.id,
+        "username": db_user.username,
+        "roles": get_user_roles(),
+        "fullName": db_user.full_name,
+        "studentId": db_user.student_id,
+        "isConfirmed": db_user.is_confirmed,
+    })

@@ -5,8 +5,9 @@ from sqlalchemy import delete
 from pydantic import BaseModel
 from typing import Optional, List
 
-from src.app.deps import get_db, get_current_user, CurrentUser
-from src.app.response import success_response, error_response
+from src.app.deps import get_db
+from src.app.context import get_username
+from src.app import response as R
 from src.services import TemplateService
 from src.services.attribute_service import AttributeService
 from src.models import ScoreTemplate, ScoreTemplateRule, RuleAttributeMapping
@@ -16,12 +17,11 @@ router = APIRouter(prefix="/api/bonus-template", tags=["模板"])
 
 @router.get("/list")
 async def list_templates(
-    _: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """获取模板列表"""
     templates = await TemplateService.get_templates(db)
-    return success_response([{
+    return R.success_resp([{
         "id": t.id,
         "templateName": t.template_name,
         "templateType": t.template_type,
@@ -35,18 +35,16 @@ async def list_templates(
 @router.get("/{template_id}")
 async def get_template(
     template_id: int,
-    _: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """获取模板详情"""
     template = await TemplateService.get_template_by_id(db, template_id)
     if not template:
-        return error_response("模板不存在", code=404)
+        return R.not_found_resp("模板不存在")
 
-    # 获取规则
     rules = await TemplateService.get_template_rules(db, template_id)
 
-    return success_response({
+    return R.success_resp({
         "id": template.id,
         "templateName": template.template_name,
         "templateType": template.template_type,
@@ -78,7 +76,6 @@ class CreateTemplateRequest(BaseModel):
 @router.post("/create")
 async def create_template(
     request: CreateTemplateRequest,
-    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """创建模板 (管理员)"""
@@ -90,10 +87,10 @@ async def create_template(
         score_type=request.scoreType,
         input_unit=request.inputUnit,
         description=request.description,
-        created_by=user.username,
+        created_by=get_username(),
         review_count=request.reviewCount,
     )
-    return success_response({
+    return R.created_resp({
         "id": template.id,
         "templateName": template.template_name,
     })
@@ -127,15 +124,13 @@ class UpdateTemplateRequest(BaseModel):
 async def update_template(
     template_id: int = Path(..., description="模板ID"),
     request: UpdateTemplateRequest = ...,
-    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """更新模板 (管理员)"""
     template = await TemplateService.get_template_by_id(db, template_id)
     if not template:
-        return error_response("模板不存在", code=404)
+        return R.not_found_resp("模板不存在")
 
-    # 更新模板基本信息
     if request.templateName is not None:
         template.template_name = request.templateName
     if request.templateType is not None:
@@ -153,9 +148,7 @@ async def update_template(
     if request.fieldId is not None:
         template.field_id = request.fieldId
 
-    # 重建规则
     if request.rules is not None:
-        # 删除旧规则
         await db.execute(
             delete(RuleAttributeMapping).where(
                 RuleAttributeMapping.rule_id.in_(
@@ -169,7 +162,6 @@ async def update_template(
             delete(ScoreTemplateRule).where(ScoreTemplateRule.template_id == template_id)
         )
 
-        # 创建新规则
         for rule_req in request.rules:
             rule = ScoreTemplateRule(
                 template_id=template_id,
@@ -182,7 +174,6 @@ async def update_template(
             db.add(rule)
             await db.flush()
 
-            # 绑定属性
             if rule_req.attributeIds:
                 for idx, attr_id in enumerate(rule_req.attributeIds):
                     mapping = RuleAttributeMapping(
@@ -194,21 +185,19 @@ async def update_template(
                     db.add(mapping)
 
     await db.commit()
-    return success_response({"id": template_id})
+    return R.success_resp({"id": template_id})
 
 
 @router.delete("/{template_id}")
 async def delete_template(
     template_id: int = Path(..., description="模板ID"),
-    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """删除模板 (管理员)"""
     template = await TemplateService.get_template_by_id(db, template_id)
     if not template:
-        return error_response("模板不存在", code=404)
+        return R.not_found_resp("模板不存在")
 
-    # 删除模板（规则会通过 CASCADE 自动删除）
     await db.delete(template)
     await db.commit()
-    return success_response(msg="删除成功")
+    return R.success_resp(msg="删除成功")

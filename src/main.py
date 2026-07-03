@@ -9,6 +9,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 
 logger = logging.getLogger("uvicorn.access")
@@ -97,6 +99,27 @@ app.add_middleware(
 # 如果顺序颠倒（PermissionMiddleware 在外层），则 PermissionMiddleware 先执行时 AuthMiddleware 还未设置 ContextVar
 app.add_middleware(PermissionMiddleware)
 app.add_middleware(AuthMiddleware)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Pydantic 参数校验失败 → 400"""
+    first_err = exc.errors()[0] if exc.errors() else {}
+    msg = first_err.get("msg", "请求参数错误")
+    return JSONResponse(
+        status_code=400,
+        content={"code": 400, "msg": f"参数错误: {msg}", "data": None},
+    )
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """未捕获异常兜底 → 500"""
+    return JSONResponse(
+        status_code=500,
+        content={"code": 500, "msg": "服务器内部错误", "data": None},
+    )
+
 
 # 注册路由
 app.include_router(health_router)

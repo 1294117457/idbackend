@@ -6,8 +6,9 @@ from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime
 
-from src.app.deps import get_db, get_current_user, CurrentUser
-from src.app.response import success_response, error_response
+from src.app.deps import get_db
+from src.app.context import get_username
+from src.app import response as R
 from src.models import DemandApplication
 
 router = APIRouter(prefix="/api/demand-application", tags=["需求申请"])
@@ -77,30 +78,25 @@ class DemandApplicationService:
 @router.post("/submit")
 async def submit(
     data: DemandApplicationSubmit,
-    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """提交需求申请（覆盖式）"""
-    try:
-        applications = [a.model_dump() for a in data.applications]
-        await DemandApplicationService.upsert(db, user.username, applications)
-        return success_response(msg="提交成功")
-    except Exception as e:
-        return error_response(f"提交失败: {str(e)}")
+    applications = [a.model_dump() for a in data.applications]
+    await DemandApplicationService.upsert(db, get_username(), applications)
+    return R.success_resp(msg="提交成功")
 
 
 @router.get("/my")
 async def get_my(
-    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """获取我的需求申请"""
-    result = await DemandApplicationService.get_by_student(db, user.username)
+    result = await DemandApplicationService.get_by_student(db, get_username())
     if not result:
-        return success_response(msg="暂无申请记录")
+        return R.success_resp(msg="暂无申请记录")
 
     apps_data = result.application_data.get("applications", [])
-    return success_response({
+    return R.success_resp({
         "id": result.id,
         "studentId": result.student_id,
         "applications": apps_data,
@@ -111,24 +107,22 @@ async def get_my(
 
 @router.delete("/my")
 async def delete_my(
-    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """删除我的需求申请"""
-    result = await DemandApplicationService.delete_by_student(db, user.username)
+    result = await DemandApplicationService.delete_by_student(db, get_username())
     if not result:
-        return error_response("暂无申请记录")
-    return success_response(msg="删除成功")
+        return R.not_found_resp("暂无申请记录")
+    return R.success_resp(msg="删除成功")
 
 
 @router.get("/all")
 async def get_all(
-    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """获取所有需求申请"""
     results = await DemandApplicationService.get_all(db)
-    return success_response([{
+    return R.success_resp([{
         "id": r.id,
         "studentId": r.student_id,
         "applications": r.application_data.get("applications", []),

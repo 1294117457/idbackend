@@ -5,8 +5,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
 import io
 
-from src.app.deps import get_db, get_current_user, CurrentUser
-from src.app.response import success_response, error_response
+from src.app.deps import get_db
+from src.app.context import get_user_id
+from src.app import response as R
 from src.services import FileService
 
 router = APIRouter(prefix="/api/file", tags=["文件"])
@@ -17,27 +18,25 @@ async def upload_file(
     file: UploadFile = File(...),
     fileCategory: str = Query("PROOF"),
     filePurpose: str = Query("加分证明材料"),
-    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """上传文件"""
     content = await file.read()
 
-    # 检查文件大小 (50MB)
     if len(content) > 50 * 1024 * 1024:
-        return error_response("文件大小不能超过 50MB", code=400)
+        return R.bad_request_resp("文件大小不能超过 50MB")
 
     file_meta, url = await FileService.upload_file(
         db=db,
         file_data=content,
         original_name=file.filename,
         content_type=file.content_type or "application/octet-stream",
-        user_id=user.user_id,
+        user_id=get_user_id(),
         category=fileCategory,
         purpose=filePurpose,
     )
 
-    return success_response({
+    return R.success_resp({
         "fileId": file_meta.id,
         "originalName": file_meta.original_name,
         "url": url,
@@ -47,7 +46,6 @@ async def upload_file(
 @router.post("/avatar")
 async def upload_avatar(
     file: UploadFile = File(...),
-    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """上传头像"""
@@ -56,25 +54,24 @@ async def upload_avatar(
     file_meta, url = await FileService.upload_avatar(
         db=db,
         file_data=content,
-        user_id=user.user_id,
+        user_id=get_user_id(),
         content_type=file.content_type or "image/jpeg",
     )
 
-    return success_response(url)
+    return R.success_resp(url)
 
 
 @router.get("/{file_id}/preview")
 async def get_preview_url(
     file_id: int,
     expiryMinutes: int = Query(60),
-    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """获取预览URL"""
     url = await FileService.get_preview_url(db, file_id)
     if not url:
-        return error_response("文件不存在", code=404)
-    return success_response(url)
+        return R.not_found_resp("文件不存在")
+    return R.success_resp(url)
 
 
 @router.get("/search")
@@ -86,7 +83,6 @@ async def search_files(
     endTime: str = Query(None, description="结束时间"),
     pageNum: int = Query(1, ge=1, description="页码"),
     pageSize: int = Query(20, ge=1, le=100, description="每页大小"),
-    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """搜索文件列表(分页)"""
@@ -107,7 +103,7 @@ async def search_files(
         else:
             return f"{size / (1024 * 1024):.1f}MB"
 
-    return success_response({
+    return R.success_resp({
         "list": [
             {
                 "id": f.id,
@@ -133,57 +129,50 @@ async def search_files(
 @router.get("/download/{file_id}")
 async def download_file_legacy(
     file_id: int,
-    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """下载文件 (兼容 /download/{fileId} 格式)"""
     result = await FileService.download_file(db, file_id)
     if not result:
-        return error_response("文件不存在", code=404)
+        return R.not_found_resp("文件不存在")
 
     file_data, content_type = result
     return StreamingResponse(
         io.BytesIO(file_data),
         media_type=content_type,
-        headers={
-            "Content-Disposition": f"attachment; filename=file"
-        }
+        headers={"Content-Disposition": "attachment; filename=file"}
     )
 
 
 @router.get("/{file_id}/download")
 async def download_file(
     file_id: int,
-    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """下载文件"""
     result = await FileService.download_file(db, file_id)
     if not result:
-        return error_response("文件不存在", code=404)
+        return R.not_found_resp("文件不存在")
 
     file_data, content_type = result
     return StreamingResponse(
         io.BytesIO(file_data),
         media_type=content_type,
-        headers={
-            "Content-Disposition": f"attachment; filename=file"
-        }
+        headers={"Content-Disposition": "attachment; filename=file"}
     )
 
 
 @router.get("/{file_id}")
 async def get_file_info(
     file_id: int,
-    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """获取文件信息"""
     file_meta = await FileService.get_file_by_id(db, file_id)
     if not file_meta:
-        return error_response("文件不存在", code=404)
+        return R.not_found_resp("文件不存在")
 
-    return success_response({
+    return R.success_resp({
         "fileId": file_meta.id,
         "originalName": file_meta.original_name,
         "fileSize": file_meta.file_size,
@@ -195,14 +184,13 @@ async def get_file_info(
 @router.delete("/{file_id}")
 async def delete_file(
     file_id: int,
-    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """删除文件"""
-    result = await FileService.delete_file(db, file_id, user.user_id)
+    result = await FileService.delete_file(db, file_id, get_user_id())
     if not result:
-        return error_response("文件不存在或无权删除", code=400)
-    return success_response(msg="删除成功")
+        return R.bad_request_resp("文件不存在或无权删除")
+    return R.success_resp(msg="删除成功")
 
 
 # ========== 证明材料相关 ==========
@@ -210,33 +198,27 @@ async def delete_file(
 @router.get("/proof/list/{application_id}")
 async def get_proof_list(
     application_id: int,
-    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """获取申请的所有证明材料"""
-    # TODO: 实现
-    return success_response({"proofs": []})
+    return R.success_resp({"proofs": []})
 
 
 @router.post("/proof/{proof_id}/approve")
 async def approve_proof(
     proof_id: int,
     comment: Optional[str] = Query(None),
-    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """审核通过证明材料"""
-    # TODO: 实现
-    return success_response(msg="审核通过")
+    return R.success_resp(msg="审核通过")
 
 
 @router.post("/proof/{proof_id}/reject")
 async def reject_proof(
     proof_id: int,
     comment: Optional[str] = Query(None),
-    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """驳回证明材料"""
-    # TODO: 实现
-    return success_response(msg="已驳回")
+    return R.success_resp(msg="已驳回")

@@ -5,8 +5,9 @@ from sqlalchemy import select, func, and_
 from pydantic import BaseModel
 from typing import Optional, List
 
-from src.app.deps import get_db, get_current_user, CurrentUser
-from src.app.response import success_response, error_response
+from src.app.deps import get_db
+from src.app.context import get_user_id
+from src.app import response as R
 from src.services import ApplicationService, TemplateService
 
 router = APIRouter(prefix="/api/application", tags=["申请"])
@@ -46,21 +47,18 @@ class ReviewRequest(BaseModel):
 @router.post("/submit")
 async def submit_application(
     request: SubmitApplicationRequest,
-    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """提交加分申请"""
-    # 查找模板
     templates = await TemplateService.get_templates(db)
     template = next((t for t in templates if t.template_name == request.templateName), None)
 
     if not template:
-        return error_response("模板不存在", code=404)
+        return R.not_found_resp("模板不存在")
 
-    # 创建申请
     application = await ApplicationService.create_application(
         db,
-        user_id=user.user_id,
+        user_id=get_user_id(),
         template_id=template.id,
         template_name=request.templateName,
         apply_score=request.applyScore,
@@ -69,13 +67,12 @@ async def submit_application(
         score_type=request.scoreType,
     )
 
-    # 添加证明材料
     for proof in request.proofItems:
         await ApplicationService.add_proof(
             db, application.id, proof.proofFileId, proof.proofValue
         )
 
-    return success_response({
+    return R.created_resp({
         "applicationId": application.id,
         "status": "pending",
     })
@@ -83,13 +80,12 @@ async def submit_application(
 
 @router.get("/my-records")
 async def get_my_records(
-    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """获取我的申请记录"""
-    applications, _ = await ApplicationService.get_user_applications(db, user.user_id)
+    applications, _ = await ApplicationService.get_user_applications(db, get_user_id())
 
-    return success_response([{
+    return R.success_resp([{
         "id": a.id,
         "studentName": a.student_name,
         "templateName": a.template_name,
@@ -103,27 +99,25 @@ async def get_my_records(
 @router.delete("/cancel/{record_id}")
 async def cancel_application(
     record_id: int,
-    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """取消申请"""
-    result = await ApplicationService.cancel_application(db, record_id, user.user_id)
+    result = await ApplicationService.cancel_application(db, record_id, get_user_id())
     if not result:
-        return error_response("申请不存在或无法取消", code=400)
-    return success_response(msg="取消成功")
+        return R.bad_request_resp("申请不存在或无法取消")
+    return R.success_resp(msg="取消成功")
 
 
 @router.post("/resubmit/{record_id}")
 async def resubmit_application(
     record_id: int,
-    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """重新提交已驳回的申请"""
-    application = await ApplicationService.resubmit_application(db, record_id, user.user_id)
+    application = await ApplicationService.resubmit_application(db, record_id, get_user_id())
     if not application:
-        return error_response("申请不存在或无法重新提交", code=400)
-    return success_response(msg="重新提交成功")
+        return R.bad_request_resp("申请不存在或无法重新提交")
+    return R.success_resp(msg="重新提交成功")
 
 
 # ========== 审核员接口 ==========
@@ -132,12 +126,11 @@ async def resubmit_application(
 async def get_pending(
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),
-    _: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """获取待审核列表"""
     applications, total = await ApplicationService.get_pending_applications(db, page, size)
-    return success_response({
+    return R.success_resp({
         "list": [{
             "id": a.id,
             "studentName": a.student_name,
@@ -170,14 +163,13 @@ async def get_pending_applications(
     studentId: Optional[str] = Query(None),
     studentName: Optional[str] = Query(None),
     major: Optional[str] = Query(None),
-    _: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """分页获取待审核列表"""
     applications, total = await ApplicationService.get_pending_applications_paged(
         db, page, size, studentId, studentName, major
     )
-    return success_response({
+    return R.success_resp({
         "records": [format_application(a) for a in applications],
         "total": total,
     })
@@ -190,14 +182,13 @@ async def get_audit_history(
     studentId: Optional[str] = Query(None),
     studentName: Optional[str] = Query(None),
     major: Optional[str] = Query(None),
-    _: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """分页获取审核历史"""
     applications, total = await ApplicationService.get_audit_history_paged(
         db, page, size, studentId, studentName, major
     )
-    return success_response({
+    return R.success_resp({
         "records": [format_application(a) for a in applications],
         "total": total,
     })
@@ -206,46 +197,43 @@ async def get_audit_history(
 @router.post("/audit/approve")
 async def approve_application(
     request: AuditRequest,
-    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """审核通过"""
     application = await ApplicationService.approve_application(
-        db, request.recordId, user.user_id, request.comment
+        db, request.recordId, get_user_id(), request.comment
     )
     if not application:
-        return error_response("申请不存在", code=404)
-    return success_response(msg="审核通过")
+        return R.not_found_resp("申请不存在")
+    return R.success_resp(msg="审核通过")
 
 
 @router.post("/audit/reject")
 async def reject_application(
     request: AuditRequest,
-    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """审核驳回"""
     application = await ApplicationService.reject_application(
-        db, request.recordId, user.user_id, request.comment
+        db, request.recordId, get_user_id(), request.comment
     )
     if not application:
-        return error_response("申请不存在", code=404)
-    return success_response(msg="已驳回")
+        return R.not_found_resp("申请不存在")
+    return R.success_resp(msg="已驳回")
 
 
 @router.post("/audit/revoke")
 async def revoke_application(
     request: RevokeRequest,
-    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """撤销已通过的申请"""
     result = await ApplicationService.revoke_application(
-        db, request.recordId, user.user_id, request.reason
+        db, request.recordId, get_user_id(), request.reason
     )
     if not result:
-        return error_response("撤销失败", code=400)
-    return success_response(msg="撤销成功")
+        return R.bad_request_resp("撤销失败")
+    return R.success_resp(msg="撤销成功")
 
 
 def format_application(a) -> dict:

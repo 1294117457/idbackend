@@ -13,6 +13,7 @@ from src.infra.jwt import (
     JWTError,
 )
 from src.infra.redis import RedisCache, get_redis
+from src.infra.config import is_system_account
 from src.models import User, Role, UserRole
 from src.services.rbac_service import RbacService
 
@@ -111,9 +112,8 @@ class AuthService:
         if user.status != "active":
             raise ValueError("账户已被禁用")
 
-        # 鉴权：是否有管理端登录资格
-        is_whitelist = RbacService._is_admin(user.username)
-        if not is_whitelist and not await RbacService.has_any_role(
+        # 鉴权：白名单超管，或拥有 super_admin / admin / reviewer 角色之一
+        if not is_system_account(user.username) and not await RbacService.has_any_role(
             db, user.id, "super_admin", "admin", "reviewer"
         ):
             raise ValueError("无管理端登录权限")

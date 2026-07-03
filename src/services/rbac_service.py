@@ -7,9 +7,7 @@
 - 用户角色分配
 - 角色权限分配
 
-特性：
-- SuperAdmin 白名单机制：通过 SYSTEM_ACCOUNTS 配置的用户自动获得全部权限
-- Redis 缓存：用户角色和权限信息缓存 30 分钟
+超管白名单（SYSTEM_ACCOUNTS）由 src.infra.config.is_system_account 统一管理。
 """
 from typing import List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,37 +17,16 @@ import json
 
 from src.models.user import User, Role, Permission, UserRole, RolePermission
 from src.infra.redis import get_redis
-from src.infra.config import get_settings
-
-settings = get_settings()
+from src.infra.database import AsyncSessionLocal
 
 
 class RbacService:
-    """RBAC 核心服务（含 SuperAdmin 白名单）"""
+    """RBAC 核心服务"""
 
     CACHE_TTL = 30  # 缓存过期时间(分钟)
     USER_ROLES_KEY = "rbac:user:roles:"
     USER_PERMS_KEY = "rbac:user:perms:"
-    # API 权限映射缓存 Key 前缀（与 PermissionMiddleware 保持一致）
     API_PERM_KEY_PREFIX = "rbac:api:"
-
-    # ========== 缓存键 ==========
-
-    @classmethod
-    def _get_admin_users(cls) -> List[str]:
-        """获取管理员白名单"""
-        return settings.SYSTEM_ACCOUNTS
-
-    @classmethod
-    def _is_admin(cls, username: str) -> bool:
-        """检查用户名是否在白名单中（仅用于系统初始用户）"""
-        return username in cls._get_admin_users()
-
-    @classmethod
-    async def _is_admin_by_user_id(cls, db: AsyncSession, user_id: int) -> bool:
-        """通过用户ID检查是否为管理员（基于RBAC）"""
-        user_roles = await cls.get_user_roles(db, user_id)
-        return "admin" in user_roles
 
     # ==================== 权限校验方法 ====================
 
@@ -84,63 +61,46 @@ class RbacService:
         await redis.setex(cache_key, RbacService.CACHE_TTL * 60, json.dumps(roles))
         return roles
 
-    @staticmethod
-    async def get_user_permissions(db: AsyncSession, user_id: int) -> List[str]:
-        """获取用户权限列表（含缓存，含 SuperAdmin 自动扩展）
-
-        Args:
-            db: 数据库会话
-            user_id: 用户ID
-
-        Returns:
-            权限代码列表，如果是管理员则返回 ["*"] 表示全部权限
-        """
-        # 1. 查询用户
-        user = await db.get(User, user_id)
-        if not user:
-            return []
-
-        # 2. 【关键】检查是否在白名单中
-        if RbacService._is_admin(user.username):
-            return ["*"]  # 管理员拥有所有权限
-
-        # 3. 普通用户走标准 RBAC
-        redis = await get_redis()
-        cache_key = f"{RbacService.USER_PERMS_KEY}{user_id}"
-
-        # 查缓存
-        cached = await redis.get(cache_key)
-        if cached:
-            return json.loads(cached)
-
-        # 查数据库
-        result = await db.execute(
-            select(Permission.permission_code)
-            .join(RolePermission, Permission.id == RolePermission.permission_id)
-            .join(UserRole, RolePermission.role_id == UserRole.role_id)
-            .where(UserRole.user_id == user_id)
-            .where(Permission.status == True)
-        )
-        perms = list(set(result.scalars().all()))  # 去重
-
-        # 写缓存
-        await redis.setex(cache_key, RbacService.CACHE_TTL * 60, json.dumps(perms))
-        return perms
+    # ==================== 路径权限查询 ====================
 
     @staticmethod
-    async def has_permission(db: AsyncSession, user_id: int, code: str) -> bool:
-        """检查用户是否拥有指定权限
+    async def get_path_permission(path: str) -> Optional[str]:
+        """查询路径所需权限码（精确匹配优先，回退动态路由前缀匹配）
 
-        Args:
-            db: 数据库会话
-            user_id: 用户ID
-            code: 权限代码
-
-        Returns:
-            是否拥有该权限
+        例：/api/system/role/5  →  匹配 /api/system/role/{id}  →  返回 role:read
         """
-        perms = await RbacService.get_user_permissions(db, user_id)
-        return "*" in perms or code in perms
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(Permission.permission_code)
+                .where(Permission.api_path == path)
+                .where(Permission.status == True)
+                .limit(1)
+            )
+            code: Optional[str] = result.scalar_one_or_none()
+            if code:
+                return code
+
+            result = await db.execute(
+                select(Permission.permission_code, Permission.api_path)
+                .where(Permission.api_path.isnot(None))
+                .where(Permission.status == True)
+            )
+            req_parts = [p for p in path.split("/") if p]
+            for perm_code, route_path in result.all():
+                if "{" not in route_path:
+                    continue
+                tmpl_parts = [p for p in route_path.split("/") if p]
+                if len(tmpl_parts) != len(req_parts):
+                    continue
+                if all(
+                    t.startswith("{") or t == r
+                    for t, r in zip(tmpl_parts, req_parts)
+                ):
+                    return perm_code
+
+        return None
+
+    # ==================== 角色校验方法 ====================
 
     @staticmethod
     async def has_any_role(db: AsyncSession, user_id: int, *required_roles: str) -> bool:
@@ -156,29 +116,6 @@ class RbacService:
         """
         user_roles = await RbacService.get_user_roles(db, user_id)
         return any(role in user_roles for role in required_roles)
-
-    @staticmethod
-    async def is_admin(db: AsyncSession, user_id: int) -> bool:
-        """判断是否是管理员用户（检查 admin 角色或白名单）
-
-        Args:
-            db: 数据库会话
-            user_id: 用户ID
-
-        Returns:
-            是否是管理员
-        """
-        user = await db.get(User, user_id)
-        if not user:
-            return False
-
-        # 优先检查白名单用户
-        if RbacService._is_admin(user.username):
-            return True
-
-        # 检查用户是否拥有 admin 角色
-        user_roles = await RbacService.get_user_roles(db, user_id)
-        return "admin" in user_roles
 
     @staticmethod
     async def clear_user_cache(user_id: int):
@@ -633,9 +570,6 @@ class RbacService:
         if not user:
             raise ValueError("用户不存在")
 
-        # 清除用户缓存
-        await RbacService.clear_user_cache(user_id)
-
         # 删除旧角色
         await db.execute(
             delete(UserRole).where(UserRole.user_id == user_id)
@@ -650,20 +584,32 @@ class RbacService:
             db.add(user_role)
 
         await db.commit()
+        # P6 修复：commit 成功后再清缓存，避免缓存先清、写库未完成的竞态窗口
+        await RbacService.clear_user_cache(user_id)
         return True
 
     # ==================== 用户菜单 ====================
 
     @staticmethod
-    async def get_user_menu_tree(db: AsyncSession, user_id: int) -> List[dict]:
-        """获取用户可访问的权限列表（按 sort_order 排序）"""
-        from src.models.user import Permission
+    async def get_user_menu_tree(
+        db: AsyncSession,
+        user_permissions: List[str],
+    ) -> List[dict]:
+        """获取用户可访问的权限列表（按用户权限集合过滤，按 sort_order 排序）
 
-        result = await db.execute(
+        Args:
+            db: 数据库会话
+            user_permissions: 当前用户拥有的权限码列表，"*" 表示全部
+        """
+        stmt = (
             select(Permission)
             .where(Permission.status == True)
             .order_by(Permission.sort_order)
         )
+        if "*" not in user_permissions:
+            stmt = stmt.where(Permission.permission_code.in_(user_permissions))
+
+        result = await db.execute(stmt)
         permissions = result.scalars().all()
 
         return [

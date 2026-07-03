@@ -1,4 +1,5 @@
 """环境配置"""
+
 from pathlib import Path
 from functools import lru_cache
 from typing import List
@@ -52,23 +53,23 @@ class Settings(BaseSettings):
     # 文件上传
     MAX_FILE_SIZE: int = 50 * 1024 * 1024  # 50MB
 
-    # 系统账户白名单（环境变量名：SYSTEM_ACCOUNTS，值如：zch 或 zch,admin）
-    system_accounts: str = "admin"
+    # 系统超管白名单，逗号分隔，如 "zch,admin"
+    # 对应 .env: SYSTEM_ACCOUNTS=zch,admin
+    SYSTEM_ACCOUNTS: str = "admin"
 
     model_config = SettingsConfigDict(
         env_file=str(_ENV_FILE),
         env_file_encoding="utf-8",
-        extra="ignore",  # 忽略额外字段
+        extra="ignore",
     )
-
-    @property
-    def SYSTEM_ACCOUNTS(self) -> List[str]:
-        """解析逗号分隔的账户列表"""
-        if not self.system_accounts:
-            return []
-        return [acc.strip() for acc in self.system_accounts.split(",") if acc.strip()]
 
 
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+def is_system_account(username: str) -> bool:
+    """判断用户名是否在超管白名单中（白名单用户拥有全部权限）"""
+    accounts = get_settings().SYSTEM_ACCOUNTS
+    return username in {acc.strip() for acc in accounts.split(",") if acc.strip()}

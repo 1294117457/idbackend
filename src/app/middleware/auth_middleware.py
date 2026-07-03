@@ -8,11 +8,12 @@
 
 注意：权限校验由 PermissionMiddleware 负责
 """
+
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse
 
-from src.app.context import set_current_user, clear_current_user
+from src.app.context import set_user, clear_user
+from src.app.response import unauthorized_resp
 from src.infra.jwt import verify_token, JWTError
 
 
@@ -52,21 +53,15 @@ class AuthMiddleware(BaseHTTPMiddleware):
         auth_header = request.headers.get("Authorization", "")
 
         if not auth_header.startswith("Bearer "):
-            return JSONResponse(
-                status_code=401,
-                content={"code": 401, "msg": "请先登录"}
-            )
+            return unauthorized_resp("请先登录")
 
         token = auth_header[7:]
 
         # 3. 解析 JWT
         try:
             payload = verify_token(token)
-        except JWTError as e:
-            return JSONResponse(
-                status_code=401,
-                content={"code": 401, "msg": "Token无效"}
-            )
+        except JWTError:
+            return unauthorized_resp("Token无效")
 
         # 4. 构建用户对象（仅身份信息；权限/角色由 PermissionMiddleware 实时判定）
         user = {
@@ -74,14 +69,11 @@ class AuthMiddleware(BaseHTTPMiddleware):
             "username": payload.get("username"),
         }
 
-        # 5. 设置到 ContextVar
-        set_current_user(user)
-
+        set_user(user)
         try:
             return await call_next(request)
         finally:
-            # 7. 请求结束清除上下文
-            clear_current_user()
+            clear_user()
 
     def _is_bypass_path(self, path: str) -> bool:
         """检查路径是否在白名单中"""
