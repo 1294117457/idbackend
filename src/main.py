@@ -18,8 +18,14 @@ logger = logging.getLogger("uvicorn.access")
 from src.infra.config import get_settings
 from src.infra.database import init_db, close_db
 from src.infra.redis import close_redis
+from src.app.dependencies import get_storage
 from src.app.middleware.auth_middleware import AuthMiddleware
 from src.app.middleware.permission_middleware import PermissionMiddleware
+from src.services.file_service import (
+    FileAuthError,
+    FileForbiddenError,
+    FileNotFoundError,
+)
 
 from src.app.routes.auth import router as auth_router
 from src.app.routes.user import router as user_router
@@ -50,11 +56,24 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[idpython] 数据库初始化失败: {e}")
 
+    # 存储后端就绪（建 bucket / 建本地目录）
+    try:
+        storage = get_storage()
+        storage.ensure_bucket()
+        print(f"[idpython] 存储后端就绪: {type(storage).__name__}")
+    except Exception as e:
+        print(f"[idpython] 存储初始化失败: {e}")
+
     yield
 
     print("[idpython] 关闭中...")
     await close_db()
     await close_redis()
+    # 释放 Storage 底层连接
+    try:
+        get_storage().close()
+    except Exception:
+        pass
     print("[idpython] 关闭完成")
 
 
@@ -110,6 +129,31 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         status_code=400,
         content={"code": 400, "msg": f"参数错误: {msg}", "data": None},
     )
+
+
+# ============ 业务异常 → HTTP 统一映射 ============
+# 路由无需 try/except：service 抛出业务异常，handler 自动转 JSON
+
+async def _handle_business_error(request: Request, exc: Exception, http_code: int):
+    return JSONResponse(
+        status_code=http_code,
+        content={"code": http_code, "msg": str(exc), "data": None},
+    )
+
+
+@app.exception_handler(FileNotFoundError)
+async def _file_not_found_handler(request: Request, exc: FileNotFoundError):
+    return await _handle_business_error(request, exc, FileNotFoundError.http_code)
+
+
+@app.exception_handler(FileForbiddenError)
+async def _file_forbidden_handler(request: Request, exc: FileForbiddenError):
+    return await _handle_business_error(request, exc, FileForbiddenError.http_code)
+
+
+@app.exception_handler(FileAuthError)
+async def _file_auth_handler(request: Request, exc: FileAuthError):
+    return await _handle_business_error(request, exc, FileAuthError.http_code)
 
 
 @app.exception_handler(Exception)

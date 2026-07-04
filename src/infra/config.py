@@ -22,11 +22,23 @@ class Settings(BaseSettings):
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
 
-    # SeaweedFS (S3兼容)
-    S3_ENDPOINT: str = "http://localhost:8333"
-    S3_ACCESS_KEY: str = "admin"
-    S3_SECRET_KEY: str = "password"
-    S3_BUCKET: str = "idproject"
+    # MinIO（S3 兼容对象存储）
+    # .env 字段名：MINIO_* （pydantic-settings 大小写不敏感，仍可用 S3_* 兼容老配置）
+    MINIO_ENDPOINT: str = "http://localhost:9000"
+    MINIO_ACCESS_KEY: str = "admin"
+    MINIO_SECRET_KEY: str = "password"
+    MINIO_BUCKET: str = "idproject"
+
+    # MinIO 客户端调优（boto3 Config）
+    MINIO_MAX_POOL_CONNECTIONS: int = 50         # 单 client 最大连接数；总并发 = workers × 该值
+    MINIO_CONNECT_TIMEOUT: int = 5               # TCP 连接超时（秒）
+    MINIO_READ_TIMEOUT: int = 30                 # 读超时（秒）
+    MINIO_MAX_RETRIES: int = 3                   # 失败重试次数
+
+    # 存储后端选择（minio / s3 / local）
+    # 兼容别名：s3 等价于 minio（老 .env STORAGE_BACKEND=s3 仍生效）
+    storage_backend: str = "minio"               # STORAGE_BACKEND=minio 或 =s3 或 =local
+    local_storage_dir: str = "./storage"         # LocalAdapter 的根目录
 
     # JWT
     JWT_SECRET: str = "change-me-in-production"
