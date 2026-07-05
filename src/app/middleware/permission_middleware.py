@@ -62,7 +62,13 @@ class PermissionMiddleware(BaseHTTPMiddleware):
 
         # 白名单超管：跳过 DB 查询，直接给全部权限
         if is_system_account(username):
-            set_user({"user_id": user_id, "username": username, "is_admin": True, "roles": [], "permissions": ["*"]})
+            set_user({
+                "user_id": user_id,
+                "username": username,
+                "is_admin": True,
+                "roles": [{"roleCode": "super_admin", "roleName": "超级管理员"}],
+                "permissions": ["*"],
+            })
             return await call_next(request)
 
         # 从数据库加载用户状态 + 角色 + 权限

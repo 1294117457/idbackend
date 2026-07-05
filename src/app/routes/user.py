@@ -5,12 +5,16 @@ from pydantic import BaseModel
 from typing import Optional
 
 from src.app.deps import get_db
-from src.app.context import get_user_id, get_user_roles
+from src.app.context import get_user_id, get_user_roles, get_user_permissions
 from src.app import response as R
 from src.services import UserService
 from src.services.rbac_service import RbacService
 
+# /api/user/** 下的标准用户路由
 router = APIRouter(prefix="/api/user", tags=["用户"])
+
+# /api/system/user/me 等系统级用户接口（无 prefix，独立挂载）
+system_router = APIRouter(tags=["用户"])
 
 
 # ========== 请求/响应模型 ==========
@@ -349,4 +353,23 @@ async def admin_batch_create_users(
     return R.success_resp({
         "created": created,
         "failed": failed,
+    })
+
+
+# ========== 当前登录用户信息（兼容旧菜单接口，已迁移至此） ==========
+
+@system_router.get("/api/system/user/me")
+async def get_current_user_info(db: AsyncSession = Depends(get_db)):
+    """获取当前用户信息（角色 + 权限均来自 ContextVar，无额外 DB 查询）"""
+    user = await UserService.get_user_by_id(db, get_user_id())
+    if not user:
+        return R.not_found_resp("用户不存在")
+
+    return R.success_resp({
+        "userId": user.id,
+        "username": user.username,
+        "fullName": user.full_name,
+        "avatar": user.avatar,
+        "roles": get_user_roles(),
+        "permissions": get_user_permissions(),
     })

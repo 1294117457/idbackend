@@ -11,7 +11,7 @@
 """
 # ============== 路由 import ==============
 from src.app.routes.auth import router as auth_router
-from src.app.routes.user import router as user_router
+from src.app.routes.user import router as user_router, system_router as user_system_router
 from src.app.routes.application import router as application_router
 from src.app.routes.template import router as template_router
 from src.app.routes.file import router as file_router
@@ -23,8 +23,8 @@ from src.app.routes.demand_template import router as demand_template_router
 from src.app.routes.demand_application import router as demand_application_router
 from src.app.routes.role import router as role_router
 from src.app.routes.permission import router as permission_router
-from src.app.routes.menu import router as menu_router
 from src.app.routes.system_config import router as system_config_router
+# 注：menu_router 已废弃，me 接口迁移至 user.system_router
 
 
 # ============== 注册顺序（按业务分组） ==============
@@ -36,6 +36,7 @@ ROUTERS = [
     auth_router,
     # 用户
     user_router,
+    user_system_router,
     # 业务核心
     application_router,
     template_router,
@@ -50,7 +51,6 @@ ROUTERS = [
     # 权限管理
     role_router,
     permission_router,
-    menu_router,
     # 系统配置
     system_config_router,
 ]
@@ -72,6 +72,7 @@ __all__ = [
     # 路由实例（按需单独导入使用）
     "auth_router",
     "user_router",
+    "user_system_router",
     "application_router",
     "template_router",
     "file_router",
@@ -83,7 +84,6 @@ __all__ = [
     "demand_application_router",
     "role_router",
     "permission_router",
-    "menu_router",
     "system_config_router",
     # 注册入口
     "register_all_routes",
