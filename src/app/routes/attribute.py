@@ -37,7 +37,8 @@ class AttributeListQueryRequest(BaseModel):
     groupCode: str | None = Field(default=None, description="按 group_code 过滤")
     isActive: bool | None = Field(default=True)
     pageNum: int = Field(default=1, ge=1)
-    pageSize: int = Field(default=20, ge=1, le=100)
+    # 上限放至 500，给管理端 scoreAttribute.vue pageSize=200 留余量（一次拉所有 group）
+    pageSize: int = Field(default=20, ge=1, le=500)
 
 
 @router.get("/list")
@@ -46,7 +47,7 @@ async def list_attributes(
     groupCode: str | None = Query(default=None, description="group_code 过滤"),
     isActive: bool | None = Query(default=True),
     pageNum: int = Query(default=1, ge=1),
-    pageSize: int = Query(default=20, ge=1, le=100),
+    pageSize: int = Query(default=20, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
 ):
     """分页列表（Page[AttributeVO]）"""

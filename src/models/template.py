@@ -69,11 +69,17 @@ class Template(Base, TimestampMixin):
         back_populates="templates",
         foreign_keys="[Template.category_id]",
     )
-    rules: Mapped[List["TemplateRule"]] = relationship(
-        "TemplateRule",
-        back_populates="template",
-        cascade="all, delete-orphan",
+    # v4: Template → Rule 是多对多（template_rule 极简关联表）；
+    # 直接通过 secondary=template_rule，让 ORM 表示为 Rule 列表，
+    # 这样 selectinload(Template.rules).selectinload(Rule.attributes) 可贯通。
+    # 注意：写操作（bind / unbind）仍由 TemplateRepository 显式管理 TemplateRule 行，
+    # Template.rules 仅作为查询视图（与文档 template.md 第 264 行 ASCII 图一致）。
+    rules: Mapped[List["Rule"]] = relationship(
+        "Rule",
+        secondary="template_rule",
+        back_populates="templates",
         passive_deletes=True,
+        viewonly=True,
     )
 
     __table_args__ = (
@@ -118,11 +124,15 @@ class Rule(Base, TimestampMixin):
         back_populates="rules",
         passive_deletes=True,
     )
-    templates: Mapped[List["TemplateRule"]] = relationship(
-        "TemplateRule",
-        back_populates="rule",
-        cascade="all, delete-orphan",
+    # v4: 改为 secondary 反向到 Template（与上方 Template.rules 对称）。
+    # 原先此处也指向关联实体 TemplateRule，已不再需要——TemplateService.bind/unbind
+    # 由 TemplateRepository 显式操作 template_rule 行。
+    templates: Mapped[List["Template"]] = relationship(
+        "Template",
+        secondary="template_rule",
+        back_populates="rules",
         passive_deletes=True,
+        viewonly=True,
     )
 
     __table_args__ = (
@@ -209,12 +219,10 @@ class TemplateRule(Base, TimestampMixin):
         nullable=False,
     )
 
-    template: Mapped["Template"] = relationship(
-        "Template", back_populates="rules",
-    )
-    rule: Mapped["Rule"] = relationship(
-        "Rule", back_populates="templates",
-    )
+    # 注意：v4 改造后，Template.rules / Rule.templates 已通过 secondary 直连，
+    # 此处不再保留 template / rule 反向 relationship（避免与 secondary 关系冲突）。
+    # TemplateRule 仅作为"绑定事实"关联表存在，repository 层显式写入。
+    # 关联表本身仍可用 .template_id / .rule_id 列做按需查询。
 
     __table_args__ = (
         UniqueConstraint("template_id", "rule_id", name="uk_template_rule"),

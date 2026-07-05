@@ -64,12 +64,13 @@ PERMISSIONS = [
     # 注：FastAPI 路由匹配按注册顺序。模板分类前缀 /api/template-category 比模板 /api/bonus-template 短，
     # 为避免前缀误匹配，把精确路径放在前面（seed_permissions 也按 path→code 维护，无顺序依赖，但代码顺序保持清晰）
     ("/api/template-category/tree", "template_category:read", "模板分类-树", 510),
-    ("/api/template-category/leaf", "template_category:read", "模板分类-叶子列表", 511),
-    ("/api/template-category", "template_category:create", "模板分类-创建", 512),
-    ("/api/template-category/{category_id}", "template_category:read", "模板分类-详情", 513),
-    ("/api/template-category/{category_id}", "template_category:update", "模板分类-更新", 514),
-    ("/api/template-category/{category_id}", "template_category:delete", "模板分类-删除", 515),
-    ("/api/template-category/{category_id}/delete-preview", "template_category:read", "模板分类-删除预览", 516),
+    ("/api/template-category/list", "template_category:read", "模板分类-列表", 511),
+    ("/api/template-category/leaf", "template_category:read", "模板分类-叶子列表", 512),
+    ("/api/template-category", "template_category:create", "模板分类-创建", 513),
+    ("/api/template-category/{category_id}", "template_category:read", "模板分类-详情", 514),
+    ("/api/template-category/{category_id}", "template_category:update", "模板分类-更新", 515),
+    ("/api/template-category/{category_id}", "template_category:delete", "模板分类-删除", 516),
+    ("/api/template-category/{category_id}/delete-preview", "template_category:read", "模板分类-删除预览", 517),
 
     # ============== Rule（rule，需 admin） ==============
     ("/api/rule/list", "rule:list", "规则-列表", 701),
