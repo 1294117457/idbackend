@@ -3,18 +3,20 @@
 架构约定（见 docs/file/分层设计.md）：
 - Request 负责"接收输入 + 校验 + 提供转换方法（to_metadata / apply_to / to_conditions）"
 - VO 只做"ORM → 序列化"的投影，不含 url 等访问字段
+    - 转换方法为 `from_orm_to_vo(obj)`（语义清晰，与 Page.from_list_to_page 对称）
 - VO 不含 url，url 走 FileDataVO（预览/下载场景独立接口）
 - 工具函数（_build_object_name / _format_size）放在本模块，以便 Request 复用
 """
 import uuid
 from datetime import datetime, timezone
-from typing import Optional, List, Generic, TypeVar
+from typing import Optional, List
 
 from fastapi import UploadFile
 from pydantic import BaseModel, Field, ConfigDict, field_validator
 from sqlalchemy import and_
 
 from src.models import FileCategory, FileMetadata
+from src.app.schemas.page import Page
 
 
 # ========== 内部工具（service 层会复用） ==========
@@ -44,37 +46,6 @@ def _format_size(size: Optional[int]) -> str:
     if size < 1024 * 1024:
         return f"{size / 1024:.1f}KB"
     return f"{size / (1024 * 1024):.1f}MB"
-
-
-# ========== 通用分页容器（跨模块复用，文件模块也用） ==========
-
-T = TypeVar("T")
-
-
-class Page(BaseModel, Generic[T]):
-    """通用分页响应容器"""
-    list: List[T]
-    total: int
-    pageNum: int
-    pageSize: int
-    pages: int
-
-    @classmethod
-    def build(
-        cls,
-        items: List[T],
-        total: int,
-        page_num: int,
-        page_size: int,
-    ) -> "Page[T]":
-        pages = (total + page_size - 1) // page_size if total > 0 else 0
-        return cls(
-            list=items,
-            total=total,
-            pageNum=page_num,
-            pageSize=page_size,
-            pages=pages,
-        )
 
 
 # ========== 请求 DTO ==========
@@ -156,11 +127,6 @@ class FileUpdateRequest(BaseModel):
 
 
 class FileQueryRequest(BaseModel):
-    """文件查询请求——DTO 承担"字段→ORM where 条件"翻译职责
-
-    配置 `populate_by_name=True`：既支持驼峰字段名（`fileName`）也支持下划线
-    （`file_name`）传入，便于 FastAPI Query 自动解析（参见 §5.3）。
-    """
     model_config = ConfigDict(populate_by_name=True)
 
     fileName: Optional[str] = Field(default=None, description="文件名模糊查询")
@@ -172,17 +138,7 @@ class FileQueryRequest(BaseModel):
     pageSize: int = Field(default=20, ge=1, le=100, description="每页大小")
 
     def _parse_iso(self, s: Optional[str]) -> Optional[datetime]:
-        """容错解析 ISO8601 字符串
 
-        支持以下输入：
-          - '2026-07-04T10:30:00'         (前端 el-date-picker value-format 默认)
-          - '2026-07-04T10:30:00Z'        (UTC)
-          - '2026-07-04T10:30:00+08:00'   (带时区)
-          - '2026-07-04 10:30:00'         (空格分隔，el-date-picker format 常见)
-          - '2026-07-04'                  (仅日期)
-
-        解析失败返回 None（让 service 跳过该条件，而非抛 500）。
-        """
         if not s:
             return None
         s = s.strip().replace(" ", "T")
@@ -255,7 +211,7 @@ class FileVO(BaseModel):
         return v if v.startswith(".") else f".{v}"
 
     @classmethod
-    def from_orm_obj(cls, obj) -> "FileVO":
+    def from_orm_to_vo(cls, obj) -> "FileVO":
         cat = obj.file_category.value if hasattr(obj.file_category, "value") else obj.file_category
         return cls(
             id=obj.id,
@@ -289,7 +245,7 @@ class FileDataVO(BaseModel):
     url: str
 
     @classmethod
-    def from_orm_obj(cls, obj, url: str) -> "FileDataVO":
+    def from_orm_to_vo(cls, obj, url: str) -> "FileDataVO":
         return cls(
             id=obj.id,
             originalName=obj.original_name,
@@ -301,7 +257,6 @@ class FileDataVO(BaseModel):
 __all__ = [
     "_build_object_name",
     "_format_size",
-    "Page",
     "FileUploadRequest",
     "FileAvatarUploadRequest",
     "FileUpdateRequest",

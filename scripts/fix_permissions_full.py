@@ -19,23 +19,15 @@
     python -m scripts.fix_permissions_full
 
 【已实现路由对照表（必须保持与本文件一致）】
-  /api/demand-template/list             POST   demand_template.py:44
-  /api/demand-template/create          POST   demand_template.py:62
-  /api/demand-template/{template_id}   PUT    demand_template.py
-  /api/demand-template/{template_id}   DELETE demand_template.py
-  /api/bonus-template/list             POST   bonus_template.py (按 seed)
-  /api/bonus-template/{template_id}    GET    bonus_template.py
-  /api/bonus-template/create           POST   bonus_template.py
-  /api/bonus-template/{template_id}    PUT    bonus_template.py
-  /api/bonus-template/{template_id}    DELETE bonus_template.py
-  /api/rule-attribute/*                *      attribute.py
-  /api/field-config/subcategory/*       *      field_config routes
-  /api/application/audit/*             *      application.py
-  /api/proof/{proof_id}/*              *      proof routes
-  /api/demand-application/all          GET    application demand routes
-  /api/system/role/*                   *      user.py / role routes
-  /api/system/permission/*             *      permission routes
-  /api/system/config                   *      system_config.py
+  /api/bonus-template/*                    *      bonus_template.py
+  /api/rule/*                              *      rule.py
+  /api/rule-attribute/*                    *      attribute.py
+  /api/template-category/*                 *      template_category.py
+  /api/application/audit/*                 *      application.py
+  /api/proof/{proof_id}/*                  *      proof routes
+  /api/system/role/*                       *      user.py / role routes
+  /api/system/permission/*                 *      permission routes
+  /api/system/config                       *      system_config.py
 """
 import asyncio
 import os
@@ -78,23 +70,29 @@ PERMISSIONS: list[tuple[str, str, str, int]] = [
 
     # ---- bonus-template（admin） ----
     ("/api/bonus-template/list", "template:list", "模板-列表", 501),
-    ("/api/bonus-template/{template_id}", "template:detail", "模板-详情", 502),
-    ("/api/bonus-template/create", "template:create", "模板-创建", 503),
-    ("/api/bonus-template/{template_id}", "template:update", "模板-更新", 504),
-    ("/api/bonus-template/{template_id}", "template:delete", "模板-删除", 505),
+    ("/api/bonus-template/by-category", "template:list", "模板-按分类", 502),
+    ("/api/bonus-template/{template_id}", "template:detail", "模板-详情", 503),
+    ("/api/bonus-template", "template:create", "模板-创建", 504),
+    ("/api/bonus-template/{template_id}", "template:update", "模板-更新", 505),
+    ("/api/bonus-template/{template_id}", "template:delete", "模板-删除", 506),
+    ("/api/bonus-template/{template_id}/rules", "template:bind_rule", "模板-绑规则", 507),
+    ("/api/bonus-template/{template_id}/rules/{rule_id}", "template:unbind_rule", "模板-解绑规则", 508),
 
-    # ---- demand-template（admin） ----
-    ("/api/demand-template/list", "demand_template:list", "需求模板-列表", 601),
-    ("/api/demand-template/create", "demand_template:create", "需求模板-创建", 602),
-    ("/api/demand-template/{template_id}", "demand_template:update", "需求模板-更新", 603),
-    ("/api/demand-template/{template_id}", "demand_template:delete", "需求模板-删除", 604),
+    # ---- rule（admin） ----
+    ("/api/rule/list", "rule:list", "规则-列表", 701),
+    ("/api/rule/{rule_id}", "rule:detail", "规则-详情", 702),
+    ("/api/rule", "rule:create", "规则-创建", 703),
+    ("/api/rule/{rule_id}", "rule:update", "规则-更新", 704),
+    ("/api/rule/{rule_id}", "rule:delete", "规则-删除", 705),
+    ("/api/rule/{rule_id}/attributes", "rule:bind_attribute", "规则-绑属性", 706),
+    ("/api/rule/{rule_id}/attributes/{attribute_id}", "rule:unbind_attribute", "规则-解绑属性", 707),
 
-    # ---- 字段配置（admin） ----
-    ("/api/field-config/list/all", "field_config:list_all", "字段配置-全量", 801),
-    ("/api/field-config/subcategory/list", "field_config:subcategory:list", "字段配置-子分类列表", 802),
-    ("/api/field-config/subcategory", "field_config:subcategory:create", "字段配置-子分类创建", 803),
-    ("/api/field-config/subcategory/{subcategory_id}", "field_config:subcategory:update", "字段配置-子分类更新", 804),
-    ("/api/field-config/subcategory/{subcategory_id}", "field_config:subcategory:delete", "字段配置-子分类删除", 805),
+    # ---- rule-attribute（admin） ----
+    ("/api/rule-attribute/list", "attribute:list", "属性-列表", 711),
+    ("/api/rule-attribute/{attribute_id}", "attribute:detail", "属性-详情", 712),
+    ("/api/rule-attribute", "attribute:create", "属性-创建", 713),
+    ("/api/rule-attribute/{attribute_id}", "attribute:update", "属性-更新", 714),
+    ("/api/rule-attribute/{attribute_id}", "attribute:delete", "属性-删除", 715),
 
     # ---- 系统配置（admin） ----
     ("/api/system/config", "system:config:view", "系统配置-查看", 901),
@@ -115,9 +113,6 @@ PERMISSIONS: list[tuple[str, str, str, int]] = [
     ("/api/proof/{proof_id}/approve", "proof:approve", "证明-审核通过", 1101),
     ("/api/proof/{proof_id}/reject", "proof:reject", "证明-审核驳回", 1102),
     ("/api/proof/{proof_id}/override", "proof:override", "证明-覆盖重判", 1103),
-
-    # ---- 需求申请审核 ----
-    ("/api/demand-application/all", "demand_application:list_all", "需求申请-全部列表", 1201),
 ]
 
 
@@ -134,13 +129,13 @@ ROLE_PERMISSIONS: dict[str, list[str]] = {
         "permission:list", "permission:interfaces", "permission:scan",
         "permission:create", "permission:update", "permission:delete",
         "template:list", "template:detail", "template:create", "template:update", "template:delete",
-        "demand_template:list", "demand_template:create", "demand_template:update", "demand_template:delete",
-        "field_config:list_all", "field_config:subcategory:list",
-        "field_config:subcategory:create", "field_config:subcategory:update", "field_config:subcategory:delete",
+        "template:bind_rule", "template:unbind_rule",
+        "rule:list", "rule:detail", "rule:create", "rule:update", "rule:delete",
+        "rule:bind_attribute", "rule:unbind_attribute",
+        "attribute:list", "attribute:detail", "attribute:create", "attribute:update", "attribute:delete",
         "application:pending:list", "application:audit:pending", "application:audit:history",
         "application:audit:approve", "application:audit:reject", "application:audit:revoke",
         "proof:approve", "proof:reject", "proof:override",
-        "demand_application:list_all",
     ],
 
     "reviewer": [

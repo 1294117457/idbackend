@@ -1,146 +1,119 @@
-"""属性管理路由 - 兼容 idfrontend-admin"""
-from fastapi import APIRouter, Depends, Path
+"""Attribute 管理路由（v4 设计）
+
+REST 接口约定（与 file.py 一致）：
+- 前缀：/api/rule-attribute
+- 路由层只做三件事：接 DTO → 调 service → 包 R 响应
+- **零 try/except**：业务异常由全局 exception_handlers 自动翻译
+"""
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, Path, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from pydantic import BaseModel
-from typing import Optional, List
+from pydantic import BaseModel, Field
 
 from src.app.deps import get_db
 from src.app import response as R
-from src.services.attribute_service import AttributeService
+from src.app.schemas.template import (
+    AttributeCreateRequest,
+    AttributeUpdateRequest,
+    AttributeVO,
+    AttributeListVO,
+)
+from src.services import AttributeService
 
 router = APIRouter(prefix="/api/rule-attribute", tags=["属性管理"])
 
 
-class RuleAttributeRequest(BaseModel):
-    attributeCode: str
-    attributeType: str        # 'CONDITION' | 'TRANSFORM'
-    attributeValue: str
-    inputMax: Optional[float] = None
-    inputMin: Optional[float] = None
-    inputInterval: Optional[str] = None  # 'OPEN' | 'CLOSED' | 'LEFT_OPEN' | 'RIGHT_OPEN'
-    displayOrder: int = 0
-    description: Optional[str] = None
-    isActive: Optional[bool] = True
+# ============================================================
+# 读接口
+# ============================================================
 
+class AttributeListQueryRequest(BaseModel):
+    """属性列表查询请求（GET /list）"""
 
-def format_attr(attr) -> dict:
-    """格式化属性响应"""
-    return {
-        "id": attr.id,
-        "attributeCode": attr.attribute_code,
-        "attributeType": attr.attribute_type,
-        "attributeValue": attr.attribute_value,
-        "inputMax": attr.input_max,
-        "inputMin": attr.input_min,
-        "inputInterval": attr.input_interval,
-        "displayOrder": attr.display_order,
-        "description": attr.description,
-        "isActive": attr.is_active,
-    }
+    model_config = {"populate_by_name": True}
+
+    type: str | None = Field(default=None, description="按类型过滤 CONDITION/TRANSFORM")
+    groupCode: str | None = Field(default=None, description="按 group_code 过滤")
+    isActive: bool | None = Field(default=True)
+    pageNum: int = Field(default=1, ge=1)
+    pageSize: int = Field(default=20, ge=1, le=100)
 
 
 @router.get("/list")
 async def list_attributes(
+    type: str | None = Query(default=None, description="CONDITION/TRANSFORM"),
+    groupCode: str | None = Query(default=None, description="group_code 过滤"),
+    isActive: bool | None = Query(default=True),
+    pageNum: int = Query(default=1, ge=1),
+    pageSize: int = Query(default=20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
 ):
-    """获取所有启用的属性"""
-    attrs = await AttributeService.get_all_active(db)
-    return R.success_resp([format_attr(a) for a in attrs])
-
-
-@router.get("/list-by-type/{type}")
-async def list_by_type(
-    type: str = Path(..., description="属性类型 CONDITION/TRANSFORM"),
-    db: AsyncSession = Depends(get_db),
-):
-    """根据类型获取属性"""
-    attrs = await AttributeService.get_by_type(db, type)
-    return R.success_resp([format_attr(a) for a in attrs])
-
-
-@router.get("/list-by-code/{code}")
-async def list_by_code(
-    code: str = Path(..., description="属性编码"),
-    db: AsyncSession = Depends(get_db),
-):
-    """根据编码获取属性"""
-    attrs = await AttributeService.get_by_code(db, code)
-    return R.success_resp([format_attr(a) for a in attrs])
+    """分页列表（Page[AttributeVO]）"""
+    type_upper = type.upper() if type else None
+    attributes, total = await AttributeService.list_paged(
+        db,
+        is_active=isActive,
+        attr_type=type_upper,
+        group_code=groupCode,
+        page_num=pageNum,
+        page_size=pageSize,
+    )
+    vo = AttributeListVO.from_list_to_page(
+        items=[AttributeVO.from_orm_to_vo(a) for a in attributes],
+        total=total,
+        page_num=pageNum,
+        page_size=pageSize,
+    )
+    return R.success_resp(vo.model_dump())
 
 
 @router.get("/{attribute_id}")
-async def get_detail(
-    attribute_id: int = Path(..., description="属性ID"),
+async def get_attribute_detail(
+    attribute_id: int = Path(..., ge=1),
     db: AsyncSession = Depends(get_db),
 ):
-    """获取属性详情"""
-    attr = await AttributeService.get_by_id(db, attribute_id)
-    if not attr:
-        return R.not_found_resp("属性不存在")
-    return R.success_resp(format_attr(attr))
+    """属性详情"""
+    attribute = await AttributeService.get_by_id(db, attribute_id)
+    return R.success_resp(AttributeVO.from_orm_to_vo(attribute).model_dump())
 
 
-@router.post("/create")
-async def create(
-    data: RuleAttributeRequest,
+# ============================================================
+# 写接口
+# ============================================================
+
+@router.post("", status_code=201)
+async def create_attribute(
+    req: AttributeCreateRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """创建属性"""
-    try:
-        attr = await AttributeService.create(
-            db,
-            attribute_code=data.attributeCode,
-            attribute_type=data.attributeType,
-            attribute_value=data.attributeValue,
-            input_min=data.inputMin,
-            input_max=data.inputMax,
-            input_interval=data.inputInterval,
-            display_order=data.displayOrder,
-            description=data.description,
-        )
-        return R.created_resp({"id": attr.id})
-    except ValueError as e:
-        return R.bad_request_resp(str(e))
+    """创建属性（service 内部校验 type / formula / group_name）"""
+    attribute = await AttributeService.create(db, req)
+    return R.created_resp(
+        AttributeVO.from_orm_to_vo(attribute).model_dump(),
+        msg="属性创建成功",
+    )
 
 
 @router.put("/{attribute_id}")
-async def update(
-    attribute_id: int = Path(..., description="属性ID"),
-    data: RuleAttributeRequest = ...,
+async def update_attribute(
+    attribute_id: int = Path(..., ge=1),
+    req: AttributeUpdateRequest = ...,
     db: AsyncSession = Depends(get_db),
 ):
-    """更新属性"""
-    try:
-        kwargs = {
-            "attribute_code": data.attributeCode,
-            "attribute_type": data.attributeType,
-            "attribute_value": data.attributeValue,
-            "input_min": data.inputMin,
-            "input_max": data.inputMax,
-            "input_interval": data.inputInterval,
-            "display_order": data.displayOrder,
-            "description": data.description,
-            "is_active": data.isActive,
-        }
-        kwargs = {k: v for k, v in kwargs.items() if v is not None}
-
-        attr = await AttributeService.update(db, attribute_id, **kwargs)
-        if not attr:
-            return R.not_found_resp("属性不存在")
-        return R.success_resp({"id": attr.id})
-    except ValueError as e:
-        return R.bad_request_resp(str(e))
+    """修改属性（service 校验 type 变化时的 value / 区间）"""
+    attribute = await AttributeService.update(db, attribute_id, req)
+    return R.success_resp(
+        AttributeVO.from_orm_to_vo(attribute).model_dump(),
+        msg="更新成功",
+    )
 
 
 @router.delete("/{attribute_id}")
-async def delete(
-    attribute_id: int = Path(..., description="属性ID"),
+async def delete_attribute(
+    attribute_id: int = Path(..., ge=1),
     db: AsyncSession = Depends(get_db),
 ):
-    """删除属性"""
-    attr = await AttributeService.get_by_id(db, attribute_id)
-    if not attr:
-        return R.not_found_resp("属性不存在")
-
+    """删除属性（FK CASCADE 自动清理 rule_attribute 行，不影响 application 历史）"""
     await AttributeService.delete(db, attribute_id)
     return R.success_resp(msg="删除成功")

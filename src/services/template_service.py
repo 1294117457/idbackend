@@ -1,327 +1,283 @@
-"""模板服务"""
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+"""Template 服务（Layer 2 - 聚合根）
+
+设计原则：
+|- 业务规则全部在此；数据库 IO 通过 TemplateRepository 间接访问
+|- 抛通用业务异常（NotFoundError / BadRequestError / ConflictError），由全局 exception_handler 翻译
+|- 事务边界在 service（一句话 commit 完成"多个 ORM 修改"）
+|- DTO 与 ORM 的转换由 schema 完成（to_orm / apply_to），service 拿到的是 ORM
+|- template 不校验 type 一致性（业务允许混用 CONDITION + TRANSFORM rule，软提示返回 is_mixed_type）
+"""
+import logging
+from decimal import Decimal
 from typing import Optional, List
-import json
 
-from src.models import ScoreTemplate, ScoreTemplateRule, RuleAttribute, DemandTemplate, FieldConfig, FieldSubcategory
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.models.template import Template
+from src.models.template_category import TemplateCategory
+from src.app.schemas.template import (
+    TemplateCreateRequest,
+    TemplateUpdateRequest,
+    TemplateListQueryRequest,
+)
+from src.app.schemas.errors import (
+    NotFoundError,
+    BadRequestError,
+    ConflictError,
+)
+from src.repositories.template_repo import TemplateRepository
+from src.repositories.template_category_repo import TemplateCategoryRepository
+
+logger = logging.getLogger(__name__)
+
+
+# ============================================================
+# 服务实现
+# ============================================================
 
 class TemplateService:
-    """模板服务"""
+    """Template 服务（Layer 2）"""
+
+    # ---------- 读 ----------
 
     @staticmethod
-    async def get_templates(
+    async def list_paged(
         db: AsyncSession,
-        score_type: Optional[int] = None,
+        req: TemplateListQueryRequest,
+    ) -> tuple[List[Template], int]:
+        """分页列表 + 总数（对齐 file.search_files 风格）。"""
+        total = await TemplateRepository.count(
+            db,
+            category_id=req.categoryId,
+            is_active=req.isActive,
+        )
+        templates = await TemplateRepository.list_paged(
+            db,
+            category_id=req.categoryId,
+            is_active=req.isActive,
+            offset=(req.pageNum - 1) * req.pageSize,
+            limit=req.pageSize,
+        )
+        return templates, total
+
+    @staticmethod
+    async def list_by_category(
+        db: AsyncSession,
+        category_id: int,
+        *,
         is_active: bool = True,
-    ) -> List[ScoreTemplate]:
-        """获取模板列表"""
-        query = select(ScoreTemplate).where(ScoreTemplate.is_active == is_active)
-
-        if score_type is not None:
-            query = query.where(ScoreTemplate.score_type == score_type)
-
-        query = query.order_by(ScoreTemplate.id)
-        result = await db.execute(query)
-        return list(result.scalars().all())
+    ) -> List[Template]:
+        """按分类 ID 列出模板（学生端选择 template）。"""
+        return await TemplateRepository.list_by_category(
+            db, category_id, is_active=is_active,
+        )
 
     @staticmethod
-    async def get_template_by_id(
+    async def get_by_id(
         db: AsyncSession,
         template_id: int,
-    ) -> Optional[ScoreTemplate]:
-        """根据ID获取模板"""
-        result = await db.execute(
-            select(ScoreTemplate).where(ScoreTemplate.id == template_id)
-        )
-        return result.scalar_one_or_none()
-
-    @staticmethod
-    async def get_template_rules(
-        db: AsyncSession,
-        template_id: int,
-    ) -> List[ScoreTemplateRule]:
-        """获取模板的计分规则"""
-        result = await db.execute(
-            select(ScoreTemplateRule).where(
-                ScoreTemplateRule.template_id == template_id
-            )
-        )
-        return list(result.scalars().all())
-
-    @staticmethod
-    async def create_template(
-        db: AsyncSession,
-        template_name: str,
-        template_type: str,
-        template_max_score: float,
-        score_type: int = 0,
-        input_unit: str = "",
-        description: str = "",
-        created_by: str = "system",
-        review_count: int = 1,
-    ) -> ScoreTemplate:
-        """创建模板"""
-        template = ScoreTemplate(
-            template_name=template_name,
-            template_type=template_type,
-            score_type=score_type,
-            template_max_score=template_max_score,
-            input_unit=input_unit,
-            description=description,
-            created_by=created_by,
-            review_count=review_count,
-        )
-        db.add(template)
-        await db.commit()
-        await db.refresh(template)
+    ) -> Template:
+        """单条查询，找不到抛 NotFoundError。"""
+        template = await TemplateRepository.get_by_id(db, template_id)
+        if template is None:
+            raise NotFoundError(f"模板(id={template_id})不存在")
         return template
 
     @staticmethod
-    async def get_rule_attributes(
+    async def get_with_rules(
         db: AsyncSession,
+        template_id: int,
+    ) -> Template:
+        """加载完整规则树（template → rules → attributes）。
+
+        使用 selectinload，3 条 SQL 拿到全部数据，无 N+1。
+        """
+        template = await TemplateRepository.get_with_rules(db, template_id)
+        if template is None:
+            raise NotFoundError(f"模板(id={template_id})不存在")
+        return template
+
+    @staticmethod
+    async def is_mixed_type(
+        db: AsyncSession,
+        template_id: int,
+    ) -> bool:
+        """判断 template 是否混用了不同 type 的 rule（业务合法，仅软提示）。"""
+        types = await TemplateRepository.get_rule_types(db, template_id)
+        return len(set(types)) > 1
+
+    # ---------- 写 ----------
+
+    @staticmethod
+    async def create(
+        db: AsyncSession,
+        req: TemplateCreateRequest,
+    ) -> Template:
+        """创建模板。
+
+        - 校验分类存在
+        - 校验分类未绑 template？v4 不限制：允许同一分类挂多个 template
+        - 调 TemplateCategoryService.bind_template 把分类的 is_bind_template 翻为 TRUE（幂等）
+        """
+        category = await TemplateCategoryRepository.get_by_id(db, req.categoryId)
+        if category is None:
+            raise NotFoundError(f"分类(id={req.categoryId})不存在")
+
+        template = req.to_orm()
+
+        db.add(template)
+        await TemplateRepository.commit(db)
+        await TemplateRepository.refresh(db, template)
+
+        # 翻分类 is_bind_template = TRUE（幂等）
+        from src.services.template_category_service import TemplateCategoryService
+        await TemplateCategoryService.bind_template(db, req.categoryId)
+
+        return template
+
+    @staticmethod
+    async def update(
+        db: AsyncSession,
+        template_id: int,
+        req: TemplateUpdateRequest,
+    ) -> Template:
+        """修改模板。"""
+        template = await TemplateService.get_by_id(db, template_id)
+
+        modified = req.apply_to(template)
+        if modified:
+            await TemplateRepository.commit(db)
+            await TemplateRepository.refresh(db, template)
+        return template
+
+    @staticmethod
+    async def bind_rule(
+        db: AsyncSession,
+        template_id: int,
         rule_id: int,
-    ) -> List[RuleAttribute]:
-        """获取规则的属性"""
-        result = await db.execute(
-            select(RuleAttribute).join(
-                ScoreTemplateRule.attributes
-            ).where(
-                ScoreTemplateRule.id == rule_id
+    ) -> dict:
+        """绑定 rule 到 template（v4 软提示策略）。
+
+        - 不校验 rule.type 一致性（业务允许混用 ACM 类模板）
+        - 返回 { bound, is_mixed_type } 给前端做软提示
+        - 混用时打 warning 日志，不抛异常
+        """
+        # 校验存在性
+        template = await TemplateService.get_by_id(db, template_id)
+
+        from src.services.rule_service import RuleService
+        await RuleService.get_by_id(db, rule_id)  # 不存在抛 NotFoundError
+
+        # 绑定（幂等）
+        link = await TemplateRepository.bind_rule(db, template_id, rule_id)
+        if link is not None:
+            await TemplateRepository.commit(db)
+
+        # 计算 is_mixed_type（每次实时算）
+        types = await TemplateRepository.get_rule_types(db, template_id)
+        is_mixed = len(set(types)) > 1
+
+        if is_mixed:
+            logger.warning(
+                "template(id=%s) 混用了 rule.type: %s",
+                template_id,
+                sorted(set(types)),
             )
+
+        return {"bound": True, "is_mixed_type": is_mixed}
+
+    @staticmethod
+    async def unbind_rule(
+        db: AsyncSession,
+        template_id: int,
+        rule_id: int,
+    ) -> None:
+        """解绑 rule（不影响 rule 本体）。"""
+        await TemplateService.get_by_id(db, template_id)
+        await TemplateRepository.unbind_rule(db, template_id, rule_id)
+        await TemplateRepository.commit(db)
+
+    @staticmethod
+    async def delete(
+        db: AsyncSession,
+        template_id: int,
+    ) -> None:
+        """删除 template。
+
+        - 预检：template 下是否有未关闭的 application
+        - 物理删除（FK CASCADE 自动清理 template_rule 行）
+        - 解绑后：检查 category 下 template 数量归零 → 翻 is_bind_template 回 FALSE
+        """
+        template = await TemplateService.get_by_id(db, template_id)
+
+        # 预检 active application
+        active_count = await TemplateRepository.count_active_applications(
+            db, [template_id],
         )
-        return list(result.scalars().all())
+        if active_count > 0:
+            raise ConflictError(
+                f"该模板下还有 {active_count} 条未关闭的申请，禁止删除"
+            )
 
-    @staticmethod
-    async def calculate_score(
-        rule: ScoreTemplateRule,
-        user_input: float,
-        attribute: Optional[RuleAttribute] = None,
-    ) -> float:
-        """计算分数"""
-        if rule.rule_type == "CONDITION":
-            # 条件型: 返回固定分数
-            return float(rule.rule_score or 0)
+        category_id = template.category_id
+        await TemplateRepository.delete(db, template_id)
+        await TemplateRepository.commit(db)
 
-        elif rule.rule_type == "TRANSFORM" and attribute:
-            # 转换型: 按公式计算
-            formula = attribute.attribute_value or ""
-            if formula and "INPUT" in formula:
-                # 公式格式: "100-(4-INPUT)/0.3*11"
-                try:
-                    return float(eval(formula.replace("INPUT", str(user_input))))
-                except:
-                    return 0
-            return 0
-
-        return 0
-
-    @staticmethod
-    async def get_demand_templates(
-        db: AsyncSession,
-        is_active: bool = True,
-    ) -> List[DemandTemplate]:
-        """获取需求模板"""
-        query = select(DemandTemplate).where(DemandTemplate.is_active == is_active)
-        query = query.order_by(DemandTemplate.sort_order)
-        result = await db.execute(query)
-        return list(result.scalars().all())
-
-    @staticmethod
-    async def get_field_configs(
-        db: AsyncSession,
-        field_type: Optional[str] = None,
-    ) -> List[FieldConfig]:
-        """获取字段配置"""
-        query = select(FieldConfig).where(FieldConfig.is_active == True)
-
-        if field_type:
-            query = query.where(FieldConfig.field_type == field_type)
-
-        query = query.order_by(FieldConfig.sort_order)
-        result = await db.execute(query)
-        return list(result.scalars().all())
-
-    @staticmethod
-    async def get_field_config_by_id(
-        db: AsyncSession,
-        config_id: int,
-    ) -> Optional[FieldConfig]:
-        """根据ID获取字段配置"""
-        result = await db.execute(
-            select(FieldConfig).where(FieldConfig.id == config_id)
+        # 解绑：检查 category 下是否还有其它 template，没有就翻回 FALSE
+        remaining = await TemplateRepository.count(
+            db, category_id=category_id, is_active=True,
         )
-        return result.scalar_one_or_none()
+        if remaining == 0:
+            from src.services.template_category_service import TemplateCategoryService
+            await TemplateCategoryService.unbind_template(db, category_id)
+
+    # ---------- 兼容旧接口（application 路由层仍在用旧字段，下个迭代会清理） ----------
 
     @staticmethod
-    async def create_field_config(
-        db: AsyncSession,
-        field_key: str,
-        display_name: str,
-        field_type: str,
-        max_score: Optional[float] = None,
-        conditions: Optional[str] = None,  # JSON string
-        description: Optional[str] = None,
-        college_code: Optional[str] = None,
-        academic_year: Optional[int] = None,
-        sort_order: int = 0,
-        created_by: str = "system",
-    ) -> FieldConfig:
-        """创建字段配置"""
-        # 解析 JSON string 为列表
-        conditions_list = None
-        if conditions:
-            try:
-                conditions_list = json.loads(conditions)
-            except:
-                conditions_list = [conditions]
+    async def get_templates(db: AsyncSession) -> List[Template]:
+        """兼容旧 application 路由：返回所有启用模板（不分页、不带规则树）。
 
-        config = FieldConfig(
-            field_key=field_key,
-            display_name=display_name,
-            field_type=field_type,
-            max_score=max_score,
-            conditions=conditions_list,
-            description=description,
-            college_code=college_code,
-            academic_year=academic_year,
-            sort_order=sort_order,
-            created_by=created_by,
+        下个迭代 application 路由完全切到 v4 后此方法可删除。
+        """
+        return await TemplateRepository.list_paged(
+            db, is_active=True, offset=0, limit=10000,
         )
-        db.add(config)
-        await db.commit()
-        await db.refresh(config)
-        return config
-
-    @staticmethod
-    async def update_field_config(
-        db: AsyncSession,
-        config_id: int,
-        **kwargs,
-    ) -> Optional[FieldConfig]:
-        """更新字段配置"""
-        config = await TemplateService.get_field_config_by_id(db, config_id)
-        if not config:
-            return None
-
-        for key, value in kwargs.items():
-            if hasattr(config, key) and value is not None:
-                setattr(config, key, value)
-
-        await db.commit()
-        await db.refresh(config)
-        return config
-
-    @staticmethod
-    async def delete_field_config(
-        db: AsyncSession,
-        config_id: int,
-    ) -> bool:
-        """删除字段配置"""
-        config = await TemplateService.get_field_config_by_id(db, config_id)
-        if not config:
-            return False
-
-        config.is_active = False
-        await db.commit()
-        return True
-
-    # ========== FieldSubcategory ==========
-
-    @staticmethod
-    async def get_subcategories(
-        db: AsyncSession,
-        field_id: Optional[int] = None,
-    ) -> List[FieldSubcategory]:
-        """获取字段细分"""
-        query = select(FieldSubcategory).where(FieldSubcategory.is_active == True)
-
-        if field_id:
-            query = query.where(FieldSubcategory.field_id == field_id)
-
-        query = query.order_by(FieldSubcategory.sort_order)
-        result = await db.execute(query)
-        return list(result.scalars().all())
-
-    @staticmethod
-    async def get_subcategory_by_id(
-        db: AsyncSession,
-        subcategory_id: int,
-    ) -> Optional[FieldSubcategory]:
-        """根据ID获取字段细分"""
-        result = await db.execute(
-            select(FieldSubcategory).where(FieldSubcategory.id == subcategory_id)
-        )
-        return result.scalar_one_or_none()
-
-    @staticmethod
-    async def create_subcategory(
-        db: AsyncSession,
-        field_id: int,
-        sub_key: str,
-        display_name: str,
-        max_score: float,
-        description: Optional[str] = None,
-        sort_order: int = 0,
-    ) -> FieldSubcategory:
-        """创建字段细分"""
-        subcategory = FieldSubcategory(
-            field_id=field_id,
-            sub_key=sub_key,
-            display_name=display_name,
-            max_score=max_score,
-            description=description,
-            sort_order=sort_order,
-        )
-        db.add(subcategory)
-        await db.commit()
-        await db.refresh(subcategory)
-        return subcategory
-
-    @staticmethod
-    async def update_subcategory(
-        db: AsyncSession,
-        subcategory_id: int,
-        **kwargs,
-    ) -> Optional[FieldSubcategory]:
-        """更新字段细分"""
-        subcategory = await TemplateService.get_subcategory_by_id(db, subcategory_id)
-        if not subcategory:
-            return None
-
-        for key, value in kwargs.items():
-            if hasattr(subcategory, key) and value is not None:
-                setattr(subcategory, key, value)
-
-        await db.commit()
-        await db.refresh(subcategory)
-        return subcategory
-
-    @staticmethod
-    async def delete_subcategory(
-        db: AsyncSession,
-        subcategory_id: int,
-    ) -> bool:
-        """删除字段细分"""
-        subcategory = await TemplateService.get_subcategory_by_id(db, subcategory_id)
-        if not subcategory:
-            return False
-
-        subcategory.is_active = False
-        await db.commit()
-        return True
 
     @staticmethod
     async def get_template_type_by_name(
         db: AsyncSession,
         template_name: str,
     ) -> str:
-        """根据模板名称获取模板类型"""
-        result = await db.execute(
-            select(ScoreTemplate.template_type).where(
-                ScoreTemplate.template_name == template_name
+        """兼容旧 application 路由：按模板名推断 type。
+
+        v4 模板无 type 字段，此处用 rule.type 的众数作为推断（业务提示用）。
+        """
+        from sqlalchemy import func
+
+        from src.models.template import TemplateRule
+
+        stmt = (
+            select(func.distinct(__import__("src.models.template", fromlist=["Rule"]).Rule.type))
+            .select_from(Template)
+            .join(TemplateRule, TemplateRule.template_id == Template.id)
+            .join(
+                __import__("src.models.template", fromlist=["Rule"]).Rule,
+                __import__("src.models.template", fromlist=["Rule"]).Rule.id == TemplateRule.rule_id,
             )
+            .where(Template.name == template_name)
+            .where(Template.is_active == True)
         )
-        template_type = result.scalar_one_or_none()
-        return template_type or "CONDITION"
+        result = await db.execute(stmt)
+        types = [row[0] for row in result.all()]
+        if not types:
+            return "CONDITION"
+        return types[0]
+
+
+# ============================================================
+# 内部辅助
+# ============================================================
+
+def _ensure_max_score_non_negative(max_score: Decimal) -> None:
+    if max_score < 0:
+        raise BadRequestError(f"max_score 必须 >= 0，当前值: {max_score}")

@@ -1,176 +1,37 @@
-"""Pydantic 模型 - 请求/响应 DTO
+"""Pydantic 模型统一入口
 
 按模块拆分：
-- 认证 / 用户 / 申请 / 模板：本文件
-- 文件相关：src/app.schemas.file（详见 file 模块）
+- 通用分页容器：src/app/schemas/page
+- 通用业务异常：src/app/schemas/errors
+- 文件相关：src/app/schemas/file
+- 模板分类：src/app/schemas/template_category
+- 用户：src/app/schemas/user
+- 角色：src/app/schemas/role
+- 权限：src/app/schemas/permission
+- 认证：src/app/schemas/auth
+- 申请 / 模板 / 进度 / 附件：src/app/schemas/application / template / proof（其他模块暂保留内联）
 
-外部使用统一通过 `from src.app.schemas import ...`，对实现位置无感知。
+外部使用：from src.app.schemas import ...，对实现位置无感知。
 """
-from pydantic import BaseModel, field_validator
-from typing import Optional, List
-from datetime import datetime
 
+# ========== 通用分页容器 ==========
 
-# ========== 认证相关 ==========
+from src.app.schemas.page import Page  # noqa: E402, F401
 
-class LoginRequest(BaseModel):
-    username: str
-    password: str
-    verifyCode: Optional[str] = None
-    captchaId: Optional[str] = None
+# ========== 通用业务异常（运行时层；非 Pydantic） ==========
 
+from src.app.schemas.errors import (  # noqa: E402, F401
+    BusinessError,
+    NotFoundError,
+    BadRequestError,
+    ForbiddenError,
+    ConflictError,
+    UnauthorizedError,
+)
 
-class RegisterRequest(BaseModel):
-    username: str
-    password: str
-    code: str
+# ========== 文件 ==========
 
-
-class SendCodeRequest(BaseModel):
-    email: str
-    type: str = "register"
-
-    @field_validator('email')
-    @classmethod
-    def validate_email(cls, v):
-        if '@' not in v:
-            raise ValueError('Invalid email format')
-        return v
-
-
-class ResetPasswordRequest(BaseModel):
-    email: str
-    code: str
-    newPassword: str
-    confirmPassword: str
-
-    @field_validator('email')
-    @classmethod
-    def validate_email(cls, v):
-        if '@' not in v:
-            raise ValueError('Invalid email format')
-        return v
-
-
-class LoginResponse(BaseModel):
-    accessToken: str
-    refreshToken: str
-    expiresIn: int
-
-
-# ========== 用户相关 ==========
-
-class BindStudentRequest(BaseModel):
-    fullName: str
-    major: str
-    grade: Optional[int] = None
-    graduationYear: Optional[int] = None
-
-
-class UpdateProfileRequest(BaseModel):
-    phone: Optional[str] = None
-    avatar: Optional[str] = None
-
-
-class UserResponse(BaseModel):
-    userId: int
-    username: str
-    phone: Optional[str]
-    avatar: Optional[str]
-    status: str
-    role: str
-    fullName: Optional[str]
-    studentId: Optional[str]
-    major: Optional[str]
-    grade: Optional[int]
-    isConfirmed: bool
-    academicScore: float
-    specialtyScore: float
-    comprehensiveScore: float
-
-    class Config:
-        from_attributes = True
-
-
-class UserScoreResponse(BaseModel):
-    academic: float
-    specialty: float
-    comprehensive: float
-    total: float
-
-
-# ========== 申请相关 ==========
-
-class ProofItem(BaseModel):
-    proofFileId: int
-    proofValue: float
-    reviewCount: Optional[int] = 1
-    remark: Optional[str] = None
-
-
-class SubmitApplicationRequest(BaseModel):
-    studentId: str
-    studentName: str
-    major: str
-    enrollmentYear: int
-    templateName: str
-    templateType: str
-    scoreType: int
-    applyScore: float
-    applyInput: Optional[float] = None
-    ruleId: Optional[int] = None
-    reviewCount: int = 1
-    proofItems: List[ProofItem] = []
-    remark: Optional[str] = None
-
-
-class ApplicationResponse(BaseModel):
-    id: int
-    studentName: str
-    templateName: str
-    applyScore: float
-    gainScore: Optional[float]
-    status: int
-    createdAt: datetime
-
-    class Config:
-        from_attributes = True
-
-
-class ReviewRequest(BaseModel):
-    comment: Optional[str] = None
-
-
-# ========== 模板相关 ==========
-
-class TemplateResponse(BaseModel):
-    id: int
-    templateName: str
-    templateType: str
-    scoreType: int
-    maxScore: float
-    inputUnit: str
-    description: Optional[str]
-
-    class Config:
-        from_attributes = True
-
-
-class CreateTemplateRequest(BaseModel):
-    templateName: str
-    templateType: str = "CONDITION"
-    maxScore: float
-    scoreType: int = 0
-    inputUnit: str = ""
-    description: str = ""
-    reviewCount: int = 1
-
-
-# ========== 文件相关（见 src.app.schemas.file） ==========
-
-# 文件模块 DTO/VO/工具函数统一从 src.app.schemas.file 导出，避免本文件膨胀
 from src.app.schemas.file import (  # noqa: E402, F401
-    Page,
     FileUploadRequest,
     FileAvatarUploadRequest,
     FileUpdateRequest,
@@ -178,4 +39,99 @@ from src.app.schemas.file import (  # noqa: E402, F401
     FileVO,
     FileListVO,
     FileDataVO,
+)
+
+# ========== 模板分类 ==========
+
+from src.app.schemas.template_category import (  # noqa: E402, F401
+    TemplateCategoryCreateRequest,
+    TemplateCategoryUpdateRequest,
+    TemplateCategoryListQueryRequest,
+    TemplateCategoryPageQueryRequest,
+    TemplateCategoryVO,
+    TemplateCategoryDetailVO,
+    TemplateCategoryDeletePreviewVO,
+    TemplateCategoryListVO,
+)
+
+# ========== 模板 / Rule / Attribute（v4） ==========
+
+from src.app.schemas.template import (  # noqa: E402, F401
+    RuleCreateRequest,
+    RuleUpdateRequest,
+    RuleVO,
+    RuleDetailVO,
+    AttributeCreateRequest,
+    AttributeUpdateRequest,
+    AttributeVO,
+    AttributeListVO,
+    TemplateCreateRequest,
+    TemplateUpdateRequest,
+    TemplateVO,
+    TemplateDetailVO,
+    TemplateListQueryRequest,
+    TemplateListVO,
+    TemplateCategoryListQueryRequest,
+    TemplateBindRuleRequest,
+    TemplateBindRuleResultVO,
+    RuleBindAttributeRequest,
+)
+
+# ========== 用户 ==========
+
+from src.app.schemas.user import (  # noqa: E402, F401
+    UpdateProfileRequest,
+    BindStudentRequest,
+    UpdateStudentRequest,
+    UpdateUserStatusRequest,
+    CreateUserRequest,
+    BatchCreateUserRequest,
+    UserQueryRequest,
+    UserProfileVO,
+    UserCompleteInfoVO,
+    UserStudentInfoVO,
+    UserAdminListItemVO,
+    UserAdminListVO,
+    UserScoreVO,
+    CurrentUserInfoVO,
+)
+
+# 别名：历史上 UserResponse = 当前最全的 UserCompleteInfoVO（兼容旧引用）
+UserResponse = UserCompleteInfoVO
+
+# ========== 角色 ==========
+
+from src.app.schemas.role import (  # noqa: E402, F401
+    RoleCreateRequest,
+    RoleUpdateRequest,
+    RolePermissionAssignRequest,
+    RoleVO,
+    RoleDetailVO,
+    PermissionInRoleVO,
+    RoleListVO,
+)
+
+# ========== 权限 ==========
+
+from src.app.schemas.permission import (  # noqa: E402, F401
+    PermissionCreateRequest,
+    PermissionUpdateRequest,
+    PermissionVO,
+    PermissionListVO,
+    ApiInterfaceVO,
+    derive_module,
+)
+
+# ========== 认证 ==========
+
+from src.app.schemas.auth import (  # noqa: E402, F401
+    LoginRequest,
+    RegisterRequest,
+    SendCodeRequest,
+    RefreshTokenRequest,
+    LogoutRequest,
+    ForgotPasswordRequest,
+    AuthTokenPairVO,
+    UserCreateResultVO,
+    CaptchaVO,
 )

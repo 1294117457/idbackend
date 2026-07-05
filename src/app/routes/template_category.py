@@ -2,111 +2,66 @@
 
 REST 接口约定：
 - 前缀：/api/template-category
-- 鉴权：PermissionMiddleware 已在中间件层通过 RbacService.get_path_permission 校验权限码
-- 路由层只做参数解析 + 调用 service + 异常翻译，业务逻辑全部在 service
+- 鉴权：PermissionMiddleware 已按权限码校验
+- 路由层只做三件事：接 DTO → 调 service → 包 R 响应。
+  **零 try/except**：业务异常由全局 exception_handlers 自动翻译。
+- DTO ↔ ORM 转换由 schema 完成，service 拿到的就是 ORM
 
-权限码（在 seed_permissions.py 中注册）：
+权限码（seed_permissions.py 中注册）：
   template_category:read    - GET 全部接口
   template_category:create  - POST
   template_category:update  - PUT
   template_category:delete  - DELETE
 """
-from decimal import Decimal
-from typing import Optional
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, Path, Query
-from pydantic import BaseModel, Field, condecimal
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.deps import get_db
 from src.app import response as R
-from src.services.template_category_service import (
-    TemplateCategoryService,
-    CategoryNotFound,
-    CategoryNameDuplicate,
-    ParentAlreadyBound,
-    CategoryHasActiveApplications,
-    CategoryError,
+from src.app.schemas.template_category import (
+    TemplateCategoryCreateRequest,
+    TemplateCategoryUpdateRequest,
+    TemplateCategoryListQueryRequest,
+    TemplateCategoryPageQueryRequest,
+    TemplateCategoryVO,
+    TemplateCategoryDetailVO,
+    TemplateCategoryDeletePreviewVO,
 )
+from src.services.template_category_service import TemplateCategoryService
 
 
 router = APIRouter(prefix="/api/template-category", tags=["模板分类管理"])
 
 
-# ===================== Request Schema =====================
+# ============ 读接口 ============
 
-class TemplateCategoryCreate(BaseModel):
-    """创建分类请求体"""
-    parentId: Optional[int] = Field(
-        None, description="父分类 ID，null=创建根节点"
-    )
-    name: str = Field(..., min_length=1, max_length=100)
-    maxScore: condecimal(ge=0, max_digits=5, decimal_places=2) = Field(
-        ..., description="本级分数上限，不允许为 null"
-    )
-    sortOrder: int = Field(0, ge=0, description="同级展示顺序")
-    description: Optional[str] = Field(None, max_length=255)
-
-
-class TemplateCategoryUpdate(BaseModel):
-    """修改分类请求体（所有字段可选）"""
-    name: Optional[str] = Field(None, min_length=1, max_length=100)
-    maxScore: Optional[condecimal(ge=0, max_digits=5, decimal_places=2)] = None
-    sortOrder: Optional[int] = Field(None, ge=0)
-    isActive: Optional[bool] = None
-    description: Optional[str] = Field(None, max_length=255)
-
-    class Config:
-        extra = "forbid"  # 禁止 parentId/isBindTemplate 等被传入
-
-
-# ===================== Response 序列化 =====================
-
-def _to_dict(category) -> dict:
-    """ORM → API 响应格式（与 service 内 _serialize 保持一致）。"""
-    return {
-        "id": category.id,
-        "name": category.name,
-        "parentId": category.parent_id,
-        "maxScore": str(category.max_score),
-        "isBindTemplate": category.is_bind_template,
-        "sortOrder": category.sort_order,
-        "isActive": category.is_active,
-        "description": category.description,
-    }
-
-
-def _to_detail_dict(category, path: list) -> dict:
-    """详情用：附加完整路径信息。"""
-    base = _to_dict(category)
-    base["path"] = [
-        {"id": p.id, "name": p.name} for p in path
-    ]
-    return base
-
-
-# ===================== 读接口 =====================
-
-@router.get("/tree")
-async def get_category_tree(
-    includeInactive: bool = Query(False, description="是否包含已停用节点"),
+@router.get("/list")
+async def list_categories(
+    req: Annotated[TemplateCategoryPageQueryRequest, Query()],
     db: AsyncSession = Depends(get_db),
 ):
-    """获取完整分类树（嵌套结构）。"""
-    tree = await TemplateCategoryService.get_tree(db, include_inactive=includeInactive)
-    return R.success_resp(tree)
+    """平铺分页列表（Page[TemplateCategoryVO]）。
+
+    前端拿到 resp.data.list 后按 parentId 自组树，无后端嵌套。
+    """
+    page = await TemplateCategoryService.page(db, req)
+    return R.success_resp(page.model_dump())
 
 
 @router.get("/leaf")
 async def get_leaf_categories(
-    includeInactive: bool = Query(False, description="是否包含已停用节点"),
+    req: Annotated[TemplateCategoryListQueryRequest, Query()],
     db: AsyncSession = Depends(get_db),
 ):
-    """获取所有叶子分类（供 Template 绑定时使用）。"""
+    """所有可绑 template 的分类（is_bind_template=FALSE）。"""
     leaves = await TemplateCategoryService.get_leaf_categories(
-        db, include_inactive=includeInactive
+        db, include_inactive=req.includeInactive
     )
-    return R.success_resp([_to_dict(c) for c in leaves])
+    return R.success_resp(
+        [TemplateCategoryVO.from_orm_to_vo(c).model_dump() for c in leaves]
+    )
 
 
 @router.get("/{category_id}")
@@ -114,13 +69,11 @@ async def get_category_detail(
     category_id: int = Path(..., ge=1),
     db: AsyncSession = Depends(get_db),
 ):
-    """获取分类详情（含完整路径）。"""
+    """分类详情（含完整路径）。"""
     category = await TemplateCategoryService.get_by_id(db, category_id)
-    if category is None:
-        return R.not_found_resp("分类不存在")
-
     path = await TemplateCategoryService.get_category_path(db, category_id)
-    return R.success_resp(_to_detail_dict(category, path))
+    vo = TemplateCategoryDetailVO.from_orm_to_vo(category, path)
+    return R.success_resp(vo.model_dump())
 
 
 @router.get("/{category_id}/delete-preview")
@@ -128,75 +81,39 @@ async def get_delete_preview(
     category_id: int = Path(..., ge=1),
     db: AsyncSession = Depends(get_db),
 ):
-    """删除预览：返回将级联删除的内容清单，供前端强提醒对话窗渲染。"""
-    try:
-        preview = await TemplateCategoryService.get_delete_preview(db, category_id)
-        return R.success_resp(preview)
-    except CategoryNotFound as e:
-        return R.not_found_resp(str(e))
+    """删除预览（强提醒对话窗数据源）。"""
+    payload = await TemplateCategoryService.get_delete_preview(db, category_id)
+    vo = TemplateCategoryDeletePreviewVO.from_service_payload(payload)
+    return R.success_resp(vo.model_dump())
 
 
-# ===================== 写接口 =====================
+# ============ 写接口 ============
 
-@router.post("")
+@router.post("", status_code=201)
 async def create_category(
-    data: TemplateCategoryCreate,
+    req: TemplateCategoryCreateRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """创建分类（根或子分类）。"""
-    try:
-        if data.parentId is None:
-            category = await TemplateCategoryService.create_root(
-                db,
-                name=data.name,
-                max_score=Decimal(str(data.maxScore)),
-                description=data.description,
-                sort_order=data.sortOrder,
-            )
-        else:
-            category = await TemplateCategoryService.create_child(
-                db,
-                parent_id=data.parentId,
-                name=data.name,
-                max_score=Decimal(str(data.maxScore)),
-                description=data.description,
-                sort_order=data.sortOrder,
-            )
-        return R.created_resp(_to_dict(category), msg="分类创建成功")
-    except CategoryNameDuplicate as e:
-        return R.bad_request_resp(str(e))
-    except ParentAlreadyBound as e:
-        return R.bad_request_resp(str(e))
-    except CategoryNotFound as e:
-        return R.not_found_resp(str(e))
-    except CategoryError as e:
-        return R.bad_request_resp(str(e))
+    """创建分类（根或子）。DTO 直接传给 service，无需展开字段。"""
+    category = await TemplateCategoryService.create(db, req)
+    return R.created_resp(
+        TemplateCategoryVO.from_orm_to_vo(category).model_dump(),
+        msg="分类创建成功",
+    )
 
 
 @router.put("/{category_id}")
 async def update_category(
     category_id: int = Path(..., ge=1),
-    data: TemplateCategoryUpdate = ...,
+    req: TemplateCategoryUpdateRequest = ...,
     db: AsyncSession = Depends(get_db),
 ):
-    """修改分类（仅允许 name/maxScore/sortOrder/isActive/description）。"""
-    try:
-        category = await TemplateCategoryService.update(
-            db,
-            category_id,
-            name=data.name,
-            max_score=Decimal(str(data.maxScore)) if data.maxScore is not None else None,
-            sort_order=data.sortOrder,
-            is_active=data.isActive,
-            description=data.description,
-        )
-        return R.success_resp(_to_dict(category), msg="更新成功")
-    except CategoryNotFound as e:
-        return R.not_found_resp(str(e))
-    except CategoryNameDuplicate as e:
-        return R.bad_request_resp(str(e))
-    except CategoryError as e:
-        return R.bad_request_resp(str(e))
+    """修改分类。DTO 整体交给 service：apply_to() 处理非空字段。"""
+    category = await TemplateCategoryService.update(db, category_id, req)
+    return R.success_resp(
+        TemplateCategoryVO.from_orm_to_vo(category).model_dump(),
+        msg="更新成功",
+    )
 
 
 @router.delete("/{category_id}")
@@ -204,19 +121,9 @@ async def delete_category(
     category_id: int = Path(..., ge=1),
     db: AsyncSession = Depends(get_db),
 ):
-    """删除分类（级联删除子分类与绑定的 template）。"""
-    try:
-        deleted_count = await TemplateCategoryService.delete(db, category_id)
-        return R.success_resp(
-            {"deletedCount": deleted_count},
-            msg=f"成功删除 {deleted_count} 个分类节点（含级联）",
-        )
-    except CategoryNotFound as e:
-        return R.not_found_resp(str(e))
-    except CategoryHasActiveApplications as e:
-        return R.bad_request_resp(
-            f"该分类及其子分类下还有 {e.count} 条未关闭的申请，禁止删除",
-            data={"activeApplicationCount": e.count},
-        )
-    except CategoryError as e:
-        return R.bad_request_resp(str(e))
+    """删除分类（级联）。"""
+    deleted_count = await TemplateCategoryService.delete(db, category_id)
+    return R.success_resp(
+        {"deletedCount": deleted_count},
+        msg=f"成功删除 {deleted_count} 个分类节点（含级联）",
+    )

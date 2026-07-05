@@ -1,18 +1,24 @@
 """用户服务"""
 
-from sqlalchemy import select, update
+from sqlalchemy import select, update, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional, List, Dict, Any
-from datetime import datetime
 
 from src.models import User, Role, Permission, Application
 from src.models.user import UserRole, RolePermission, UserStatus
 from src.infra.jwt import hash_password
 from src.infra.database import AsyncSessionLocal
+from src.app.schemas.errors import NotFoundError, ConflictError
 
 
 class UserService:
-    """用户服务"""
+    """用户服务
+
+    Service 层签名约定：
+    - 写接口统一接 DTO Request 对象（路由不展开字段）
+    - 业务异常统一用 BusinessError 子类（见 src.app.schemas.errors）
+    - 单字段副作用（如 confirm_student 写 is_confirmed）由 service 内部直接 ORM 写回，不走 DTO
+    """
 
     @staticmethod
     async def load_user_auth_info(user_id: int) -> Optional[Dict[str, Any]]:
@@ -74,6 +80,17 @@ class UserService:
         return result.scalar_one_or_none()
 
     @staticmethod
+    async def get_user_by_id_or_raise(
+        db: AsyncSession,
+        user_id: int,
+    ) -> User:
+        """根据ID获取用户；找不到抛 NotFoundError（路由层无 try/except 风格走这里）"""
+        user = await UserService.get_user_by_id(db, user_id)
+        if user is None:
+            raise NotFoundError(f"用户不存在: id={user_id}")
+        return user
+
+    @staticmethod
     async def get_user_by_username(
         db: AsyncSession,
         username: str,
@@ -83,119 +100,71 @@ class UserService:
         return result.scalar_one_or_none()
 
     @staticmethod
-    async def update_user(
+    async def update_user_from_request(
         db: AsyncSession,
         user_id: int,
-        **kwargs,
-    ) -> Optional[User]:
-        """更新用户信息"""
-        result = await db.execute(select(User).where(User.id == user_id))
-        user = result.scalar_one_or_none()
-        if not user:
-            return None
+        req,
+    ) -> User:
+        """通用：DTO 请求 → ORM 写回（req.apply_to 负责字段映射与"是否修改"判断）。
 
-        for key, value in kwargs.items():
-            if hasattr(user, key) and value is not None:
-                setattr(user, key, value)
-
-        await db.commit()
-        await db.refresh(user)
+        找不到用户抛 NotFoundError；不修改返回原对象（不 commit）。
+        """
+        user = await UserService.get_user_by_id_or_raise(db, user_id)
+        modified = req.apply_to(user)
+        if modified:
+            await db.commit()
+            await db.refresh(user)
         return user
-
-    @staticmethod
-    async def bind_student_info(
-        db: AsyncSession,
-        user_id: int,
-        student_id: str,
-        full_name: str,
-        major: str,
-        grade: int,
-        enrollment_year: int,
-    ) -> Optional[User]:
-        """绑定学生信息"""
-        return await UserService.update_user(
-            db,
-            user_id,
-            student_id=student_id,
-            full_name=full_name,
-            major=major,
-            grade=grade,
-            enrollment_year=enrollment_year,
-        )
 
     @staticmethod
     async def confirm_student(
         db: AsyncSession,
         user_id: int,
-    ) -> Optional[User]:
-        """确认学生身份"""
-        return await UserService.update_user(
-            db,
-            user_id,
-            is_confirmed=True,
-        )
+    ) -> User:
+        """确认学生身份（单字段副作用，直接 ORM 写回）"""
+        user = await UserService.get_user_by_id_or_raise(db, user_id)
+        user.is_confirmed = True
+        await db.commit()
+        await db.refresh(user)
+        return user
 
     @staticmethod
     async def get_user_scores(
         db: AsyncSession,
         user_id: int,
     ) -> dict:
-        """获取用户积分"""
+        """获取用户积分（返回 UserScoreVO dict —— 前端约定格式）"""
+        from src.app.schemas.user import UserScoreVO
+
         user = await UserService.get_user_by_id(db, user_id)
         if not user:
-            return {"academic": 0, "specialty": 0, "comprehensive": 0}
-
-        return {
-            "academic": user.academic_score or 0,
-            "specialty": user.specialty_score or 0,
-            "comprehensive": user.comprehensive_score or 0,
-            "total": (user.academic_score or 0)
-            + (user.specialty_score or 0)
-            + (user.comprehensive_score or 0),
-        }
-
-    @staticmethod
-    async def update_user_scores(
-        db: AsyncSession,
-        user_id: int,
-        academic: Optional[float] = None,
-        specialty: Optional[float] = None,
-        comprehensive: Optional[float] = None,
-    ) -> Optional[User]:
-        """更新用户积分"""
-        updates = {}
-        if academic is not None:
-            updates["academic_score"] = academic
-        if specialty is not None:
-            updates["specialty_score"] = specialty
-        if comprehensive is not None:
-            updates["comprehensive_score"] = comprehensive
-
-        if updates:
-            return await UserService.update_user(db, user_id, **updates)
-        return await UserService.get_user_by_id(db, user_id)
+            return {"academic": 0, "specialty": 0, "comprehensive": 0, "total": 0}
+        return UserScoreVO.from_orm_to_vo(user).model_dump()
 
     @staticmethod
     async def list_users(
         db: AsyncSession,
-        role: Optional[str] = None,
-        page: int = 1,
-        size: int = 20,
+        req,
     ) -> tuple[List[User], int]:
-        """获取用户列表"""
+        """获取用户列表（req: UserQueryRequest，支持 username / full_name 过滤 + 分页）"""
         query = select(User)
 
-        # 获取总数
-        from sqlalchemy import func
+        if req.username:
+            query = query.where(User.username.ilike(f"%{req.username}%"))
+        if req.fullName:
+            query = query.where(User.full_name.ilike(f"%{req.fullName}%"))
 
-        count_result = await db.execute(select(func.count()).select_from(User))
-        total = count_result.scalar()
+        count_stmt = select(func.count()).select_from(query.subquery())
+        count_result = await db.execute(count_stmt)
+        total = count_result.scalar() or 0
 
-        # 分页
-        query = query.offset((page - 1) * size).limit(size)
+        query = (
+            query.order_by(User.id.desc())
+            .offset((req.pageNum - 1) * req.pageSize)
+            .limit(req.pageSize)
+        )
         result = await db.execute(query)
         users = result.scalars().all()
-
         return list(users), total
 
     @staticmethod
@@ -204,10 +173,18 @@ class UserService:
         username: str,
         password: str,
     ) -> User:
-        """创建用户"""
+        """创建用户（service 内部创建；路由侧传 password 时也走这里）
+
+        业务校验：用户名冲突 → 抛 ConflictError
+        """
+        existing = await UserService.get_user_by_username(db, username)
+        if existing:
+            raise ConflictError(f"用户名已存在: {username}")
+
         user = User(
             username=username,
             password=hash_password(password),
+            status=UserStatus.ACTIVE.value,
         )
         db.add(user)
         await db.commit()
@@ -220,11 +197,9 @@ class UserService:
         user_id: int,
     ) -> bool:
         """删除用户"""
-        result = await db.execute(select(User).where(User.id == user_id))
-        user = result.scalar_one_or_none()
+        user = await UserService.get_user_by_id(db, user_id)
         if not user:
             return False
-
         await db.delete(user)
         await db.commit()
         return True

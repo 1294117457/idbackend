@@ -1,142 +1,231 @@
-"""属性服务 - 兼容前端 rule-attribute 接口"""
-from sqlalchemy import select, delete, and_, func
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload
+"""Attribute 服务（v4 设计）
+
+设计原则：
+- 业务规则全部在此；DB 通过 AttributeRepository 间接访问
+- 抛通用业务异常（NotFoundError / BadRequestError / ConflictError）
+- 事务边界在 service（commit 由 service 管）
+- DTO 与 ORM 转换由 schema 完成（to_orm / apply_to）
+
+业务规则（v4）：
+- type 必须是 CONDITION / TRANSFORM（schema 层已校验，此处再做防御性校验）
+- CONDITION：value 必须为空字符串（分数不在 attribute 上，而在 rule.score）
+- TRANSFORM：value 必须只包含数学运算符和 input 变量（防止代码注入）
+- TRANSFORM：input_min / input_max 半开半闭，min < max
+- 同一 group_code 的所有 attribute 必须共享同一 group_name（创建时若 group_code 已存在，强制覆盖 group_name）
+- 删除 attribute 不影响历史 application（application 不直接引用 attribute）
+"""
+import logging
+import re
+from decimal import Decimal
 from typing import Optional, List
 
-from src.models import RuleAttribute, RuleAttributeMapping
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.models.template import Attribute, AttributeType
+from src.app.schemas.template import (
+    AttributeCreateRequest,
+    AttributeUpdateRequest,
+)
+from src.app.schemas.errors import (
+    NotFoundError,
+    BadRequestError,
+    ConflictError,
+)
+from src.repositories.attribute_repo import AttributeRepository
+
+logger = logging.getLogger(__name__)
+
+
+# ============================================================
+# 业务校验（与 schema 层 Pydantic 校验的差异：schema 防输入格式，service 防业务语义）
+# ============================================================
+
+# TRANSFORM 公式白名单字符：0-9 数字 + - * / ** ( ) . 空格 + input 变量
+# 注意：simpleeval 自身会做安全求值；这里再加一层白名单减少攻击面
+_FORMULA_PATTERN = re.compile(r"^[0-9+\-*/().\s*]*$")
+
+
+def _validate_formula(value: str) -> None:
+    """校验 TRANSFORM 公式格式（白名单字符）"""
+    if not value or not value.strip():
+        raise BadRequestError("TRANSFORM 公式不能为空")
+    # 先过白名单字符
+    stripped = value.replace("input", "").strip()
+    if not stripped:
+        # value 就是 "input"（一个变量也算合法）
+        return
+    if not _FORMULA_PATTERN.match(stripped):
+        raise BadRequestError(
+            f"TRANSFORM 公式仅允许数字、+-*/()、. 字符与 input 变量，当前值: {value!r}"
+        )
+
+
+def _validate_interval(
+    input_min: Optional[Decimal],
+    input_max: Optional[Decimal],
+) -> None:
+    """校验半开半闭区间 [min, max)"""
+    if input_min is not None and input_min < 0:
+        raise BadRequestError(f"input_min 必须 >= 0，当前值: {input_min}")
+    if input_min is not None and input_max is not None and input_min >= input_max:
+        raise BadRequestError(
+            f"半开半闭区间要求 input_min < input_max，当前: min={input_min}, max={input_max}"
+        )
+
+
+# ============================================================
+# 服务实现
+# ============================================================
 
 class AttributeService:
-    """属性管理服务"""
+    """Attribute 服务（v4）"""
 
     @staticmethod
-    async def get_all_active(db: AsyncSession) -> List[RuleAttribute]:
-        """获取所有启用的属性"""
-        result = await db.execute(
-            select(RuleAttribute)
-            .where(RuleAttribute.is_active == True)
-            .order_by(RuleAttribute.display_order)
-        )
-        return list(result.scalars().all())
+    def validate(req: AttributeCreateRequest) -> None:
+        """业务校验（DTO 层 Pydantic 校验输入格式，本方法校验业务语义）。
+
+        注：group_name 一致性由 create() 在事务内强制覆盖旧值，本方法不重复校验。
+        """
+        attr_type = req.type
+
+        if attr_type == AttributeType.CONDITION.value:
+            # CONDITION：value 必须为空字符串（schema 的 default 已设置为 ""，但仍防御性校验）
+            if req.value and req.value.strip():
+                raise BadRequestError(
+                    "CONDITION 类型 attribute 的 value 必须为空字符串（分数下沉到 rule.score）"
+                )
+        elif attr_type == AttributeType.TRANSFORM.value:
+            # TRANSFORM：value 必须非空、必须是合法公式
+            _validate_formula(req.value)
+            _validate_interval(req.inputMin, req.inputMax)
+        else:
+            # schema 层已经校验过，这里只是兜底
+            raise BadRequestError(f"type 必须是 CONDITION / TRANSFORM，当前值: {attr_type}")
+
+    # ---------- 读 ----------
 
     @staticmethod
-    async def get_by_type(db: AsyncSession, attr_type: str) -> List[RuleAttribute]:
-        """根据类型获取属性"""
-        result = await db.execute(
-            select(RuleAttribute)
-            .where(RuleAttribute.attribute_type == attr_type)
-            .where(RuleAttribute.is_active == True)
+    async def list_paged(
+        db: AsyncSession,
+        *,
+        is_active: Optional[bool] = True,
+        attr_type: Optional[str] = None,
+        group_code: Optional[str] = None,
+        page_num: int = 1,
+        page_size: int = 20,
+    ) -> tuple[List[Attribute], int]:
+        """分页列表 + 总数。"""
+        total = await AttributeRepository.count(
+            db,
+            is_active=is_active,
+            attr_type=attr_type,
+            group_code=group_code,
         )
-        return list(result.scalars().all())
+        attributes = await AttributeRepository.list_paged(
+            db,
+            is_active=is_active,
+            attr_type=attr_type,
+            group_code=group_code,
+            offset=(page_num - 1) * page_size,
+            limit=page_size,
+        )
+        return attributes, total
 
     @staticmethod
-    async def get_by_code(db: AsyncSession, code: str) -> List[RuleAttribute]:
-        """根据编码获取属性"""
-        result = await db.execute(
-            select(RuleAttribute)
-            .where(RuleAttribute.attribute_code == code)
-            .where(RuleAttribute.is_active == True)
-        )
-        return list(result.scalars().all())
+    async def get_by_id(
+        db: AsyncSession,
+        attribute_id: int,
+    ) -> Attribute:
+        attribute = await AttributeRepository.get_by_id(db, attribute_id)
+        if attribute is None:
+            raise NotFoundError(f"属性(id={attribute_id})不存在")
+        return attribute
 
     @staticmethod
-    async def get_by_id(db: AsyncSession, attr_id: int) -> Optional[RuleAttribute]:
-        """根据ID获取属性"""
-        result = await db.execute(
-            select(RuleAttribute).where(RuleAttribute.id == attr_id)
-        )
-        return result.scalar_one_or_none()
+    async def list_by_rule(
+        db: AsyncSession,
+        rule_id: int,
+    ) -> List[Attribute]:
+        """rule 已绑 attribute 列表。"""
+        return await AttributeRepository.list_by_rule_id(db, rule_id)
+
+    # ---------- 写 ----------
 
     @staticmethod
     async def create(
         db: AsyncSession,
-        attribute_code: str,
-        attribute_type: str,
-        attribute_value: str,
-        input_min: Optional[float] = None,
-        input_max: Optional[float] = None,
-        input_interval: Optional[str] = None,
-        display_order: int = 0,
-        description: Optional[str] = None,
-    ) -> RuleAttribute:
-        """创建属性"""
-        attr = RuleAttribute(
-            attribute_code=attribute_code,
-            attribute_type=attribute_type,
-            attribute_value=attribute_value,
-            input_min=input_min,
-            input_max=input_max,
-            input_interval=input_interval,
-            display_order=display_order,
-            description=description,
-            is_active=True,
-        )
-        db.add(attr)
-        await db.commit()
-        await db.refresh(attr)
-        return attr
+        req: AttributeCreateRequest,
+    ) -> Attribute:
+        """创建 attribute。
+
+        业务规则：
+        - 同 group_code 的所有 attribute 必须共享 group_name（创建时若 group_code 已存在，强制覆盖 group_name）
+        - 公式 / 区间校验
+        """
+        # 业务校验（防御性二次校验，schema 已校验过）
+        AttributeService.validate(req)
+
+        # 同 group_name 一致性：若 group_code 已存在，强制覆盖 group_name
+        existing = await AttributeRepository.get_by_group_code(db, req.groupCode)
+        if existing is not None:
+            if existing.group_name != req.groupName:
+                logger.info(
+                    "attribute.group_code=%s 的 group_name 已自动覆盖: %s -> %s",
+                    req.groupCode, existing.group_name, req.groupName,
+                )
+                req = req.model_copy(update={"groupName": existing.group_name})
+
+        attribute = req.to_orm()
+        db.add(attribute)
+        await AttributeRepository.commit(db)
+        await AttributeRepository.refresh(db, attribute)
+        return attribute
 
     @staticmethod
     async def update(
         db: AsyncSession,
-        attr_id: int,
-        **kwargs,
-    ) -> Optional[RuleAttribute]:
-        """更新属性"""
-        attr = await AttributeService.get_by_id(db, attr_id)
-        if not attr:
-            return None
+        attribute_id: int,
+        req: AttributeUpdateRequest,
+    ) -> Attribute:
+        """修改 attribute。"""
+        attribute = await AttributeService.get_by_id(db, attribute_id)
 
-        # 唯一键冲突检查 (attribute_code + attribute_value + attribute_type)
-        new_value = kwargs.get('attribute_value', attr.attribute_value)
-        new_type = kwargs.get('attribute_type', attr.attribute_type)
+        # 修改 type 时，重新校验 value / 区间
+        if req.type is not None:
+            # 合并"新值或原值"用于校验
+            new_value = req.value if req.value is not None else (attribute.value or "")
+            new_min = req.inputMin if req.inputMin is not None else attribute.input_min
+            new_max = req.inputMax if req.inputMax is not None else attribute.input_max
+            new_type = req.type
 
-        existing = await db.execute(
-            select(RuleAttribute).where(
-                and_(
-                    RuleAttribute.attribute_code == attr.attribute_code,
-                    RuleAttribute.attribute_value == new_value,
-                    RuleAttribute.attribute_type == new_type,
-                    RuleAttribute.id != attr_id
-                )
-            )
-        )
-        if existing.scalar_one_or_none():
-            raise ValueError("该属性值已存在")
+            if new_type == AttributeType.CONDITION.value:
+                if new_value and new_value.strip():
+                    raise BadRequestError(
+                        "CONDITION 类型 attribute 的 value 必须为空字符串"
+                    )
+            elif new_type == AttributeType.TRANSFORM.value:
+                _validate_formula(new_value)
+                _validate_interval(new_min, new_max)
 
-        for key, value in kwargs.items():
-            if hasattr(attr, key) and value is not None:
-                setattr(attr, key, value)
-
-        await db.commit()
-        await db.refresh(attr)
-        return attr
+        modified = req.apply_to(attribute)
+        if modified:
+            await AttributeRepository.commit(db)
+            await AttributeRepository.refresh(db, attribute)
+        return attribute
 
     @staticmethod
-    async def delete(db: AsyncSession, attr_id: int) -> bool:
-        """删除属性"""
-        # 先删除关联映射
-        await db.execute(
-            delete(RuleAttributeMapping).where(RuleAttributeMapping.attribute_id == attr_id)
-        )
-        # 删除属性
-        await db.execute(
-            delete(RuleAttribute).where(RuleAttribute.id == attr_id)
-        )
-        await db.commit()
-        return True
-
-    @staticmethod
-    async def get_attributes_by_rule_id(
+    async def delete(
         db: AsyncSession,
-        rule_id: int,
-    ) -> List[RuleAttribute]:
-        """获取规则关联的所有属性"""
-        result = await db.execute(
-            select(RuleAttribute)
-            .join(RuleAttributeMapping, RuleAttributeMapping.attribute_id == RuleAttribute.id)
-            .where(RuleAttributeMapping.rule_id == rule_id)
-            .order_by(RuleAttributeMapping.display_order)
-        )
-        return list(result.scalars().all())
+        attribute_id: int,
+    ) -> None:
+        """删除 attribute。
+
+        - 不影响已有 application（application 不直接引用 attribute）
+        - FK CASCADE 自动清理 rule_attribute 行
+        """
+        await AttributeService.get_by_id(db, attribute_id)  # 校验存在
+        await AttributeRepository.delete(db, attribute_id)
+        await AttributeRepository.commit(db)
+
+
+__all__ = ["AttributeService"]

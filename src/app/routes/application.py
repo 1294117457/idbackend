@@ -51,7 +51,7 @@ async def submit_application(
 ):
     """提交加分申请"""
     templates = await TemplateService.get_templates(db)
-    template = next((t for t in templates if t.template_name == request.templateName), None)
+    template = next((t for t in templates if t.name == request.templateName), None)
 
     if not template:
         return R.not_found_resp("模板不存在")

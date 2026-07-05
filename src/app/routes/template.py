@@ -1,203 +1,172 @@
-"""模板路由 - 兼容前端"""
+"""模板管理路由（v4 设计）
+
+REST 接口约定：
+- 前缀：/api/bonus-template
+- 路由层只做三件事：接 DTO → 调 service → 包 R 响应
+- **零 try/except**：业务异常由全局 exception_handlers 自动翻译
+- DTO ↔ ORM 转换由 schema 完成（to_orm / apply_to）
+
+权限码（seed_permissions.py 中注册）：
+  template:list   - GET /list
+  template:detail - GET /{id}
+  template:create - POST
+  template:update - PUT
+  template:delete - DELETE
+  template:bind_rule - POST /{id}/rules
+  template:unbind_rule - DELETE /{id}/rules/{rule_id}
+"""
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, Path, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import delete
-from pydantic import BaseModel
-from typing import Optional, List
 
 from src.app.deps import get_db
-from src.app.context import get_username
 from src.app import response as R
+from src.app.schemas.template import (
+    TemplateCreateRequest,
+    TemplateUpdateRequest,
+    TemplateListQueryRequest,
+    TemplateCategoryListQueryRequest,
+    TemplateVO,
+    TemplateDetailVO,
+    TemplateListVO,
+    TemplateBindRuleRequest,
+    TemplateBindRuleResultVO,
+    RuleDetailVO,
+    AttributeVO,
+)
 from src.services import TemplateService
-from src.services.attribute_service import AttributeService
-from src.models import ScoreTemplate, ScoreTemplateRule, RuleAttributeMapping
 
 router = APIRouter(prefix="/api/bonus-template", tags=["模板"])
 
 
+# ============================================================
+# 读接口
+# ============================================================
+
 @router.get("/list")
 async def list_templates(
+    req: Annotated[TemplateListQueryRequest, Query()],
     db: AsyncSession = Depends(get_db),
 ):
-    """获取模板列表"""
-    templates = await TemplateService.get_templates(db)
-    return R.success_resp([{
-        "id": t.id,
-        "templateName": t.template_name,
-        "templateType": t.template_type,
-        "scoreType": t.score_type,
-        "maxScore": t.template_max_score,
-        "inputUnit": t.input_unit,
-        "description": t.description,
-    } for t in templates])
+    """分页列表（Page[TemplateVO]）"""
+    templates, total = await TemplateService.list_paged(db, req)
+    items = [TemplateVO.from_orm_to_vo(t) for t in templates]
+    vo = TemplateListVO.from_list_to_page(
+        items=items,
+        total=total,
+        page_num=req.pageNum,
+        page_size=req.pageSize,
+    )
+    return R.success_resp(vo.model_dump())
+
+
+@router.get("/by-category")
+async def list_templates_by_category(
+    req: Annotated[TemplateCategoryListQueryRequest, Query()],
+    db: AsyncSession = Depends(get_db),
+):
+    """按分类列出模板（学生端选 template 用）"""
+    templates = await TemplateService.list_by_category(db, req.categoryId)
+    return R.success_resp([TemplateVO.from_orm_to_vo(t).model_dump() for t in templates])
 
 
 @router.get("/{template_id}")
-async def get_template(
-    template_id: int,
+async def get_template_detail(
+    template_id: int = Path(..., ge=1),
     db: AsyncSession = Depends(get_db),
 ):
-    """获取模板详情"""
-    template = await TemplateService.get_template_by_id(db, template_id)
-    if not template:
-        return R.not_found_resp("模板不存在")
+    """模板详情（含完整规则树 + is_mixed_type 软提示）
 
-    rules = await TemplateService.get_template_rules(db, template_id)
+    使用 selectinload 一次性 JOIN 完整数据（template → rules → attributes），
+    共 3 条 SELECT（与 rule / attribute 数量无关）。
+    """
+    template = await TemplateService.get_with_rules(db, template_id)
 
-    return R.success_resp({
-        "id": template.id,
-        "templateName": template.template_name,
-        "templateType": template.template_type,
-        "scoreType": template.score_type,
-        "maxScore": template.template_max_score,
-        "inputUnit": template.input_unit,
-        "description": template.description,
-        "rules": [{
-            "id": r.id,
-            "ruleName": r.rule_name,
-            "ruleType": r.rule_type,
-            "ruleScore": r.rule_score,
-        } for r in rules],
-    })
+    # ORM → VO 投影
+    rule_vos = []
+    for rule in sorted(template.rules, key=lambda r: r.sort_order):
+        attr_vos = [
+            AttributeVO.from_orm_to_vo(a)
+            for a in sorted(rule.attributes, key=lambda a: a.sort_order)
+        ]
+        rule_vos.append(RuleDetailVO.from_orm_to_vo(rule, attr_vos))
+
+    is_mixed = await TemplateService.is_mixed_type(db, template_id)
+    vo = TemplateDetailVO.from_orm_to_vo(template, rule_vos, is_mixed)
+
+    return R.success_resp(vo.model_dump())
 
 
-# ========== 管理员接口 ==========
+# ============================================================
+# 写接口
+# ============================================================
 
-class CreateTemplateRequest(BaseModel):
-    templateName: str
-    templateType: str = "CONDITION"
-    maxScore: float
-    scoreType: int = 0
-    inputUnit: str = ""
-    description: str = ""
-    reviewCount: int = 1
-
-
-@router.post("/create")
+@router.post("", status_code=201)
 async def create_template(
-    request: CreateTemplateRequest,
+    req: TemplateCreateRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """创建模板 (管理员)"""
-    template = await TemplateService.create_template(
-        db,
-        template_name=request.templateName,
-        template_type=request.templateType,
-        template_max_score=request.maxScore,
-        score_type=request.scoreType,
-        input_unit=request.inputUnit,
-        description=request.description,
-        created_by=get_username(),
-        review_count=request.reviewCount,
+    """创建模板（DTO 直接交给 service：to_orm() 处理 ORM 构造）"""
+    template = await TemplateService.create(db, req)
+    return R.created_resp(
+        TemplateVO.from_orm_to_vo(template).model_dump(),
+        msg="模板创建成功",
     )
-    return R.created_resp({
-        "id": template.id,
-        "templateName": template.template_name,
-    })
-
-
-# ========== 模板更新/删除 ==========
-
-class ScoringRuleRequest(BaseModel):
-    id: Optional[int] = None
-    ruleType: str
-    ruleName: Optional[str] = None
-    ruleScore: Optional[float] = None
-    priority: int = 0
-    description: Optional[str] = None
-    attributeIds: Optional[List[int]] = None
-
-
-class UpdateTemplateRequest(BaseModel):
-    templateName: Optional[str] = None
-    templateType: Optional[str] = None
-    maxScore: Optional[float] = None
-    scoreType: Optional[int] = None
-    inputUnit: Optional[str] = None
-    description: Optional[str] = None
-    reviewCount: Optional[int] = None
-    fieldId: Optional[int] = None
-    rules: Optional[List[ScoringRuleRequest]] = None
 
 
 @router.put("/{template_id}")
 async def update_template(
-    template_id: int = Path(..., description="模板ID"),
-    request: UpdateTemplateRequest = ...,
+    template_id: int = Path(..., ge=1),
+    req: TemplateUpdateRequest = ...,
     db: AsyncSession = Depends(get_db),
 ):
-    """更新模板 (管理员)"""
-    template = await TemplateService.get_template_by_id(db, template_id)
-    if not template:
-        return R.not_found_resp("模板不存在")
-
-    if request.templateName is not None:
-        template.template_name = request.templateName
-    if request.templateType is not None:
-        template.template_type = request.templateType
-    if request.maxScore is not None:
-        template.template_max_score = request.maxScore
-    if request.scoreType is not None:
-        template.score_type = request.scoreType
-    if request.inputUnit is not None:
-        template.input_unit = request.inputUnit
-    if request.description is not None:
-        template.description = request.description
-    if request.reviewCount is not None:
-        template.review_count = request.reviewCount
-    if request.fieldId is not None:
-        template.field_id = request.fieldId
-
-    if request.rules is not None:
-        await db.execute(
-            delete(RuleAttributeMapping).where(
-                RuleAttributeMapping.rule_id.in_(
-                    db.query(ScoreTemplateRule.id).filter(
-                        ScoreTemplateRule.template_id == template_id
-                    ).subquery()
-                )
-            )
-        )
-        await db.execute(
-            delete(ScoreTemplateRule).where(ScoreTemplateRule.template_id == template_id)
-        )
-
-        for rule_req in request.rules:
-            rule = ScoreTemplateRule(
-                template_id=template_id,
-                rule_type=rule_req.ruleType,
-                rule_name=rule_req.ruleName,
-                rule_score=rule_req.ruleScore,
-                priority=rule_req.priority,
-                description=rule_req.description,
-            )
-            db.add(rule)
-            await db.flush()
-
-            if rule_req.attributeIds:
-                for idx, attr_id in enumerate(rule_req.attributeIds):
-                    mapping = RuleAttributeMapping(
-                        rule_id=rule.id,
-                        attribute_id=attr_id,
-                        is_required=True,
-                        display_order=idx + 1,
-                    )
-                    db.add(mapping)
-
-    await db.commit()
-    return R.success_resp({"id": template_id})
+    """修改模板。DTO 整体交给 service：apply_to() 处理非空字段。"""
+    template = await TemplateService.update(db, template_id, req)
+    return R.success_resp(
+        TemplateVO.from_orm_to_vo(template).model_dump(),
+        msg="更新成功",
+    )
 
 
 @router.delete("/{template_id}")
 async def delete_template(
-    template_id: int = Path(..., description="模板ID"),
+    template_id: int = Path(..., ge=1),
     db: AsyncSession = Depends(get_db),
 ):
-    """删除模板 (管理员)"""
-    template = await TemplateService.get_template_by_id(db, template_id)
-    if not template:
-        return R.not_found_resp("模板不存在")
-
-    await db.delete(template)
-    await db.commit()
+    """删除模板（级联清理 template_rule 行）"""
+    await TemplateService.delete(db, template_id)
     return R.success_resp(msg="删除成功")
+
+
+# ============================================================
+# 关联操作
+# ============================================================
+
+@router.post("/{template_id}/rules", status_code=200)
+async def bind_rule(
+    template_id: int = Path(..., ge=1),
+    req: TemplateBindRuleRequest = ...,
+    db: AsyncSession = Depends(get_db),
+):
+    """绑定 rule 到 template（v4 软提示策略）。
+
+    返回 { bound, is_mixed_type }：
+    - is_mixed_type=True 时前端应弹确认框软提示（业务合法）
+    """
+    result = await TemplateService.bind_rule(db, template_id, req.ruleId)
+    return R.success_resp(
+        TemplateBindRuleResultVO(**result).model_dump(),
+        msg="绑定成功",
+    )
+
+
+@router.delete("/{template_id}/rules/{rule_id}")
+async def unbind_rule(
+    template_id: int = Path(..., ge=1),
+    rule_id: int = Path(..., ge=1),
+    db: AsyncSession = Depends(get_db),
+):
+    """解绑 rule"""
+    await TemplateService.unbind_rule(db, template_id, rule_id)
+    return R.success_resp(msg="解绑成功")

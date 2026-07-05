@@ -49,9 +49,9 @@ class Application(Base, TimestampMixin):
     proofs_input: Mapped[float] = mapped_column(default=0.0)
 
     # 关联
-    rule_id: Mapped[Optional[int]] = mapped_column(ForeignKey("score_template_rules.id"))
+    rule_id: Mapped[Optional[int]] = mapped_column(ForeignKey("rule.id"))
     template_id: Mapped[Optional[int]] = mapped_column(
-        ForeignKey("score_templates.id")
+        ForeignKey("template.id")
     )
 
     # 关系

@@ -52,10 +52,13 @@ PERMISSIONS = [
 
     # ============== 模板（bonus-template，需 admin） ==============
     ("/api/bonus-template/list", "template:list", "模板-列表", 501),
-    ("/api/bonus-template/{template_id}", "template:detail", "模板-详情", 502),
-    ("/api/bonus-template/create", "template:create", "模板-创建", 503),
-    ("/api/bonus-template/{template_id}", "template:update", "模板-更新", 504),
-    ("/api/bonus-template/{template_id}", "template:delete", "模板-删除", 505),
+    ("/api/bonus-template/by-category", "template:list", "模板-按分类", 502),
+    ("/api/bonus-template/{template_id}", "template:detail", "模板-详情", 503),
+    ("/api/bonus-template", "template:create", "模板-创建", 504),
+    ("/api/bonus-template/{template_id}", "template:update", "模板-更新", 505),
+    ("/api/bonus-template/{template_id}", "template:delete", "模板-删除", 506),
+    ("/api/bonus-template/{template_id}/rules", "template:bind_rule", "模板-绑规则", 507),
+    ("/api/bonus-template/{template_id}/rules/{rule_id}", "template:unbind_rule", "模板-解绑规则", 508),
 
     # ============== 模板分类树（template-category，Layer 1，需 admin） ==============
     # 注：FastAPI 路由匹配按注册顺序。模板分类前缀 /api/template-category 比模板 /api/bonus-template 短，
@@ -68,27 +71,21 @@ PERMISSIONS = [
     ("/api/template-category/{category_id}", "template_category:delete", "模板分类-删除", 515),
     ("/api/template-category/{category_id}/delete-preview", "template_category:read", "模板分类-删除预览", 516),
 
-    # ============== 需求模板（demand-template，需 admin） ==============
-    ("/api/demand-template/list", "demand_template:list", "需求模板-列表", 601),
-    ("/api/demand-template/create", "demand_template:create", "需求模板-创建", 602),
-    ("/api/demand-template/{template_id}", "demand_template:update", "需求模板-更新", 603),
-    ("/api/demand-template/{template_id}", "demand_template:delete", "需求模板-删除", 604),
+    # ============== Rule（rule，需 admin） ==============
+    ("/api/rule/list", "rule:list", "规则-列表", 701),
+    ("/api/rule/{rule_id}", "rule:detail", "规则-详情", 702),
+    ("/api/rule", "rule:create", "规则-创建", 703),
+    ("/api/rule/{rule_id}", "rule:update", "规则-更新", 704),
+    ("/api/rule/{rule_id}", "rule:delete", "规则-删除", 705),
+    ("/api/rule/{rule_id}/attributes", "rule:bind_attribute", "规则-绑属性", 706),
+    ("/api/rule/{rule_id}/attributes/{attribute_id}", "rule:unbind_attribute", "规则-解绑属性", 707),
 
-    # ============== 属性管理（rule-attribute，需 admin） ==============
-    ("/api/rule-attribute/list", "attribute:list", "属性-列表", 701),
-    ("/api/rule-attribute/list-by-type/{type}", "attribute:list_by_type", "属性-按类型", 702),
-    ("/api/rule-attribute/list-by-code/{code}", "attribute:list_by_code", "属性-按编码", 703),
-    ("/api/rule-attribute/{attribute_id}", "attribute:detail", "属性-详情", 704),
-    ("/api/rule-attribute/create", "attribute:create", "属性-创建", 705),
-    ("/api/rule-attribute/{attribute_id}", "attribute:update", "属性-更新", 706),
-    ("/api/rule-attribute/{attribute_id}", "attribute:delete", "属性-删除", 707),
-
-    # ============== 字段配置（field-config） ==============
-    ("/api/field-config/list/all", "field_config:list_all", "字段配置-全量", 801),
-    ("/api/field-config/subcategory/list", "field_config:subcategory:list", "字段配置-子分类列表", 802),
-    ("/api/field-config/subcategory", "field_config:subcategory:create", "字段配置-子分类创建", 803),
-    ("/api/field-config/subcategory/{subcategory_id}", "field_config:subcategory:update", "字段配置-子分类更新", 804),
-    ("/api/field-config/subcategory/{subcategory_id}", "field_config:subcategory:delete", "字段配置-子分类删除", 805),
+    # ============== Attribute（rule-attribute，需 admin） ==============
+    ("/api/rule-attribute/list", "attribute:list", "属性-列表", 711),
+    ("/api/rule-attribute/{attribute_id}", "attribute:detail", "属性-详情", 712),
+    ("/api/rule-attribute", "attribute:create", "属性-创建", 713),
+    ("/api/rule-attribute/{attribute_id}", "attribute:update", "属性-更新", 714),
+    ("/api/rule-attribute/{attribute_id}", "attribute:delete", "属性-删除", 715),
 
     # ============== 系统配置（需白名单用户，admin_login 资格） ==============
     ("/api/system/config", "system:config:view", "系统配置-查看", 901),
@@ -109,9 +106,6 @@ PERMISSIONS = [
     ("/api/proof/{proof_id}/approve", "proof:approve", "证明-审核通过", 1101),
     ("/api/proof/{proof_id}/reject", "proof:reject", "证明-审核驳回", 1102),
     ("/api/proof/{proof_id}/override", "proof:override", "证明-覆盖重判", 1103),
-
-    # ============== 需求申请审核（reviewer） ==============
-    ("/api/demand-application/all", "demand_application:list_all", "需求申请-全部列表", 1201),
 ]
 
 
@@ -126,23 +120,21 @@ ROLE_PERMISSIONS = {
         "role:perm:list", "role:perm:assign",
         "permission:list", "permission:interfaces", "permission:scan",
         "permission:create", "permission:update", "permission:delete",
+        # Template / Rule / Attribute（v4）
         "template:list", "template:detail", "template:create", "template:update", "template:delete",
+        "template:bind_rule", "template:unbind_rule",
         "template_category:read", "template_category:create", "template_category:update", "template_category:delete",
-        "demand_template:list", "demand_template:create", "demand_template:update", "demand_template:delete",
-        "attribute:list", "attribute:list_by_type", "attribute:list_by_code", "attribute:detail",
-        "attribute:create", "attribute:update", "attribute:delete",
-        "field_config:list_all", "field_config:subcategory:list",
-        "field_config:subcategory:create", "field_config:subcategory:update", "field_config:subcategory:delete",
+        "rule:list", "rule:detail", "rule:create", "rule:update", "rule:delete",
+        "rule:bind_attribute", "rule:unbind_attribute",
+        "attribute:list", "attribute:detail", "attribute:create", "attribute:update", "attribute:delete",
         "application:pending:list", "application:audit:pending", "application:audit:history",
         "application:audit:approve", "application:audit:reject", "application:audit:revoke",
         "proof:approve", "proof:reject", "proof:override",
-        "demand_application:list_all",
     ],
     "reviewer": [
         "application:pending:list", "application:audit:pending", "application:audit:history",
         "application:audit:approve", "application:audit:reject", "application:audit:revoke",
         "proof:approve", "proof:reject", "proof:override",
-        "demand_application:list_all",
     ],
     "super_admin": ["*"],  # 标记为全权限（在 PermissionMiddleware 中白名单用户直接通过）
 }

@@ -1,12 +1,24 @@
 """Models 层"""
 from src.models.base import Base
 from src.models.user import User, Role, Permission, UserRole, RolePermission
-from src.models.application import Application, ApplicationProof, EvaluationApplication
-from src.models.template import ScoreTemplate, ScoreTemplateRule, RuleAttribute, RuleAttributeMapping, DemandTemplate, FieldConfig, FieldSubcategory
+from src.models.application import (
+    Application,
+    ApplicationProof,
+    EvaluationApplication,
+    ApplicationStatus,
+    ScoreType,
+)
+from src.models.template import (
+    Template,
+    Rule,
+    Attribute,
+    TemplateRule,
+    RuleAttribute,
+    AttributeType,
+)
 from src.models.template_category import TemplateCategory
 from src.models.file import FileMetadata, FileCategory, PolicyDocument
 from src.models.config import SystemConfig, AgentSession
-from src.models.demand_application import DemandApplication
 
 __all__ = [
     "Base",
@@ -20,14 +32,15 @@ __all__ = [
     "Application",
     "ApplicationProof",
     "EvaluationApplication",
-    # Template
-    "ScoreTemplate",
-    "ScoreTemplateRule",
+    "ApplicationStatus",
+    "ScoreType",
+    # Template（v4：5 张表 + 共享枚举）
+    "Template",
+    "Rule",
+    "Attribute",
+    "TemplateRule",
     "RuleAttribute",
-    "RuleAttributeMapping",
-    "DemandTemplate",
-    "FieldConfig",
-    "FieldSubcategory",
+    "AttributeType",
     # Template Category (Layer 1)
     "TemplateCategory",
     # File
@@ -37,6 +50,4 @@ __all__ = [
     # Config
     "SystemConfig",
     "AgentSession",
-    # Demand
-    "DemandApplication",
 ]

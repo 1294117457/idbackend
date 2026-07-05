@@ -9,7 +9,7 @@
    - Auth：身份认证
 
 2. Exception Handler（FastAPI 异常机制，service 抛异常时被调用）
-   - FileNotFoundError / FileForbiddenError / FileAuthError：业务异常
+   - BusinessError：业务异常基类（NotFoundError / BadRequestError / ForbiddenError / ConflictError / UnauthorizedError 子类）
    - RequestValidationError：参数校验异常
    - Exception：兜底异常
 

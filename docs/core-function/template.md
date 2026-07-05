@@ -10,7 +10,7 @@ template-rule-attribute和application-proof的模型应该没什么问题把
 
 不过这里换算公式实际可能有不同区间时多个公式，比如0到60分一个公式，61-100一个分数，
 
-你觉得怎么做合适呢  
+你觉得怎么做合适呢
 
 2.关于template-rule-attribute
 
@@ -22,7 +22,7 @@ rule_attribute记录rule和attribute的关系，后续使用时，有什么attri
 
 具体就是一个rule会有多个attribute，每个rule就是一个下拉选择框，如果对应attribute是条件匹配类型就直接选择，如果是分数计算类型的，就根据选择框，在右侧显示对应的一个输入框，
 
-这样是不是可以简化template-rule-attribute，职责单一，attribute就是实现不同的分数计算属性，rule用于聚合这些属性，template是最终的聚合根  
+这样是不是可以简化template-rule-attribute，职责单一，attribute就是实现不同的分数计算属性，rule用于聚合这些属性，template是最终的聚合根
 
 这里是不是template保留
 
@@ -41,12 +41,13 @@ attribute中，
   比如0-60的闭区间实际就是1-59,这里的input_min就是最小值1，input_max就是最大值60，
   然后display_order改名sort_order，
 
-最后attribute就只需要，  
+最后attribute就只需要，
   id,name,value,input_min,input_max,sort_order,description,is_active,create_at,updated_at
 
 这里总体类似rbac模式一样用template_rule和rule_attribute绑定template-rule-attribute，还能实现复用，
 
-你觉得呢  
+你觉得呢
+
 
 
 
@@ -62,196 +63,471 @@ attribute中，
 
 你觉得怎么样，
 
+---
 
+# 附录：Template 系统最终定稿方案（v4）
 
-## **is_leaf 的收益重新评估**
+> 本节为基于讨论收敛后的最终设计，与上文对话过程**可能有出入**。
+> 落地代码时以本附录为准。
 
+**v4 相对 v3 的核心变更**：
+1. `rule` 表新增 `type` 字段（CONDITION / TRANSFORM）
+2. `template` 表不加 `type` 字段（业务允许混用）
+3. `RuleService.bind_attribute` 用 `rule.type == attribute.type` 1 行校验（替换 v3 中"同一 rule 内 attribute 不可混用"的硬性约束）
+4. `TemplateService.bind_rule` 不校验 rule.type 一致性，改为软提示（返回 `is_mixed_type` 标志 + warning 日志）
 
-| **操作**          | **无 is_leaf**              | **有 is_leaf**             |
-| --------------- | -------------------------- | ------------------------- |
-| 绑定 template 时校验 | 查 template_category（有无子节点） | 直接读字段，0 额外查询 ✅            |
-| 添加子分类时校验（父有子）   | 查 template 表               | 读字段=FALSE，直接放行，0 查询 ✅     |
-| 添加子分类时校验（父无子）   | 查 template 表               | 读字段=TRUE，还需查 template 表 ❌ |
+## 一、设计变更点（相对上文对话过程）
 
+| 变更点 | 旧方案（对话过程中） | 新方案（定稿 v4） |
+|---|---|---|
+| `attribute_type` 字段名 | `attribute_type` | `type` |
+| CONDITION 类型 attribute 的 `value` | 存分数（如 `"10"`） | 改为存空字符串 `""`，分数下沉到 `rule.score` |
+| `rule` 是否带分数 | 不带分数 | **新增 `score: Optional[float]`**（CONDITION 模式必填，TRANSFORM 模式必须为 None） |
+| `rule` 是否带 `type` | 无 `type` 字段 | **新增 `type: str`**（`CONDITION` / `TRANSFORM`，与 attribute.type 联动校验） |
+| `template` 是否带 `type` | 无 | **不加**（template 可混合绑 CONDITION 与 TRANSFORM rule，业务场景合法） |
+| `attribute` 分组 | 无显式分组字段 | 新增 `group_code`（技术 key）+ `group_name`（显示名） |
+| `attribute` 是否带 `code` | 有 `code` 字段 | 移除 `code`，由 `group_code + name` 唯一标识选项 |
+| 区间语义 | 闭区间 `[min, max]` | 半开半闭 `[min, max)` |
+| `template_rule` 是否带 `sort_order` | 有 | **移除**（避免双重排序源；rule 全局排序由 `rule.sort_order` 决定） |
+| `attribute_group` 单独表 | 最初设计为独立表 | **取消**（用 `attribute.group_code + group_name` 自洽） |
+| `rule_attribute` 关联方式 | 关联表 | 关联表（确认正确选择） |
+| rule 绑定 attribute | 关联表 / JSON 字段二选一 | **关联表 `rule_attribute`**（FK 保证数据一致性、可 JOIN、可反向查询） |
+| 区间表示 0-60 | input_min=0, input_max=60（闭） | input_min=0, input_max=61（半开半闭） |
+| rule 内 attribute 类型混用 | 禁止（service 层拒绝） | **禁止**（语义混乱，但允许的错配是"曾经已绑 TRANSFORM 又去绑 CONDITION"这类**增量**操作，service 用 `rule.type == attribute.type` 一步校验，不再要求所有 attribute 同 type） |
+| template 内 rule.type 混用 | 未定义 | **允许**（业务合法场景，如 ACM 模板混用"奖项等级 CONDITION"+"代码量 TRANSFORM"；不加 `template.type` 字段，service 仅在 `is_mixed_type=True` 时打 warning 日志+返回前端软提示，不阻塞） |
 
 ---
 
-## Template 模块实施方案
+## 二、五张表最终结构
 
-### 一、数据模型（不变，两种类型共用一套结构）
-
-```
-ScoreTemplate
-  template_type: "CONDITION" | "TRANSFORM"
-  template_max_score: 分值上限
-  category_id → TemplateCategory（分类归属）
-
-ScoreTemplateRule
-  template_id → ScoreTemplate
-  priority: 优先级（决定匹配顺序）
-  rule_score: CONDITION 类型用（命中后得分）；TRANSFORM 类型为 null（由公式计算）
-
-RuleAttribute
-  rule_id → ScoreTemplateRule
-  attribute_value: 条件值 或 公式字符串（如 "input * 0.5"）
-  input_min / input_max: 数值区间（两种类型均可用）
-  input_interval: OPEN | CLOSED（区间边界是否包含）
-```
-
-**CONDITION 数据示例：**
-
-```
-Template(type=CONDITION, max_score=10)
-  Rule(priority=1, rule_score=10)
-    Attribute(value="national_award")          # 精确匹配
-  Rule(priority=2, rule_score=5)
-    Attribute(input_min=85, input_max=100)     # 数值区间匹配
-```
-
-**TRANSFORM 数据示例（多区间公式）：**
-
-```
-Template(type=TRANSFORM, max_score=30)
-  Rule(priority=1, rule_score=null)
-    Attribute(input_min=0, input_max=60, value="input * 0.5")
-  Rule(priority=2, rule_score=null)
-    Attribute(input_min=61, input_max=100, value="30 + (input - 60) * 0.3")
-```
-
----
-
-### 二、策略模式（计算逻辑放 Service 层）
-
-**文件位置：** `src/services/calculation_service.py`
+### 表 1：`template`（聚合根）
 
 ```python
-from abc import ABC, abstractmethod
+class Template(Base, TimestampMixin):
+    """模板（聚合根）"""
+    __tablename__ = "template"
+    name: str
+    category_id: int           # FK template_category.id
+    max_score: float
+    review_count: int
+    sort_order: int            # Template 自身在列表中的顺序
+    description: str
+    is_active: bool
+```
 
-# ===== 策略接口 =====
+**字段数：9**（含 id、timestamps）。负责一个 template 的总封顶 + 审核人数。
 
-class ITemplateCalculator(ABC):
-    @abstractmethod
-    def calculate(self, template, user_input: float) -> float:
-        pass
+### 表 2：`rule`（计分单位）
 
+```python
+class Rule(Base, TimestampMixin):
+    """规则（计分单位）"""
+    __tablename__ = "rule"
+    type: str                  # CONDITION | TRANSFORM（与 attribute.type 联动）
+    score: Optional[float]     # CONDITION 模式下此 rule 被选中时的得分；TRANSFORM 模式必须为 None
+    name: str
+    sort_order: int            # Rule 在所有 Template 里的顺序
+    description: str
+    is_active: bool
+```
 
-# ===== 条件匹配策略 =====
+**字段数：7**。
 
-class ConditionCalculator(ITemplateCalculator):
-    """按优先级遍历规则，第一个命中的规则取其 rule_score"""
+**`type` 字段的作用（v4 新增）**：
 
-    def calculate(self, template, user_input: float) -> float:
-        for rule in sorted(template.rules, key=lambda r: r.priority):
-            if self._rule_matches(rule, user_input):
-                return float(rule.rule_score or 0)
-        return 0.0
+| 用途 | 说明 |
+|---|---|
+| 决定 UI 渲染 | `CONDITION` → 下拉框 / 多选框；`TRANSFORM` → 数值输入框 |
+| 决定 score 语义 | 配合 `score` 字段一起校验（见下表） |
+| 决定 attribute 绑定一致性 | `rule.type == attribute.type` 一行校验 |
 
-    def _rule_matches(self, rule, user_input) -> bool:
-        # 所有 attribute 都满足才算命中（AND 关系）
-        return all(self._attr_matches(attr, user_input) for attr in rule.attributes)
+**`score` 字段的两种语义：**
 
-    def _attr_matches(self, attr, user_input) -> bool:
-        if attr.input_min is not None or attr.input_max is not None:
-            return self._in_range(user_input, attr)
-        return str(user_input) == attr.attribute_value
+| Rule 绑定的所有 Attribute.type | rule.score 取值 | 含义 |
+|---|---|---|
+| 全部 CONDITION | **必填（float）** | 选中该 rule 对应的 attribute 后加 `rule.score` 分 |
+| 全部 TRANSFORM | **必须为 None** | 分数由 attribute.value 公式动态计算 |
+| 混合 CONDITION + TRANSFORM | 不允许（service 层禁止） | 语义混乱 |
 
-    def _in_range(self, value, attr) -> bool:
-        lo = attr.input_min is None or value >= attr.input_min
-        hi = attr.input_max is None or value <= attr.input_max
-        return lo and hi
+**`type` 与 `score` 的对应关系**：
 
+| rule.type | rule.score 取值 | 说明 |
+|---|---|---|
+| `CONDITION` | 必填（float） | 选中后加 rule.score |
+| `TRANSFORM` | 必须为 None | 分数由 attribute.value 公式动态计算 |
 
-# ===== 公式换算策略 =====
+**`sort_order` 的作用范围**：全局唯一。同一 rule 在所有 template 中顺序一致，避免"双排序源"心智负担。
 
-class TransformCalculator(ITemplateCalculator):
-    """按优先级遍历规则，找到 input 所在区间，执行对应公式"""
+### 表 3：`attribute`（选项 / 公式）
 
-    def calculate(self, template, user_input: float) -> float:
-        for rule in sorted(template.rules, key=lambda r: r.priority):
-            for attr in rule.attributes:
-                if self._in_range(user_input, attr):
-                    return self._eval(attr.attribute_value, user_input)
-        return 0.0
+```python
+class Attribute(Base, TimestampMixin):
+    """属性（一个选项 / 一段公式）"""
+    __tablename__ = "attribute"
+    name: str                  # 选项名："国家级"
+    group_code: str            # 技术 key："award_lv"
+    group_name: str            # 显示名："奖项等级"
+    type: str                  # CONDITION | TRANSFORM
+    value: str                 # CONDITION: "" / TRANSFORM: "5 * input"
+    input_min: float           # TRANSFORM 半开半闭下限
+    input_max: float           # TRANSFORM 半开半闭上限
+    sort_order: int            # Attribute 自身在 group 内的顺序
+    description: str
+    is_active: bool
+```
 
-    def _in_range(self, value, attr) -> bool:
-        lo = attr.input_min is None or value >= attr.input_min
-        hi = attr.input_max is None or value <= attr.input_max
-        return lo and hi
+**字段数：11**。
 
-    def _eval(self, formula: str, input_val: float) -> float:
-        # 限制作用域，防止注入
-        return eval(formula, {"input": input_val, "__builtins__": {}})
+**字段语义详解：**
 
+| 字段 | CONDITION 模式 | TRANSFORM 模式 |
+|---|---|---|
+| `name` | 选项名（如"国家级"） | 区间名（如"0-60 学分"） |
+| `group_code` | 必填，技术 key | 必填，技术 key |
+| `group_name` | 必填，显示名 | 必填，显示名 |
+| `type` | `"CONDITION"` | `"TRANSFORM"` |
+| `value` | `""`（分数存于 rule.score） | 公式字符串（如 `"input * 0.5"`） |
+| `input_min` | 可空 | 半开半闭下限 |
+| `input_max` | 可空 | 半开半闭上限 |
+| `sort_order` | 同组内排序 | 同组内排序 |
 
-# ===== 注册表（新增计算类型只在此处加一行）=====
+**`group_code` 与 `group_name` 的一致性约束（service 层）：**
 
-class TemplateCalculatorRegistry:
-    _calculators = {
-        "CONDITION": ConditionCalculator(),
-        "TRANSFORM": TransformCalculator(),
-    }
+- 同一 `group_code` 的所有 attribute 必须共享同一 `group_name`（创建时强制继承已有值）
+- 这避免了"key 与显示名错配"的脏数据
+- 前端"+ 添加选项"按钮自动带 `group_code` + `group_name`，无需用户重复输入
 
-    @classmethod
-    def get(cls, template_type: str) -> ITemplateCalculator:
-        calc = cls._calculators.get(template_type)
-        if not calc:
-            raise ValueError(f"未知模板类型: {template_type}")
-        return calc
+**示例数据：**
 
+```
+group_code | group_name | name      | type      | value              | input_min | input_max
+award_lv   | 奖项等级   | 国家级    | CONDITION | ""                 | null      | null
+award_lv   | 奖项等级   | 省级      | CONDITION | ""                 | null      | null
+award_lv   | 奖项等级   | 院级      | CONDITION | ""                 | null      | null
+credit     | 学分区间   | 0-60学分  | TRANSFORM | "input * 0.5"      | 0         | 61
+credit     | 学分区间   | 61-100    | TRANSFORM | "30 + (input-60)*0.3" | 61     | null
+```
 
-# ===== 统一入口（Application 层只调用这里）=====
+### 表 4：`template_rule`（多对多关联）
+
+```python
+class TemplateRule(Base, TimestampMixin):
+    """template ↔ rule 多对多 — 极简"""
+    __tablename__ = "template_rule"
+    template_id: int           # FK
+    rule_id: int               # FK
+    # UNIQUE(template_id, rule_id)
+```
+
+**字段数：3**（仅 template_id + rule_id + timestamps）。
+
+**不带 `sort_order` 的原因**：
+- rule 全局唯一 `sort_order`，改 1 处所有 template 同步
+- 避免"双重排序源"心智负担
+- 关联表只承担"这件事发生过"的职责
+
+### 表 5：`rule_attribute`（多对多关联）
+
+```python
+class RuleAttribute(Base, TimestampMixin):
+    """rule ↔ attribute 多对多 — 极简"""
+    __tablename__ = "rule_attribute"
+    rule_id: int               # FK
+    attribute_id: int          # FK
+    # UNIQUE(rule_id, attribute_id)
+```
+
+**字段数：3**（仅 rule_id + attribute_id + timestamps）。
+
+**为什么用关联表而不是 `rule.attribute_ids: JSON` 字段**：
+
+| 维度 | 关联表 ✅ | JSON 字段 ❌ |
+|---|---|---|
+| 数据一致性 | FK 保证 | 自行保证 |
+| JOIN 性能 | 索引覆盖 | JSON_CONTAINS |
+| 改 attribute.name 全局生效 | 自动 | 必须脚本 |
+| "attribute=X 被哪些 rule 用" 查询 | 1 行 SQL | 全表扫 JSON |
+
+---
+
+## 三、关系图
+
+```
+template_category
+    │
+    │ 1
+    │
+    ▼ N
+template ◄────────────────┐
+    │ 1                  │
+    │                    │
+    ▼ N                  │
+template_rule ──────────►│ rule ◄──────────────┐
+                          │ │ 1                │
+                          │ │                  │
+                          │ ▼ N                │
+                          │ rule_attribute ──► │ attribute
+                          │                   │ (group_code + group_name)
+                          │                   │
+                          └───────────────────┘
+```
+
+---
+
+## 四、计算引擎（ScoreCalculationService）
+
+```python
+# pip install simpleeval
+from simpleeval import simple_eval
 
 class ScoreCalculationService:
+
     @staticmethod
-    def calculate(template, user_input: float) -> float:
-        calculator = TemplateCalculatorRegistry.get(template.template_type)
-        raw_score = calculator.calculate(template, user_input)
-        # 统一封顶，由 template.template_max_score 控制
-        return min(raw_score, float(template.template_max_score))
+    def calculate(template, user_selections: dict) -> float:
+        """
+        计算 template 的一次申请得分（封顶后）。
+
+        user_selections 结构：
+          { rule_id: attribute_id }       # CONDITION 规则：用户选中的 attribute id
+          { rule_id: "75.0" }             # TRANSFORM 规则：用户输入的数值字符串
+
+        使用 selectinload 一次性 JOIN 全部数据，避免 N+1。
+        返回 min(total, template.max_score)。
+        """
+        total = 0.0
+        for rule in sorted(template.rules, key=lambda r: r.sort_order):
+            selected = user_selections.get(rule.id)
+            if selected is None:
+                continue  # 未填的 rule 不参与计分
+
+            attrs = sorted(rule.attributes, key=lambda a: a.sort_order)
+
+            if attrs and attrs[0].type == "CONDITION":
+                # CONDITION 模式：用户选了 attribute，加 rule.score
+                if selected in [a.id for a in attrs]:
+                    if rule.score is None:
+                        raise ValueError(f"rule={rule.id} 含 CONDITION 但 score=None")
+                    total += float(rule.score)
+            else:
+                # TRANSFORM 模式：用户输入数值，按区间匹配 attribute
+                user_input = float(selected)
+                matched = False
+                for attr in attrs:
+                    # 半开半闭：[input_min, input_max)
+                    if attr.input_min is not None and user_input < float(attr.input_min):
+                        continue
+                    if attr.input_max is not None and user_input >= float(attr.input_max):
+                        continue
+                    # simpleeval 安全求值（禁止任意代码执行）
+                    total += simple_eval(attr.value, names={"input": user_input})
+                    matched = True
+                    break
+                if not matched:
+                    raise ValueError(
+                        f"user_input={user_input} 不在任何 attribute 区间内"
+                    )
+
+        return min(total, float(template.max_score))
 ```
+
+**关键点：**
+- `template.rules` 已通过 `selectinload` 预加载，**1 次 SQL** 拿到全部数据（无 N+1）
+- CONDITION 模式：选 attribute → 直接加 `rule.score`（不管选哪一个）
+- TRANSFORM 模式：根据输入数值匹配区间，套公式计算
 
 ---
 
-### 三、调用关系
+## 五、Service 层约束总结
 
-```
-application_service.py
-    ↓ 提交申请时
-    score = ScoreCalculationService.calculate(template, user_input)
-    ↓
-calculation_service.py → TemplateCalculatorRegistry.get(template_type)
-    ↓
-ConditionCalculator 或 TransformCalculator
-```
+| 约束 | 位置 | 说明 |
+|---|---|---|
+| 同一 `group_code` 必须共享 `group_name` | AttributeService.create | 创建时若 group_code 已存在，强制覆盖 group_name |
+| `type` 必须是 `CONDITION` / `TRANSFORM` | AttributeService.validate / RuleService.validate | 枚举校验 |
+| TRANSFORM 必须有 `value` | AttributeService.validate | 非空 |
+| `rule.score` 与 `rule.type` 一致 | RuleService.validate | `CONDITION` → score 必填；`TRANSFORM` → score 必须 None |
+| `rule` 绑定 `attribute` 时类型一致 | RuleService.bind_attribute | **`rule.type == attribute.type`**（1 行校验，无 N+1） |
+| 同一 `rule` 内 attribute 不可 CONDITION+TRANSFORM 混用 | RuleService.validate / bind_attribute | 禁止混合（语义不一致；由 `rule.type == attribute.type` 约束自然保证） |
+| `input_min`/`input_max` 半开半闭 | AttributeService.validate | input_min >= 0；两者都非空时 input_min < input_max |
+| TRANSFORM 公式仅允许数学运算 | AttributeService.validate | 仅 `0-9 + - * / ** ( ) .` 和 `input` 变量 |
+| template 绑 rule 不限制 type 一致 | TemplateService.bind_rule | **业务允许混用**（ACM、综测类模板）；service 仅打 warning 日志并返回 `is_mixed_type` 给前端做软提示，不阻塞 |
 
-`application_service` 只知道 `ScoreCalculationService.calculate(template, input)`，
-不关心内部是 CONDITION 还是 TRANSFORM。
-
----
-
-### 四、文件职责一览
-
-```
-src/services/
-  template_service.py       # 模板 CRUD：增删改查、规则管理
-  calculation_service.py    # 计算策略：ITemplateCalculator + 策略类 + 引擎
-  application_service.py    # 申请流程：提交、审批、撤回
-```
-
----
-
-### 五、新增计算类型扩展方式
+**template 混用 rule.type 的处理（软提示，v4 新增）**：
 
 ```python
-# 1. 新增策略类
-class WeightedCalculator(ITemplateCalculator):
-    def calculate(self, template, user_input: float) -> float:
-        ...
+class TemplateService:
+    async def bind_rule(self, db, template_id: int, rule_id: int):
+        """
+        绑定 rule 到 template：
+        - 不校验 rule.type 一致性（业务上允许混用，ACM、综测类模板合法）
+        - 软提示：service 计算 is_mixed_type 并返回给前端
+        - 打 warning 日志（不抛异常，不阻塞业务）
+        """
+        template = self.get(template_id)
+        rule = self.rule_service.get(rule_id)
 
-# 2. 注册（只改这一行）
-TemplateCalculatorRegistry._calculators["WEIGHTED"] = WeightedCalculator()
+        self.repo.create_template_rule(template_id, rule_id)
 
-# 3. 数据库 template_type 字段允许新值即可
-# 其余代码（application_service、路由层）完全不需要改动
+        # 计算混用标志（每次 get 时动态算，不存数据库）
+        existing_types = {r.type for r in template.rules}
+        is_mixed_type = len(existing_types | {rule.type}) > 1
+
+        if is_mixed_type:
+            logger.warning(
+                f"template={template_id} 混用了 rule.type: {existing_types} + {rule.type}"
+            )
+
+        return {
+            "bound": True,
+            "is_mixed_type": is_mixed_type,
+        }
 ```
 
+**前端软提示策略**：
+
+- 前端拿到 `is_mixed_type=True` 时，弹一个确认框：「⚠️ 该模板将同时包含『下拉框』和『数值输入』两种规则，混用在 ACM 类综合模板中是常见做法，但请确认是否符合业务需求。」
+- 业务确认就继续，取消就回滚——**业务自由，校验留余地**
+- 学生端 / 计算引擎无感（不读 `is_mixed_type`，按 rule.type 分别计分）
+
+---
+
+## 六、UX 流程（前端的"显示 group + 添加同组"）
+
+```
+┌─────────────────────────────────┐
+│ [新建组 +]                       │ ← 创建第一个 attribute（自动成组）
+├─────────────────────────────────┤
+│ ▼ 奖项等级 (group_code=award_lv) │ ← 展开一个 group
+│   ✓ 国家级                       │
+│   ✓ 省级          [+ 添加选项]   │ ← 添加同组 attribute（继承 group_code + group_name）
+│   ✓ 市级                         │
+├─────────────────────────────────┤
+│ ▼ GPA 区间 (group_code=gpa)      │
+│   ✓ 4.0-3.5       [+ 添加选项]   │
+│   ✓ 3.5-3.0                     │
+└─────────────────────────────────┘
+```
+
+**添加同组 attribute 时，前端只需传**：
+
+```json
+{
+  "name": "国际级",
+  "group_code": "award_lv",    // 自动从父 group 带过来
+  "group_name": "奖项等级",    // 自动从父 group 带过来
+  "type": "CONDITION",
+  "value": "",
+  "input_min": null,
+  "input_max": null,
+  "sort_order": 4,
+  "description": ""
+}
+```
+
+**完全不需要 `attribute_group` 表**——`group_code + group_name` 在 attribute 表内自洽。
+
+---
+
+## 七、性能：selectinload 避免 N+1
+
+**加载 template 完整规则树**：
+
+```python
+from sqlalchemy.orm import selectinload
+
+def get_with_rules(db, template_id: int):
+    stmt = (
+        select(Template)
+        .where(Template.id == template_id, Template.is_active == True)
+        .options(
+            selectinload(Template.rules)
+                .selectinload(Rule.attributes)
+        )
+    )
+    return db.execute(stmt).scalar_one_or_none()
+```
+
+**SQL 数量**：固定 **3 条 SELECT**（template / rules / attributes），与 rule / attribute 数量无关。
+
+**实际场景（ACM 模板，3 rule × 10 attribute = 30 个 attribute）**：
+- ❌ 懒加载：1 + 3 + 30 = 34 次 SQL
+- ✅ selectinload：1 + 1 + 1 = 3 次 SQL
+- 数据量 < 100：响应时间 < 10ms
+
+---
+
+## 八、字段汇总
+
+| 表 | 字段数 | 关键字段 |
+|---|---|---|
+| `template` | 9 | name / category_id / max_score / review_count / sort_order |
+| `rule` | **7**（+1） | **type** / score / name / sort_order |
+| `attribute` | 11 | group_code / group_name / type / value / input_min / input_max / sort_order |
+| `template_rule` | 3 | template_id / rule_id（+ timestamps） |
+| `rule_attribute` | 3 | rule_id / attribute_id（+ timestamps） |
+
+**总和 33 字段（+1），5 张表，关联表极简。**
+
+---
+
+## 九、type 字段的设计哲学（v4 核心）
+
+> **Type 字段只放 rule + attribute 两层——template 不加 type 字段。**
+
+### 9.1 为什么 type 字段不能加在 template
+
+template 是业务聚合根，**90% 的真实模板都是 CONDITION + TRANSFORM rule 混合使用**：
+
+```
+ACM 模板（template.type=??? → 悖论）
+├── rule(award_lv, type=CONDITION, score=10)   ← template.type != rule.type → 报错
+├── rule(code_lines, type=TRANSFORM, score=None)
+└── rule(team_role, type=CONDITION, score=5)
+```
+
+**template.type 必须同时是 CONDITION 和 TRANSFORM 才是悖论**——字段加了但解决不了问题。
+
+### 9.2 为什么 type 字段必须加在 rule
+
+- **决定 UI 渲染**：CONDITION → 下拉框；TRANSFORM → 数值输入框
+- **决定 score 语义**：rule.score 在 CONDITION 时必填，TRANSFORM 时必须 None
+- **决定 attribute 绑定一致性**：`rule.type == attribute.type` 1 行校验
+
+**rule.type 是 rule 自身的元数据——UI 控件、score 校验、attribute 绑定都依赖它**。
+
+### 9.3 三层 type 字段的清晰分工
+
+| 字段 | 作用 | 校验 |
+|---|---|---|
+| `template.type` | ❌ **不存在** | ❌ 不需要 |
+| `rule.type` | ✅ 决定 UI 渲染 / score 语义 / 绑定 attribute 一致性 | ✅ 绑 attribute 时校验一致性 |
+| `attribute.type` | ✅ 决定 value 怎么用（空字符串 vs 公式） | ✅ 绑 rule 时校验一致性 |
+
+### 9.4 校验传递链
+
+```
+template（无 type 字段）              ← 任意 rule 组合（业务允许混用）
+  │
+  ├─ rule.type=CONDITION     ↔  attribute.type=CONDITION ✅
+  └─ rule.type=TRANSFORM     ↔  attribute.type=TRANSFORM ✅
+```
+
+唯一硬校验：`rule.type == attribute.type`。
+
+### 9.5 真实模板示例（ACM）
+
+```
+ACM 模板（template 无 type 字段）
+├── rule(award_lv, type=CONDITION, score=10)         ↔ CONDITION attribute ✅
+│   ├── attribute(国家级, type=CONDITION, value="")
+│   ├── attribute(省级,   type=CONDITION, value="")
+│   └── attribute(院级,   type=CONDITION, value="")
+├── rule(code_lines, type=TRANSFORM, score=None)      ↔ TRANSFORM attribute ✅
+│   └── attribute(代码量, type=TRANSFORM, value="input * 0.05", input_min=0, input_max=null)
+└── rule(team_role, type=CONDITION, score=5)          ↔ CONDITION attribute ✅
+    ├── attribute(主力, type=CONDITION, value="")
+    └── attribute(参与, type=CONDITION, value="")
+```
+
+**前端渲染**：读 3 个 rule.type，分别渲染 2 个下拉框 + 1 个输入框。
+**后端计算**：每个 rule 单独按 type 计分，求和封顶 template.max_score。
+**绑定校验**：rule 绑 attribute 时校验 `rule.type == attribute.type`，永远成立（同一 rule 下 attribute.type 一致）。

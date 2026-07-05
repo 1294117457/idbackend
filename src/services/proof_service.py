@@ -5,6 +5,7 @@ from typing import Optional, List
 from datetime import datetime
 
 from src.models import Application, ApplicationProof, User
+from src.app.schemas.errors import NotFoundError, BadRequestError, ConflictError, ForbiddenError
 
 
 class ProofService:
@@ -54,7 +55,7 @@ class ProofService:
         if not proof:
             return None
         if proof.status == 1:
-            raise ValueError("该证明材料已通过审核")
+            raise ConflictError("该证明材料已通过审核")
 
         # 更新审核记录
         reviewer_ids = proof.reviewer_ids or []
@@ -92,7 +93,7 @@ class ProofService:
         if not proof:
             return None
         if proof.status != 0:
-            raise ValueError("该证明材料已被审核")
+            raise ConflictError("该证明材料已被审核")
 
         reviewer_ids = proof.reviewer_ids or []
         if reviewer_id not in reviewer_ids:
@@ -130,11 +131,11 @@ class ProofService:
         )
         application = app.scalar_one_or_none()
         if not application:
-            raise ValueError("申请不存在")
+            raise NotFoundError(f"申请不存在: id={application_id}")
         if application.user_id != user_id:
-            raise PermissionError("无权操作此申请")
+            raise ForbiddenError("无权操作此申请")
         if application.status != 0:
-            raise ValueError("只能在待审核状态下追加证明材料")
+            raise ConflictError("只能在待审核状态下追加证明材料")
 
         proof = ApplicationProof(
             application_id=application_id,
@@ -168,9 +169,9 @@ class ProofService:
         )
         application = app.scalar_one_or_none()
         if not application or application.user_id != user_id:
-            raise PermissionError("无权操作此证明材料")
+            raise ForbiddenError("无权操作此证明材料")
         if proof.status != 2:
-            raise ValueError("只能重新提交已驳回的证明材料")
+            raise ConflictError("只能重新提交已驳回的证明材料")
 
         if file_id:
             proof.proof_file_id = file_id
@@ -198,7 +199,7 @@ class ProofService:
     ) -> Optional[ApplicationProof]:
         """审核员覆盖修改状态"""
         if status not in [1, 2]:
-            raise ValueError("status 只能为 1（通过）或 2（驳回）")
+            raise BadRequestError("status 只能为 1（通过）或 2（驳回）")
 
         proof = await ProofService.get_by_id(db, proof_id)
         if not proof:

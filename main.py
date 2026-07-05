@@ -1,22 +1,3 @@
-"""FastAPI 应用入口（项目根）
-
-约定：
-- 本文件在项目根目录（idpython/main.py）
-- 启动方式：uvicorn main:app（与 README / Dockerfile 保持一致）
-- 不需要 sys.path hack：CWD = 项目根时，`from src.xxx import` 自动可用
-
-职责：
-1. 构造 FastAPI 实例
-2. 注册 lifespan（数据库 / 存储 / Redis 生命周期）
-3. 注册横切关注点（中间件 + 异常 handler）
-4. 注册业务路由
-5. 启动 uvicorn
-
-具体实现全部下放到：
-- src/app/middleware/（中间件 + 异常 handler）
-- src/app/routes/（业务路由）
-- src/infra/（数据库 / Redis / 存储 / 配置）
-"""
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI

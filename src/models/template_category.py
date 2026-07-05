@@ -62,8 +62,8 @@ class TemplateCategory(Base, TimestampMixin):
     )
 
     # 反向关联：绑到本节点的 template（ON DELETE CASCADE 自动级联）
-    templates: Mapped[List["ScoreTemplate"]] = relationship(
-        "ScoreTemplate",
+    templates: Mapped[List["Template"]] = relationship(
+        "Template",
         back_populates="category",
         passive_deletes=True,
     )

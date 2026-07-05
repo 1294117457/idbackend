@@ -3,7 +3,7 @@
 设计原则（docs/file/分层设计.md §1）：
 - 只做"接请求 → 调存储 → 调 DB → 构造返回对象"四件事
 - 数据转换 / 校验 / ORM 构造由 Request DTO（to_metadata / apply_to / to_conditions）承担
-- VO 投影由 VO.from_orm_obj 在 service 内部完成
+- VO 投影由 VO.from_orm_to_vo 在 service 内部完成
 - 事务边界由 Service 管理（§13.5 架构决策：依赖注入层只管 session 生命周期）
 """
 import io
@@ -24,30 +24,8 @@ from src.app.schemas import (
     FileVO,
     FileListVO,
     FileDataVO,
+    NotFoundError,
 )
-
-
-# ========== 业务异常 ==========
-
-class _BusinessError(Exception):
-    http_code: int = 500
-    default_message: str = "服务器内部错误"
-
-    def __init__(self, *args):
-        if len(args) == 0:
-            self.message = self.default_message
-        elif len(args) == 1:
-            self.message = str(args[0])
-        elif len(args) == 2:
-            self.message = str(args[1])
-        else:
-            self.message = self.default_message
-        super().__init__(self.message)
-
-
-class FileNotFoundError(_BusinessError):
-    http_code = 404
-    default_message = "文件不存在"
 
 
 # ========== Service ==========
@@ -61,14 +39,7 @@ class FileService:
     # ---- 内部辅助 ----
 
     async def _safe_delete(self, key: str, ignore_error: bool = True) -> None:
-        """MinIO 删除——失败时是否抛异常由 ignore_error 控制
 
-        Args:
-            key: 对象键名
-            ignore_error:
-                True  = 失败仅记录日志（用于清理旧头像等不阻塞主流程的场景）
-                False = 失败时 raise（用于补偿删除，调用方需要感知失败）
-        """
         try:
             await self._storage.delete(key)
         except Exception as e:
@@ -162,7 +133,7 @@ class FileService:
         )
         meta = result.scalar_one_or_none()
         if not meta:
-            raise FileNotFoundError(f"file_id={file_id}")
+            raise NotFoundError(f"文件不存在：file_id={file_id}")
         return meta
 
     async def search_files(self, req: FileQueryRequest) -> FileListVO:
@@ -187,8 +158,8 @@ class FileService:
         files = list(result.scalars().all())
 
         # ORM → VO + 分页封装，全在 service 层完成
-        return FileListVO.build(
-            items=[FileVO.from_orm_obj(f) for f in files],
+        return FileListVO.from_list_to_page(
+            items=[FileVO.from_orm_to_vo(f) for f in files],
             total=total,
             page_num=req.pageNum,
             page_size=req.pageSize,
@@ -211,8 +182,8 @@ class FileService:
                 expiry=expiry_minutes * 60,
             )
         else:
-            raise FileNotFoundError(
-                f"file_id={file_id}：未知分类 {meta.file_category}"
+            raise NotFoundError(
+                f"文件不存在：file_id={file_id}（未知分类 {meta.file_category}）"
             )
         return meta, url
 

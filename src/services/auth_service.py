@@ -8,13 +8,13 @@ from src.infra.jwt import (
     create_token,
     create_refresh_token,
     verify_token,
-    hash_password,
     verify_password,
     JWTError,
 )
 from src.infra.redis import RedisCache, get_redis
 from src.infra.config import is_system_account
 from src.models import User, Role, UserRole
+from src.app.schemas.errors import NotFoundError, BadRequestError, ConflictError, ForbiddenError
 from src.services.rbac_service import RbacService
 
 
@@ -24,21 +24,20 @@ class AuthService:
     @staticmethod
     async def register(
         db: AsyncSession,
-        username: str,
-        password: str,
+        req,
     ) -> User:
-        """注册用户（自动分配 user 角色）"""
+        """注册用户（自动分配 user 角色）
+
+        - 用户名冲突 → ConflictError
+        - ORM 构造由 req.to_create_orm() 完成
+        """
         result = await db.execute(
-            select(User).where(User.username == username)
+            select(User).where(User.username == req.username)
         )
         if result.scalar_one_or_none():
-            raise ValueError("用户名已存在")
+            raise ConflictError(f"用户名已存在: {req.username}")
 
-        user = User(
-            username=username,
-            password=hash_password(password),
-            status="active",
-        )
+        user = req.to_create_orm()
         db.add(user)
         await db.flush()
 
@@ -71,13 +70,13 @@ class AuthService:
         user = result.scalar_one_or_none()
 
         if not user:
-            raise ValueError("用户名或密码错误")
+            raise BadRequestError("用户名或密码错误")
 
         if not verify_password(password, user.password):
-            raise ValueError("用户名或密码错误")
+            raise BadRequestError("用户名或密码错误")
 
         if user.status != "active":
-            raise ValueError("账户已被禁用")
+            raise ForbiddenError("账户已被禁用")
 
         user.last_login_at = datetime.utcnow().isoformat()
         await db.commit()
@@ -104,19 +103,19 @@ class AuthService:
         user = result.scalar_one_or_none()
 
         if not user:
-            raise ValueError("用户名或密码错误")
+            raise BadRequestError("用户名或密码错误")
 
         if not verify_password(password, user.password):
-            raise ValueError("用户名或密码错误")
+            raise BadRequestError("用户名或密码错误")
 
         if user.status != "active":
-            raise ValueError("账户已被禁用")
+            raise ForbiddenError("账户已被禁用")
 
         # 鉴权：白名单超管，或拥有 super_admin / admin / reviewer 角色之一
         if not is_system_account(user.username) and not await RbacService.has_any_role(
             db, user.id, "super_admin", "admin", "reviewer"
         ):
-            raise ValueError("无管理端登录权限")
+            raise ForbiddenError("无管理端登录权限")
 
         user.last_login_at = datetime.utcnow().isoformat()
         await db.commit()
@@ -188,19 +187,18 @@ class AuthService:
     @staticmethod
     async def reset_password(
         db: AsyncSession,
-        username: str,
-        new_password: str,
+        req,
     ) -> bool:
-        """重置密码"""
+        """重置密码（req: ForgotPasswordRequest —— apply_to 内部 hash + 写回）"""
         result = await db.execute(
-            select(User).where(User.username == username)
+            select(User).where(User.username == req.username)
         )
         user = result.scalar_one_or_none()
 
         if not user:
-            raise ValueError("用户不存在")
+            raise NotFoundError(f"用户不存在: {req.username}")
 
-        user.password = hash_password(new_password)
+        req.apply_to(user)
         await db.commit()
         return True
 
