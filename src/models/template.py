@@ -35,10 +35,19 @@ class ScoreTemplate(Base, TimestampMixin):
 
     field_id: Mapped[Optional[int]] = mapped_column(Integer)
     subcategory_id: Mapped[Optional[int]] = mapped_column(Integer)
+    category_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("template_category.id", ondelete="CASCADE"),
+        nullable=True,
+    )
 
     # 关系
     rules: Mapped[List["ScoreTemplateRule"]] = relationship(
         "ScoreTemplateRule", back_populates="template"
+    )
+    category: Mapped[Optional["TemplateCategory"]] = relationship(
+        "TemplateCategory",
+        back_populates="templates",
+        foreign_keys="[ScoreTemplate.category_id]",
     )
 
 

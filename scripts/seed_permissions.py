@@ -57,6 +57,17 @@ PERMISSIONS = [
     ("/api/bonus-template/{template_id}", "template:update", "模板-更新", 504),
     ("/api/bonus-template/{template_id}", "template:delete", "模板-删除", 505),
 
+    # ============== 模板分类树（template-category，Layer 1，需 admin） ==============
+    # 注：FastAPI 路由匹配按注册顺序。模板分类前缀 /api/template-category 比模板 /api/bonus-template 短，
+    # 为避免前缀误匹配，把精确路径放在前面（seed_permissions 也按 path→code 维护，无顺序依赖，但代码顺序保持清晰）
+    ("/api/template-category/tree", "template_category:read", "模板分类-树", 510),
+    ("/api/template-category/leaf", "template_category:read", "模板分类-叶子列表", 511),
+    ("/api/template-category", "template_category:create", "模板分类-创建", 512),
+    ("/api/template-category/{category_id}", "template_category:read", "模板分类-详情", 513),
+    ("/api/template-category/{category_id}", "template_category:update", "模板分类-更新", 514),
+    ("/api/template-category/{category_id}", "template_category:delete", "模板分类-删除", 515),
+    ("/api/template-category/{category_id}/delete-preview", "template_category:read", "模板分类-删除预览", 516),
+
     # ============== 需求模板（demand-template，需 admin） ==============
     ("/api/demand-template/list", "demand_template:list", "需求模板-列表", 601),
     ("/api/demand-template/create", "demand_template:create", "需求模板-创建", 602),
@@ -116,6 +127,7 @@ ROLE_PERMISSIONS = {
         "permission:list", "permission:interfaces", "permission:scan",
         "permission:create", "permission:update", "permission:delete",
         "template:list", "template:detail", "template:create", "template:update", "template:delete",
+        "template_category:read", "template_category:create", "template_category:update", "template_category:delete",
         "demand_template:list", "demand_template:create", "demand_template:update", "demand_template:delete",
         "attribute:list", "attribute:list_by_type", "attribute:list_by_code", "attribute:detail",
         "attribute:create", "attribute:update", "attribute:delete",

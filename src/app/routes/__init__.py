@@ -14,6 +14,7 @@ from src.app.routes.auth import router as auth_router
 from src.app.routes.user import router as user_router, system_router as user_system_router
 from src.app.routes.application import router as application_router
 from src.app.routes.template import router as template_router
+from src.app.routes.template_category import router as template_category_router
 from src.app.routes.file import router as file_router
 from src.app.routes.health import router as health_router
 from src.app.routes.field_config import router as field_config_router
@@ -40,6 +41,7 @@ ROUTERS = [
     # 业务核心
     application_router,
     template_router,
+    template_category_router,
     file_router,
     proof_router,
     # 业务辅助
@@ -75,6 +77,7 @@ __all__ = [
     "user_system_router",
     "application_router",
     "template_router",
+    "template_category_router",
     "file_router",
     "health_router",
     "field_config_router",
