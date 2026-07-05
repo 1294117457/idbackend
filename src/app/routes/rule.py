@@ -34,7 +34,7 @@ async def list_rules(
     type: Optional[str] = Query(default=None, description="CONDITION/TRANSFORM"),
     isActive: Optional[bool] = Query(default=True),
     pageNum: int = Query(default=1, ge=1),
-    pageSize: int = Query(default=20, ge=1, le=100),
+    pageSize: int = Query(default=20, ge=1, le=1000),
     db: AsyncSession = Depends(get_db),
 ):
     """分页列表"""
