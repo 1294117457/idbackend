@@ -42,7 +42,6 @@ class FileMetadata(Base, TimestampMixin):
         nullable=False, index=True,
         comment="决定鉴权分支和 S3 路径前缀",
     )
-    file_purpose: Mapped[Optional[str]] = mapped_column(String(200))
     upload_user_id: Mapped[int] = mapped_column(
         Integer, nullable=False, index=True,
         comment="上传用户，部分鉴权场景使用",

@@ -1,4 +1,11 @@
-"""Pydantic 模型 - 请求/响应 DTO"""
+"""Pydantic 模型 - 请求/响应 DTO
+
+按模块拆分：
+- 认证 / 用户 / 申请 / 模板：本文件
+- 文件相关：src/app.schemas.file（详见 file 模块）
+
+外部使用统一通过 `from src.app.schemas import ...`，对实现位置无感知。
+"""
 from pydantic import BaseModel, field_validator
 from typing import Optional, List
 from datetime import datetime
@@ -159,110 +166,16 @@ class CreateTemplateRequest(BaseModel):
     reviewCount: int = 1
 
 
-# ========== 文件相关 ==========
+# ========== 文件相关（见 src.app.schemas.file） ==========
 
-class UploadResponse(BaseModel):
-    """通用文件上传响应"""
-    fileId: int
-    url: str
-    originalName: str
-
-
-class FileUpdateRequest(BaseModel):
-    """文件元信息更新请求"""
-    originalName: Optional[str] = None
-    filePurpose: Optional[str] = None
-
-
-def _format_size(size: Optional[int]) -> str:
-    """人类友好的文件大小（业务层格式化）"""
-    if size is None:
-        return "-"
-    if size < 1024:
-        return f"{size}B"
-    if size < 1024 * 1024:
-        return f"{size / 1024:.1f}KB"
-    return f"{size / (1024 * 1024):.1f}MB"
-
-
-class FileMetadataVO(BaseModel):
-    """文件元信息视图（用于 list / info）"""
-    id: int
-    originalName: str
-    fileSize: int
-    fileSizeFormatted: str
-    contentType: Optional[str]
-    fileExtension: Optional[str]
-    fileCategory: str
-    filePurpose: Optional[str] = None
-    uploadUserId: int
-    uploadTime: str
-
-    class Config:
-        from_attributes = True
-
-    @classmethod
-    def from_orm_obj(cls, obj) -> "FileMetadataVO":
-        """从 FileMetadata ORM 对象构造"""
-        return cls(
-            id=obj.id,
-            originalName=obj.original_name,
-            fileSize=obj.file_size,
-            fileSizeFormatted=_format_size(obj.file_size),
-            contentType=obj.content_type,
-            fileExtension=obj.file_extension,
-            fileCategory=obj.file_category.value if hasattr(obj.file_category, "value") else obj.file_category,
-            filePurpose=obj.file_purpose,
-            uploadUserId=obj.upload_user_id,
-            uploadTime=str(obj.created_at),
-        )
-
-
-class FileInfoVO(BaseModel):
-    """单个文件简要信息（GET /api/file/{id}）"""
-    fileId: int
-    originalName: str
-    fileSize: int
-    contentType: Optional[str]
-    fileCategory: str
-    uploadTime: str
-
-    class Config:
-        from_attributes = True
-
-    @classmethod
-    def from_orm_obj(cls, obj) -> "FileInfoVO":
-        return cls(
-            fileId=obj.id,
-            originalName=obj.original_name,
-            fileSize=obj.file_size,
-            contentType=obj.content_type,
-            fileCategory=obj.file_category.value if hasattr(obj.file_category, "value") else obj.file_category,
-            uploadTime=str(obj.created_at),
-        )
-
-
-class FileUpdateResponse(BaseModel):
-    """文件元信息更新响应"""
-    fileId: int
-    originalName: str
-    filePurpose: Optional[str]
-    fileCategory: str
-
-    @classmethod
-    def from_orm_obj(cls, obj) -> "FileUpdateResponse":
-        return cls(
-            fileId=obj.id,
-            originalName=obj.original_name,
-            filePurpose=obj.file_purpose,
-            fileCategory=obj.file_category.value if hasattr(obj.file_category, "value") else obj.file_category,
-        )
-
-
-# ========== 分页 ==========
-
-class PaginatedResponse(BaseModel):
-    list: List
-    total: int
-    page: int
-    size: int
+# 文件模块 DTO/VO/工具函数统一从 src.app.schemas.file 导出，避免本文件膨胀
+from src.app.schemas.file import (  # noqa: E402, F401
+    Page,
+    FileUploadRequest,
+    FileAvatarUploadRequest,
+    FileUpdateRequest,
+    FileQueryRequest,
+    FileVO,
+    FileListVO,
+    FileDataVO,
+)

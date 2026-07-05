@@ -69,8 +69,8 @@ def get_sync_db() -> Generator[Session, None, None]:
 
 async def init_db():
     """初始化数据库 (创建表等)"""
-    from models.base import Base
-    from models import user, application, template, file, config
+    from src.models.base import Base
+    from src.models import user, application, template, file, config
 
     async with async_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
