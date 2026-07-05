@@ -4,10 +4,12 @@ from src.models.user import User, Role, Permission, UserRole, RolePermission
 from src.models.application import (
     Application,
     ApplicationProof,
-    EvaluationApplication,
+    ApplicationOperation,
     ApplicationStatus,
-    ScoreType,
+    ApplicationOperationType,
+    ProofStatus,
 )
+from src.models.score_data import ScoreData
 from src.models.template import (
     Template,
     Rule,
@@ -31,9 +33,12 @@ __all__ = [
     # Application
     "Application",
     "ApplicationProof",
-    "EvaluationApplication",
+    "ApplicationOperation",
     "ApplicationStatus",
-    "ScoreType",
+    "ApplicationOperationType",
+    "ProofStatus",
+    # ScoreData
+    "ScoreData",
     # Template（v4：5 张表 + 共享枚举）
     "Template",
     "Rule",

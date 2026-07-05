@@ -3,6 +3,7 @@
 from src.app.routes.auth import router as auth_router
 from src.app.routes.user import router as user_router, system_router as user_system_router
 from src.app.routes.application import router as application_router
+from src.app.routes.score_data import router as score_data_router
 from src.app.routes.template import router as template_router
 from src.app.routes.template_category import router as template_category_router
 from src.app.routes.rule import router as rule_router
@@ -28,6 +29,7 @@ ROUTERS = [
     user_system_router,
     # 业务核心
     application_router,
+    score_data_router,
     template_router,
     rule_router,
     attribute_router,
@@ -53,6 +55,7 @@ __all__ = [
     "user_router",
     "user_system_router",
     "application_router",
+    "score_data_router",
     "template_router",
     "rule_router",
     "attribute_router",

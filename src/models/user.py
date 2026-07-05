@@ -111,7 +111,13 @@ class User(Base, TimestampMixin):
     demand_value: Mapped[Optional[dict]] = mapped_column(JSON, default=dict)
     demand_files: Mapped[Optional[dict]] = mapped_column(JSON, default=dict)
 
-    # 分数
+    # v4.2 快照：recalculate 写入（避免每次聚合重算）
+    score_info: Mapped[Optional[dict]] = mapped_column(JSON, default=dict)
+
+    # v4.2 备用扩展槽（学生维度动态扩展，避免再开新表）
+    extra_info: Mapped[Optional[dict]] = mapped_column(JSON, default=dict)
+
+    # 分数（v4.2 兼容字段——保留以便旧 API 不报错，新代码读 user.score_info）
     academic_score: Mapped[float] = mapped_column(default=0.0)
     specialty_score: Mapped[float] = mapped_column(default=0.0)
     comprehensive_score: Mapped[float] = mapped_column(default=0.0)

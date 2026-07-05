@@ -1,267 +1,486 @@
-"""申请路由 - 兼容前端"""
-from fastapi import APIRouter, Depends, Query, Path, Body
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_
-from pydantic import BaseModel
+"""申请路由（v4.2）
+
+═══════════════════════════════════════════════════════════════════════
+RESTful 设计
+═══════════════════════════════════════════════════════════════════════
+学生端:
+  POST   /api/applications/draft                  save_draft
+  DELETE /api/applications/draft/{id}             discard_draft
+  POST   /api/applications/{id}/submit            submit
+  POST   /api/applications/{id}/withdraw          withdraw
+  POST   /api/applications/{id}/resubmit          resubmit
+  GET    /api/applications                        我的申请列表（学生）
+  GET    /api/applications/{id}                   详情（含 proofs + operations）
+
+审核员端:
+  POST   /api/applications/{id}/proofs/{pid}/review   review_proof
+  POST   /api/applications/{id}/pass                  pass_application
+  POST   /api/applications/{id}/reject                reject_application
+  GET    /api/admin/applications                      待审核列表
+  GET    /api/admin/applications/history              审核历史
+"""
+from __future__ import annotations
+
 from typing import Optional, List
+from decimal import Decimal
+
+from fastapi import APIRouter, Depends, Query, Path, Body
+from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.deps import get_db
 from src.app.context import get_user_id
 from src.app import response as R
-from src.services import ApplicationService, TemplateService
 
-router = APIRouter(prefix="/api/application", tags=["申请"])
+from src.services import (
+    ApplicationService,
+    ApplicationOperationService,
+    ScoreDataService,
+    TemplateService,
+)
+from src.models import (
+    ApplicationStatus,
+    ProofStatus,
+    ApplicationOperationType,
+)
+from src.app.schemas.errors import (
+    NotFoundError, BadRequestError, ConflictError, ForbiddenError,
+)
 
 
-# ========== 请求/响应模型 ==========
+router = APIRouter(tags=["申请"])
 
-class ProofItem(BaseModel):
-    proofFileId: int
-    proofValue: float
-    reviewCount: Optional[int] = 1
+
+# ════════════════════════════════════════════════════════════════════════
+# Request / Response Models
+# ════════════════════════════════════════════════════════════════════════
+class ProofDataItem(BaseModel):
+    file_id: Optional[int] = None
+    proof_score: float
+
+
+class SaveDraftRequest(BaseModel):
+    template_id: int
+    template_name: str
+    category_id: int
+    apply_score: float
+    proof_data_list: List[ProofDataItem] = Field(default_factory=list)
+    remark: Optional[str] = None
+    review_count: int = 1
+
+
+class ResubmitRequest(BaseModel):
+    proof_data_list: List[ProofDataItem]
+
+
+class ReviewProofRequest(BaseModel):
+    action: str  # APPROVED | REJECTED
     remark: Optional[str] = None
 
 
-class SubmitApplicationRequest(BaseModel):
-    studentId: str
-    studentName: str
-    major: str
-    enrollmentYear: int
-    templateName: str
-    templateType: str
-    scoreType: int
-    applyScore: float
-    applyInput: Optional[float] = None
-    ruleId: Optional[int] = None
-    reviewCount: int = 1
-    proofItems: List[ProofItem] = []
+class VoteRequest(BaseModel):
     remark: Optional[str] = None
 
 
-class ReviewRequest(BaseModel):
-    comment: Optional[str] = None
+class RejectRequest(BaseModel):
+    remark: str   # 必填
 
 
-# ========== 用户接口 ==========
+class DiscardDraftRequest(BaseModel):
+    remark: Optional[str] = None
 
-@router.post("/submit")
-async def submit_application(
-    request: SubmitApplicationRequest,
+
+class WithdrawRequest(BaseModel):
+    remark: Optional[str] = None
+
+
+# ════════════════════════════════════════════════════════════════════════
+# 工具：构造 operator_name
+# ════════════════════════════════════════════════════════════════════════
+async def _get_user_full_name(db: AsyncSession, user_id: int) -> str:
+    from src.models import User
+    user = await db.get(User, user_id)
+    return (user.full_name if user else None) or (user.username if user else f"user#{user_id}")
+
+
+# ════════════════════════════════════════════════════════════════════════
+# 学生端：草稿 / 提交 / 撤回 / 重提
+# ════════════════════════════════════════════════════════════════════════
+@router.post("/api/applications/draft")
+async def save_draft(
+    req: SaveDraftRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """提交加分申请"""
-    templates = await TemplateService.get_templates(db)
-    template = next((t for t in templates if t.name == request.templateName), None)
+    """保存草稿（v4.2：草稿允许 0 proof）"""
+    user_id = get_user_id()
+    if not user_id:
+        return R.unauthorized_resp("未登录")
 
-    if not template:
-        return R.not_found_resp("模板不存在")
-
-    application = await ApplicationService.create_application(
-        db,
-        user_id=get_user_id(),
-        template_id=template.id,
-        template_name=request.templateName,
-        apply_score=request.applyScore,
-        rule_id=request.ruleId,
-        apply_input=request.applyInput,
-        score_type=request.scoreType,
-    )
-
-    for proof in request.proofItems:
-        await ApplicationService.add_proof(
-            db, application.id, proof.proofFileId, proof.proofValue
+    try:
+        application = await ApplicationService.save_draft(
+            db,
+            user_id=user_id,
+            template_id=req.template_id,
+            template_name=req.template_name,
+            category_id=req.category_id,
+            apply_score=Decimal(str(req.apply_score)),
+            proof_data_list=[p.model_dump() for p in req.proof_data_list],
+            review_count=req.review_count,
+            remark=req.remark,
         )
+        return R.created_resp(format_application(application))
+    except (NotFoundError, BadRequestError) as e:
+        return R.bad_request_resp(str(e))
+    except Exception as e:
+        return R.error_resp(f"保存草稿失败: {e}")
 
-    return R.created_resp({
-        "applicationId": application.id,
-        "status": "pending",
-    })
 
-
-@router.get("/my-records")
-async def get_my_records(
+@router.delete("/api/applications/draft/{application_id}")
+async def discard_draft(
+    application_id: int,
+    req: DiscardDraftRequest = Body(default=DiscardDraftRequest()),
     db: AsyncSession = Depends(get_db),
 ):
-    """获取我的申请记录"""
-    applications, _ = await ApplicationService.get_user_applications(db, get_user_id())
+    """丢弃草稿（DRAFT → DISCARDED）"""
+    user_id = get_user_id()
+    if not user_id:
+        return R.unauthorized_resp("未登录")
 
-    return R.success_resp([{
-        "id": a.id,
-        "studentName": a.student_name,
-        "templateName": a.template_name,
-        "applyScore": a.apply_score,
-        "gainScore": a.gain_score,
-        "status": a.status,
-        "createdAt": str(a.created_at),
-    } for a in applications])
+    try:
+        operator_name = await _get_user_full_name(db, user_id)
+        application = await ApplicationService.discard_draft(
+            db,
+            application_id=application_id,
+            user_id=user_id,
+            operator_name=operator_name,
+            remark=req.remark,
+        )
+        return R.success_resp({"id": application.id, "status": application.status})
+    except (NotFoundError, ForbiddenError, ConflictError) as e:
+        return R.forbidden_resp(str(e))
 
 
-@router.delete("/cancel/{record_id}")
-async def cancel_application(
-    record_id: int,
+@router.post("/api/applications/{application_id}/submit")
+async def submit_application(
+    application_id: int,
     db: AsyncSession = Depends(get_db),
 ):
-    """取消申请"""
-    result = await ApplicationService.cancel_application(db, record_id, get_user_id())
-    if not result:
-        return R.bad_request_resp("申请不存在或无法取消")
-    return R.success_resp(msg="取消成功")
+    """DRAFT → APPLYING"""
+    user_id = get_user_id()
+    if not user_id:
+        return R.unauthorized_resp("未登录")
+
+    try:
+        operator_name = await _get_user_full_name(db, user_id)
+        application = await ApplicationService.submit(
+            db,
+            application_id=application_id,
+            user_id=user_id,
+            operator_name=operator_name,
+        )
+        return R.success_resp(format_application(application))
+    except (NotFoundError, ForbiddenError, ConflictError, BadRequestError) as e:
+        code = e.__class__.__name__
+        if code == "ForbiddenError":
+            return R.forbidden_resp(str(e))
+        if code in ("NotFoundError", "ConflictError"):
+            return R.not_found_resp(str(e))
+        return R.bad_request_resp(str(e))
 
 
-@router.post("/resubmit/{record_id}")
+@router.post("/api/applications/{application_id}/withdraw")
+async def withdraw_application(
+    application_id: int,
+    req: WithdrawRequest = Body(default=WithdrawRequest()),
+    db: AsyncSession = Depends(get_db),
+):
+    """APPLYING → WITHDRAWN"""
+    user_id = get_user_id()
+    if not user_id:
+        return R.unauthorized_resp("未登录")
+
+    try:
+        operator_name = await _get_user_full_name(db, user_id)
+        application = await ApplicationService.withdraw(
+            db,
+            application_id=application_id,
+            user_id=user_id,
+            operator_name=operator_name,
+            remark=req.remark,
+        )
+        return R.success_resp({"id": application.id, "status": application.status})
+    except (NotFoundError, ForbiddenError, ConflictError) as e:
+        return R.bad_request_resp(str(e))
+
+
+@router.post("/api/applications/{application_id}/resubmit")
 async def resubmit_application(
-    record_id: int,
+    application_id: int,
+    req: ResubmitRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """重新提交已驳回的申请"""
-    application = await ApplicationService.resubmit_application(db, record_id, get_user_id())
-    if not application:
-        return R.bad_request_resp("申请不存在或无法重新提交")
-    return R.success_resp(msg="重新提交成功")
+    """REJECTED → APPLYING（整体替换 proof 列表）"""
+    user_id = get_user_id()
+    if not user_id:
+        return R.unauthorized_resp("未登录")
+
+    try:
+        operator_name = await _get_user_full_name(db, user_id)
+        application = await ApplicationService.resubmit(
+            db,
+            application_id=application_id,
+            user_id=user_id,
+            operator_name=operator_name,
+            proof_data_list=[p.model_dump() for p in req.proof_data_list],
+        )
+        return R.success_resp(format_application(application))
+    except (NotFoundError, ForbiddenError, ConflictError, BadRequestError) as e:
+        code = e.__class__.__name__
+        if code == "ForbiddenError":
+            return R.forbidden_resp(str(e))
+        if code == "BadRequestError":
+            return R.bad_request_resp(str(e))
+        return R.not_found_resp(str(e))
 
 
-# ========== 审核员接口 ==========
-
-@router.get("/pending")
-async def get_pending(
+# ════════════════════════════════════════════════════════════════════════
+# 学生端：列表 / 详情
+# ════════════════════════════════════════════════════════════════════════
+@router.get("/api/applications")
+async def list_my_applications(
+    status: Optional[str] = Query(None),
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
 ):
-    """获取待审核列表"""
-    applications, total = await ApplicationService.get_pending_applications(db, page, size)
+    """我的申请列表（学生）"""
+    user_id = get_user_id()
+    if not user_id:
+        return R.unauthorized_resp("未登录")
+
+    applications, total = await ApplicationService.list_user_applications(
+        db, user_id, status, page, size,
+    )
     return R.success_resp({
-        "list": [{
-            "id": a.id,
-            "studentName": a.student_name,
-            "templateName": a.template_name,
-            "applyScore": a.apply_score,
-            "gainScore": a.gain_score,
-            "status": a.status,
-            "createdAt": str(a.created_at),
-        } for a in applications],
+        "list": [format_application(a) for a in applications],
         "total": total,
+        "page": page,
+        "size": size,
     })
 
 
-# ========== 审核员接口 ==========
-
-class AuditRequest(BaseModel):
-    recordId: int
-    comment: Optional[str] = None
-
-
-class RevokeRequest(BaseModel):
-    recordId: int
-    reason: str
-
-
-@router.get("/audit/pending")
-async def get_pending_applications(
-    page: int = Query(1, ge=1),
-    size: int = Query(20, ge=1, le=100),
-    studentId: Optional[str] = Query(None),
-    studentName: Optional[str] = Query(None),
-    major: Optional[str] = Query(None),
+@router.get("/api/applications/{application_id}")
+async def get_application_detail(
+    application_id: int,
     db: AsyncSession = Depends(get_db),
 ):
-    """分页获取待审核列表"""
-    applications, total = await ApplicationService.get_pending_applications_paged(
-        db, page, size, studentId, studentName, major
-    )
-    return R.success_resp({
-        "records": [format_application(a) for a in applications],
-        "total": total,
-    })
-
-
-@router.get("/audit/history")
-async def get_audit_history(
-    page: int = Query(1, ge=1),
-    size: int = Query(20, ge=1, le=100),
-    studentId: Optional[str] = Query(None),
-    studentName: Optional[str] = Query(None),
-    major: Optional[str] = Query(None),
-    db: AsyncSession = Depends(get_db),
-):
-    """分页获取审核历史"""
-    applications, total = await ApplicationService.get_audit_history_paged(
-        db, page, size, studentId, studentName, major
-    )
-    return R.success_resp({
-        "records": [format_application(a) for a in applications],
-        "total": total,
-    })
-
-
-@router.post("/audit/approve")
-async def approve_application(
-    request: AuditRequest,
-    db: AsyncSession = Depends(get_db),
-):
-    """审核通过"""
-    application = await ApplicationService.approve_application(
-        db, request.recordId, get_user_id(), request.comment
-    )
+    """申请详情（含 proofs + operations）"""
+    application = await ApplicationService.get_by_id(db, application_id)
     if not application:
         return R.not_found_resp("申请不存在")
-    return R.success_resp(msg="审核通过")
+
+    operations = await ApplicationOperationService.list_by_application(db, application_id)
+    return R.success_resp({
+        **format_application(application, with_proofs=True),
+        "operations": [format_operation(o) for o in operations],
+    })
 
 
-@router.post("/audit/reject")
+# ════════════════════════════════════════════════════════════════════════
+# 审核员端：审核 / 投票 / 列表
+# ════════════════════════════════════════════════════════════════════════
+@router.post("/api/applications/{application_id}/proofs/{proof_id}/review")
+async def review_proof(
+    application_id: int,
+    proof_id: int,
+    req: ReviewProofRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """审核员改 proof.status（任意审核员可覆盖）"""
+    user_id = get_user_id()
+    if not user_id:
+        return R.unauthorized_resp("未登录")
+
+    try:
+        proof = await ApplicationService.review_proof(
+            db,
+            proof_id=proof_id,
+            reviewer_id=user_id,
+            action=req.action,
+            remark=req.remark,
+        )
+        return R.success_resp({
+            "id": proof.id,
+            "applicationId": proof.application_id,
+            "status": proof.status,
+        })
+    except NotFoundError as e:
+        return R.not_found_resp(str(e))
+    except BadRequestError as e:
+        return R.bad_request_resp(str(e))
+    except ConflictError as e:
+        return R._resp(409, str(e))
+
+
+@router.post("/api/applications/{application_id}/pass")
+async def pass_application(
+    application_id: int,
+    req: VoteRequest = Body(default=VoteRequest()),
+    db: AsyncSession = Depends(get_db),
+):
+    """审核员投 PASS application"""
+    user_id = get_user_id()
+    if not user_id:
+        return R.unauthorized_resp("未登录")
+
+    try:
+        operator_name = await _get_user_full_name(db, user_id)
+        application = await ApplicationService.pass_application(
+            db,
+            application_id=application_id,
+            reviewer_id=user_id,
+            reviewer_name=operator_name,
+            remark=req.remark,
+        )
+        return R.success_resp({
+            "id": application.id,
+            "status": application.status,
+            "approvedCount": application.approved_count,
+            "reviewCount": application.review_count,
+            "gainScore": float(application.gain_score) if application.gain_score else None,
+        })
+    except (NotFoundError, ConflictError, BadRequestError) as e:
+        return R._resp(409, str(e))
+
+
+@router.post("/api/applications/{application_id}/reject")
 async def reject_application(
-    request: AuditRequest,
+    application_id: int,
+    req: RejectRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """审核驳回"""
-    application = await ApplicationService.reject_application(
-        db, request.recordId, get_user_id(), request.comment
-    )
-    if not application:
-        return R.not_found_resp("申请不存在")
-    return R.success_resp(msg="已驳回")
+    """审核员 REJECT application（veto）"""
+    user_id = get_user_id()
+    if not user_id:
+        return R.unauthorized_resp("未登录")
+
+    try:
+        operator_name = await _get_user_full_name(db, user_id)
+        application = await ApplicationService.reject_application(
+            db,
+            application_id=application_id,
+            reviewer_id=user_id,
+            reviewer_name=operator_name,
+            remark=req.remark,
+        )
+        return R.success_resp({
+            "id": application.id,
+            "status": application.status,
+            "rejectedCount": application.rejected_count,
+        })
+    except (NotFoundError, ConflictError, BadRequestError) as e:
+        return R._resp(409, str(e))
 
 
-@router.post("/audit/revoke")
-async def revoke_application(
-    request: RevokeRequest,
+@router.get("/api/admin/applications")
+async def list_pending_applications(
+    page: int = Query(1, ge=1),
+    size: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
 ):
-    """撤销已通过的申请"""
-    result = await ApplicationService.revoke_application(
-        db, request.recordId, get_user_id(), request.reason
+    """审核员：待审核列表（status=APPLYING）"""
+    applications, total = await ApplicationService.list_pending_applications(
+        db, page, size,
     )
-    if not result:
-        return R.bad_request_resp("撤销失败")
-    return R.success_resp(msg="撤销成功")
+    return R.success_resp({
+        "list": [format_application(a, with_proofs=True) for a in applications],
+        "total": total,
+        "page": page,
+        "size": size,
+    })
 
 
-def format_application(a) -> dict:
-    """格式化申请记录"""
-    from src.services import TemplateService
-    template_type = TemplateService.get_template_type_by_name(a.template_name) if a.template_name else "CONDITION"
-    return {
+@router.get("/api/admin/applications/history")
+async def list_audit_history(
+    page: int = Query(1, ge=1),
+    size: int = Query(20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+):
+    """审核员：审核历史"""
+    applications, total = await ApplicationService.list_audit_history(
+        db, page, size,
+    )
+    return R.success_resp({
+        "list": [format_application(a) for a in applications],
+        "total": total,
+        "page": page,
+        "size": size,
+    })
+
+
+# ════════════════════════════════════════════════════════════════════════
+# 格式化工具
+# ════════════════════════════════════════════════════════════════════════
+def format_application(a, with_proofs: bool = False) -> dict:
+    """格式化 application（前后端约定 camelCase）"""
+    base = {
         "id": a.id,
-        "studentId": a.student_id or "",
-        "studentName": a.student_name or "",
-        "major": a.major or "",
-        "enrollmentYear": a.enrollment_year or 0,
-        "templateName": a.template_name or "",
-        "templateType": template_type,
-        "scoreType": a.score_type or 0,
+        "userId": a.user_id,
+        "templateId": a.template_id,
+        "templateName": a.template_name,
+        "categoryId": a.category_id,
         "applyScore": float(a.apply_score) if a.apply_score else 0,
-        "applyInput": float(a.apply_input) if a.apply_input else None,
-        "proofsInput": float(a.proofs_input) if a.proofs_input else 0,
-        "gainScore": float(a.gain_score) if a.gain_score else None,
-        "status": a.status or 0,
-        "statusText": get_status_text(a.status),
-        "submitTime": a.created_at.strftime("%Y-%m-%d %H:%M:%S") if a.created_at else None,
-        "remark": a.remark,
+        "gainScore": float(a.gain_score) if a.gain_score else 0,
+        "status": a.status,
+        "statusText": get_application_status_text(a.status),
         "reviewCount": a.review_count or 1,
-        "currentReviewCount": a.current_review_count or 0,
-        "reviewRecords": a.review_records,
+        "approvedCount": a.approved_count or 0,
+        "rejectedCount": a.rejected_count or 0,
+        "createdAt": a.created_at.isoformat() if a.created_at else None,
+        "updatedAt": a.updated_at.isoformat() if a.updated_at else None,
+    }
+    if with_proofs:
+        base["proofs"] = [
+            {
+                "id": p.id,
+                "applicationId": p.application_id,
+                "fileId": p.file_id,
+                "proofScore": float(p.proof_score) if p.proof_score else 0,
+                "status": p.status,
+                "statusText": get_proof_status_text(p.status),
+                "createdAt": p.created_at.isoformat() if p.created_at else None,
+            }
+            for p in (a.proofs or [])
+        ]
+    return base
+
+
+def format_operation(o) -> dict:
+    return {
+        "id": o.id,
+        "applicationId": o.application_id,
+        "operatorId": o.operator_id,
+        "operatorName": o.operator_name,
+        "operation": o.operation,
+        "remark": o.remark,
+        "createdAt": o.created_at.isoformat() if o.created_at else None,
     }
 
 
-def get_status_text(status: int) -> str:
-    return {0: "待审核", 1: "已通过", 2: "已驳回", 4: "已撤销"}.get(status, "未知")
+def get_application_status_text(status: str) -> str:
+    return {
+        ApplicationStatus.DRAFT.value: "草稿",
+        ApplicationStatus.APPLYING.value: "审核中",
+        ApplicationStatus.PASSED.value: "已通过",
+        ApplicationStatus.REJECTED.value: "已驳回",
+        ApplicationStatus.WITHDRAWN.value: "已撤回",
+        ApplicationStatus.DISCARDED.value: "已丢弃",
+    }.get(status, "未知")
+
+
+def get_proof_status_text(status: str) -> str:
+    return {
+        ProofStatus.PENDING.value: "待审核",
+        ProofStatus.APPROVED.value: "已通过",
+        ProofStatus.REJECTED.value: "已驳回",
+    }.get(status, "未知")
