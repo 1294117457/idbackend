@@ -184,6 +184,18 @@ class TemplateCategoryRepository:
         return int(result.scalar_one() or 0)
 
     @staticmethod
+    async def count_children(
+        db: AsyncSession,
+        parent_id: int,
+    ) -> int:
+        """统计直接子节点数量（利用 parent_id 索引，O(1) 级别）。"""
+        stmt = select(func.count(TemplateCategory.id)).where(
+            TemplateCategory.parent_id == parent_id
+        )
+        result = await db.execute(stmt)
+        return int(result.scalar_one() or 0)
+
+    @staticmethod
     async def count_templates(
         db: AsyncSession,
         category_ids: Iterable[int],

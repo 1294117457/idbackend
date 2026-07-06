@@ -1,17 +1,22 @@
-"""加分申请服务（v4.2）
+"""加分申请服务（v4.3）
 
 ═══════════════════════════════════════════════════════════════════════
-v4.2 关键设计
+v4.3 关键设计（在 v4.2 基础上调整）
 ═══════════════════════════════════════════════════════════════════════
 1. application 状态机 6 态：DRAFT / APPLYING / PASSED / REJECTED / WITHDRAWN / DISCARDED
 2. submit / resubmit 同构：整体替换 proof 列表 + sum(proof_score)==apply_score
 3. proof.status 是会签中间状态：任意审核员可修改（包括覆盖前审核员）
 4. pass_application 前置条件：所有 proof.status=='APPROVED'
 5. pass_application 触发条件：approved_count==review_count → PASSED
-6. gain_score 在 PASSED 时一次性写为 apply_score（不是 proof 累加）
+6. gain_score 随 proof 审核动态累加（v4.3 变更）：
+   - proof APPROVED: gain_score += proof_score（原子 SQL）
+   - proof APPROVED→REJECTED: gain_score -= proof_score（原子 SQL）
+   - PASSED 时 gain_score 已等于 apply_score（不再在 pass_application 中写）
+   - resubmit 时重置 gain_score=0（所有 proof 回到 PENDING）
 7. 同审核员对 application 只允许投一次票（PASS/REJECT 互斥）
 8. review_proof 不写 application_operation（proof 是辅助表）
-9. 草稿 save_draft 不写 operation（噪音），CREATE_DRAFT 是申请诞生的事件
+9. 草稿 save_draft 不写 operation（噪音），允许同一用户对同一 template 多次创建草稿
+10. review_count 从 template 快照读取，路由层不接受客户端传值
 
 ═══════════════════════════════════════════════════════════════════════
 事务边界（关键）
@@ -23,7 +28,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Optional, List, Dict, Any, Union
 
-from sqlalchemy import select, and_, func, or_, delete
+from sqlalchemy import select, and_, func, or_, delete, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -63,7 +68,7 @@ class ApplicationService:
     """加分申请服务（v4.2）"""
 
     # ------------------------------------------------------------------
-    # 4.1 save_draft（学生创建 / 覆盖草稿）
+    # 4.1 save_draft（学生创建草稿，允许同模板多次创建）
     # ------------------------------------------------------------------
     @staticmethod
     async def save_draft(
@@ -77,29 +82,49 @@ class ApplicationService:
         review_count: int = 1,
         remark: Optional[str] = None,
     ) -> Application:
-        """保存草稿（v4.2：草稿允许 0 proof）
+        """保存草稿（v4.3：同 template 可多次创建草稿，仅阻止 APPLYING/PASSED 状态）
 
         输入:
           - user_id: 学生 id
           - template_id, template_name, category_id: 模板快照
           - apply_score: 计算引擎给出的理论分（前端算完提交）
           - proof_data_list: [{file_id, proof_score, remark?}, ...]，可空
-          - review_count: 审核员协作人数（默认 1，从模板读）
+          - review_count: 从模板快照（路由层传入，不接受客户端直接传值）
           - remark: 学生侧备注（可选）
 
         行为:
           1. 校验 user 存在
-          2. INSERT score_applications（status='DRAFT', apply_score=?, gain_score=0）
-          3. 整体替换 proof 集合（status='PENDING', file_id nullable）
-          4. 不写 application_operation（草稿操作噪音大；CREATE_DRAFT 是申请诞生事件
-             由路由层单独决定是否记录——本期不写）
+          2. 校验该用户对此 template 没有 APPLYING 或 PASSED 的活申请
+             （有则抛 ConflictError；DRAFT 不阻塞，允许多草稿）
+          3. INSERT score_applications（status='DRAFT', apply_score=?, gain_score=0）
+          4. 整体替换 proof 集合（status='PENDING', file_id nullable）
+          5. 不写 application_operation
         """
         # 1. 校验 user
         user = await db.get(User, user_id)
         if not user:
             raise NotFoundError(f"用户(id={user_id})不存在")
 
-        # 2. 创建 application
+        # 2. 校验无 APPLYING/PASSED 活申请（不阻塞 DRAFT）
+        active_result = await db.execute(
+            select(Application).where(
+                and_(
+                    Application.user_id == user_id,
+                    Application.template_id == template_id,
+                    Application.status.in_([
+                        ApplicationStatus.APPLYING.value,
+                        ApplicationStatus.PASSED.value,
+                    ]),
+                )
+            )
+        )
+        active = active_result.scalars().first()
+        if active:
+            raise ConflictError(
+                f"该模板已有 {active.status} 的申请，无法重复申请"
+            )
+
+        # 3. 创建 application
         application = Application(
             user_id=user_id,
             template_id=template_id,
@@ -115,7 +140,7 @@ class ApplicationService:
         db.add(application)
         await db.flush()  # 拿到 application.id
 
-        # 3. 整体替换 proof
+        # 4. 整体替换 proof
         for proof_data in proof_data_list:
             proof = ApplicationProof(
                 application_id=application.id,
@@ -127,7 +152,6 @@ class ApplicationService:
 
         await db.commit()
         await db.refresh(application)
-        # 同时刷出 proofs 关系
         result = await db.execute(
             select(Application)
             .options(selectinload(Application.proofs))
@@ -251,7 +275,7 @@ class ApplicationService:
         return application
 
     # ------------------------------------------------------------------
-    # 4.5 review_proof（审核员改 proof.status）
+    # 4.5 review_proof（审核员改 proof.status，原子更新 gain_score）
     # ------------------------------------------------------------------
     @staticmethod
     async def review_proof(
@@ -261,39 +285,25 @@ class ApplicationService:
         action: str,
         remark: Optional[str] = None,
     ) -> ApplicationProof:
-        """审核员对单条 proof 做出 APPROVED / REJECTED 决定（v4.2）
+        """审核员对单条 proof 做出 APPROVED / REJECTED 决定（v4.3）
 
-        关键决策:
-          - proof.status 是会签中间状态，任意审核员可修改（包括覆盖前审核员）
+        关键决策（v4.3 变更）:
+          - proof APPROVED: 同事务原子 gain_score += proof_score
+          - proof APPROVED→REJECTED: 同事务原子 gain_score -= proof_score
           - 不写 application_operation（proof 是辅助表）
-          - 不更新 application.gain_score（gain_score 在 PASSED 时一次写）
-          - 不强制 remark（v4.2 放宽）
+          - 不强制 remark
 
         前置条件:
           1. proof.application_id 对应的 application.status == 'APPLYING'
-          2. **同审核员去重**：当前 reviewer_id 没审过这条 proof
-             （不同审核员可互相覆盖，B 可把 A 的 APPROVED 改成 REJECTED）
         """
         if action not in (ProofStatus.APPROVED.value, ProofStatus.REJECTED.value):
             raise BadRequestError(f"action 必须是 APPROVED 或 REJECTED，当前: {action}")
 
-        # SELECT proof JOIN application FOR UPDATE
-        # 注意：sqlite 不支持 row-level lock，测试时跳过
-        from sqlalchemy.dialects.postgresql import dialect as pg_dialect
-        bind = db.bind
-        if bind and getattr(bind.dialect, "name", None) == "postgresql":
-            stmt = (
-                select(ApplicationProof)
-                .options(selectinload(ApplicationProof.application))
-                .where(ApplicationProof.id == proof_id)
-                .with_for_update()
-            )
-        else:
-            stmt = (
-                select(ApplicationProof)
-                .options(selectinload(ApplicationProof.application))
-                .where(ApplicationProof.id == proof_id)
-            )
+        stmt = (
+            select(ApplicationProof)
+            .options(selectinload(ApplicationProof.application))
+            .where(ApplicationProof.id == proof_id)
+        )
         result = await db.execute(stmt)
         proof = result.scalar_one_or_none()
         if not proof:
@@ -305,17 +315,25 @@ class ApplicationService:
                 f"application 当前状态 {application.status}，仅 APPLYING 可 review_proof"
             )
 
-        # 同审核员去重（v4.2 决策）：
-        # 由于 review_proof 不写 application_operation，这里用 proof 的最新状态做近似判断——
-        # 在 service 层我们维护 reviewer→last_action 的内存缓存（生产环境建议改成
-        # 把"proof.reviewer_records"存为单独表，本期不引入新表）。
-        # 简化方案：依赖应用层禁用并发（同审核员重复点击由前端去抖）；
-        # 并发场景由 SELECT FOR UPDATE 串行化保证——同审核员串行进来第二次请求时
-        # 我们再次校验（service 层的轻量级幂等校验，本期通过 status 一致性保证）。
-        #
-        # **v4.2 简化**：本期不做 reviewer 去重的服务端校验（前端去抖 + 业务边界足够）；
-        # 但 service 层仍然 UPDATE 走原子 SQL——并发场景下 UPDATE 与 status 字段覆盖互斥。
+        old_status = proof.status
         proof.status = action
+
+        # 原子更新 gain_score（SQL 表达式，同事务）
+        if old_status != ProofStatus.APPROVED.value and action == ProofStatus.APPROVED.value:
+            # PENDING/REJECTED → APPROVED：累加
+            await db.execute(
+                update(Application)
+                .where(Application.id == application.id)
+                .values(gain_score=Application.gain_score + proof.proof_score)
+            )
+        elif old_status == ProofStatus.APPROVED.value and action == ProofStatus.REJECTED.value:
+            # APPROVED → REJECTED：扣减
+            await db.execute(
+                update(Application)
+                .where(Application.id == application.id)
+                .values(gain_score=Application.gain_score - proof.proof_score)
+            )
+        # PENDING→REJECTED 或 APPROVED→APPROVED：gain_score 不变
 
         await db.commit()
         await db.refresh(proof)
@@ -421,25 +439,17 @@ class ApplicationService:
         # 4. 若达成 review_count → PASSED
         if application.approved_count >= application.review_count:
             application.status = ApplicationStatus.PASSED.value
-            application.gain_score = application.apply_score
+            # v4.3：gain_score 已由 review_proof 实时维护，不在此赋值
 
-# 5. 同事务写 score_data（延迟 import 防循环——且不通过 services/__init__
-        # 触发 rbac_service → infra.database.sync_engine sqlite pool_size 报错）
-        import importlib.util as _ilu
-        _spec = _ilu.spec_from_file_location(
-            "score_data_service_inline",
-            "src/services/score_data_service.py",
-        )
-        _mod = _ilu.module_from_spec(_spec)
-        _spec.loader.exec_module(_mod)
-        ScoreDataService = _mod.ScoreDataService
-        await ScoreDataService.record(
+            # 5. 同事务写 score_data（函数级延迟导入，避免循环依赖）
+            from src.services.score_data_service import ScoreDataService
+            await ScoreDataService.record(
                 db,
                 user_id=application.user_id,
                 application_id=application.id,
                 category_id=application.category_id,
                 name=application.template_name,
-                score=application.apply_score,
+                score=application.gain_score,
             )
 
         # 6. 写 operation
@@ -557,6 +567,7 @@ class ApplicationService:
             db.add(proof)
 
         application.status = ApplicationStatus.APPLYING.value
+        application.gain_score = Decimal("0")  # 重置：所有 proof 回到 PENDING
 
         op = ApplicationOperation(
             application_id=application.id,
@@ -659,6 +670,7 @@ class ApplicationService:
             .options(
                 selectinload(Application.proofs),
                 selectinload(Application.operations),
+                selectinload(Application.user),
             )
             .where(Application.id == application_id)
         )
@@ -673,6 +685,7 @@ class ApplicationService:
         size: int = 20,
     ) -> tuple[List[Application], int]:
         """学生的申请列表"""
+        from src.models import User
         query = select(Application).where(Application.user_id == user_id)
         if status:
             query = query.where(Application.status == status)
@@ -681,7 +694,10 @@ class ApplicationService:
         total = (await db.execute(count_q)).scalar() or 0
 
         query = (
-            query.options(selectinload(Application.proofs))
+            query.options(
+                selectinload(Application.proofs),
+                selectinload(Application.user),
+            )
             .order_by(Application.created_at.desc())
             .offset((page - 1) * size)
             .limit(size)
@@ -704,7 +720,10 @@ class ApplicationService:
         total = (await db.execute(count_q)).scalar() or 0
 
         query = (
-            query.options(selectinload(Application.proofs))
+            query.options(
+                selectinload(Application.proofs),
+                selectinload(Application.user),
+            )
             .order_by(Application.created_at.desc())
             .offset((page - 1) * size)
             .limit(size)
@@ -732,7 +751,10 @@ class ApplicationService:
         total = (await db.execute(count_q)).scalar() or 0
 
         query = (
-            query.options(selectinload(Application.proofs))
+            query.options(
+                selectinload(Application.proofs),
+                selectinload(Application.user),
+            )
             .order_by(Application.created_at.desc())
             .offset((page - 1) * size)
             .limit(size)

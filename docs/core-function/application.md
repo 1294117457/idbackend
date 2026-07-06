@@ -223,9 +223,12 @@ DRAFT ──SUBMIT──> APPLYING ──REJECT──> REJECTED ──RESUBMIT�
 
 ```
 [1] 学生提交 → APPLYING
-[2] 审核员 A：审完全部 proof（全部 APPROVED）→ 投 PASS application
+[2] 审核员 A：审完全部 proof（全部 APPROVED）→ gain_score 随审核过程累加
+        └─ 每条 proof APPROVED: gain_score += proof_score
+        └─ 全部 proof APPROVED 后 gain_score == apply_score
+[3] 审核员 A：投 PASS application
         └─ approved_count = 1 == review_count → PASSED
-        └─ 同事务：gain_score = apply_score + 写 score_data
+        └─ 同事务：status='PASSED' + 写 score_data（使用已累计的 gain_score）
         └─ application 终态
 ```
 
@@ -261,7 +264,7 @@ DRAFT ──SUBMIT──> APPLYING ──REJECT──> REJECTED ──RESUBMIT�
 2. **proof 不需要 review_count / approved_count 字段**——proof 的"是否通过"由最后一个改它的审核员决定
 3. **proof.status 改变不会自动触发 application.status 变化**——审核员改完 proof 后必须主动投 application
 4. **PASSED 是 proof 和 application 的双重终态**——PASSED 之后 review_proof 返回 409
-5. **gain_score 是 application 整体通过的快照**——proof.status 变化不影响 gain_score
+5. **gain_score 随 proof 审核动态累加**——proof APPROVED 时原子 +=proof_score，APPROVED→REJECTED 时原子 -=proof_score；**PASSED 时 gain_score 已等于 apply_score**（不再在 pass_application 中单独写）
 
 ---
 
@@ -281,20 +284,20 @@ async def save_draft(
 ) -> Application:
     """
     流程:
-      1. 业务级唯一校验:
+      1. 业务级活申请校验:
          SELECT * FROM score_applications
-          WHERE user_id=? AND template_id=? AND status IN ('DRAFT','APPLYING','PASSED')
-         - 命中 DRAFT → 继续（覆盖更新）
-         - 命中 APPLYING / PASSED → 抛 ConflictError
-         - 命中 0 → 新建 application（DRAFT）
+          WHERE user_id=? AND template_id=? AND status IN ('APPLYING','PASSED')
+         - 命中 APPLYING → 抛 ConflictError（申请审核中，无法新建草稿）
+         - 命中 PASSED  → 抛 ConflictError（已通过，无法重复申请）
+         - 未命中 → 新建 application（DRAFT）
+         **注**：同一用户对同一 template 可以有多个 DRAFT（草稿不唯一约束）
       2. 计算 apply_score:
          template = TemplateService.get_with_rules(db, template_id)
          apply_score = ScoreCalculationService.calculate(template, user_selections)
-      3. CREATE 或 UPDATE application:
-         - 快照 template_name / review_count / category_id
-         - status='DRAFT'，apply_score=计算结果
+      3. CREATE application（DRAFT）:
+         - 快照 template_name / review_count（从 template 读，**不接受客户端传入**）/ category_id
+         - status='DRAFT'，apply_score=计算结果，gain_score=0
       4. 整体替换 proof 集合:
-         DELETE FROM application_proofs WHERE application_id = ?
          INSERT proof_data_list（status=PENDING，file_id nullable）
       5. 返回 application（含 proofs）
 
@@ -365,18 +368,21 @@ async def review_proof(
     流程:
       1. SELECT proof JOIN application FOR UPDATE
       2. 校验 application.status == 'APPLYING'  ← PASSED 之后 proof 不能再改
-      3. **v4.2 校验**：当前 reviewer_id 没有审过这条 proof（同审核员不能重复表达决定）
-         注：不同审核员可以互相覆盖——B 可以把 A 的 APPROVED 改成 REJECTED（veto 视角）
-      4. UPDATE proof SET status = ?  ← 不带 AND status='PENDING' 条件，允许覆盖
-      5. 提交事务
-      6. 返回更新后的 proof
+      3. 记录旧状态 old_status = proof.status
+      4. UPDATE proof SET status = action
+      5. 原子更新 gain_score（同事务，SQL 算术表达式）：
+         - old_status != 'APPROVED' 且 action == 'APPROVED'
+           → UPDATE application SET gain_score = gain_score + proof.proof_score
+         - old_status == 'APPROVED' 且 action == 'REJECTED'
+           → UPDATE application SET gain_score = gain_score - proof.proof_score
+         - 其余（PENDING→REJECTED, APPROVED→APPROVED）：gain_score 不变
+      6. 提交事务，返回更新后的 proof
 
-    **不写 application_operation**（proof 状态变更只反映在 proof.status）
-    **不更新 application.gain_score**（v4.2 决策——gain_score 在 PASSED 时一次性写）
-    **不强制要求 remark**（v4.2 放宽）
+    **不写 application_operation**（proof 状态变更只反映在 proof.status + application.gain_score）
+    **不强制要求 remark**（放宽）
 
-    **业务语义**：proof.status 是会签中间状态，任意审核员都可修改。
-                 proof 不需要 review_count / approved_count 字段。
+    **业务语义**：gain_score 实时反映"当前已通过 proof 的分数总和"，
+                 审核员在审核界面可实时看到进度（gain_score / apply_score）。
     """
 ```
 
@@ -397,8 +403,9 @@ async def pass_application(
          如果有 proof 是 PENDING 或 REJECTED，B 投 PASS 必然失败（service 返回 409）
       5. UPDATE approved_count = approved_count + 1（CAS 单 SQL）
       6. 若 approved_count == review_count:
-         a. UPDATE application SET status='PASSED', gain_score=apply_score
-         b. ScoreDataService.record(... apply_score ...)
+         a. UPDATE application SET status='PASSED'
+            （**不再写 gain_score**：gain_score 已由 review_proof 维护到位，此时 gain_score == apply_score）
+         b. ScoreDataService.record(... application.gain_score ...)  ← 直接用 gain_score
       7. INSERT application_operation(PASS, operator_id, operator_name, remark)
       8. 提交事务
 
@@ -448,7 +455,7 @@ async def resubmit(
       5. 校验 sum(p.proof_score for p in proof_data_list) == apply_score
       6. DELETE FROM application_proofs WHERE application_id = ?
       7. INSERT proof_data_list（status=PENDING）
-      8. UPDATE application.status='APPLYING'
+      8. UPDATE application.status='APPLYING', gain_score=0  ← **重置**（所有 proof 回 PENDING）
          - approved_count / rejected_count **不重置**（保留历史投票）
       9. INSERT application_operation(RESUBMIT)
       10. 提交事务

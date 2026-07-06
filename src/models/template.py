@@ -9,6 +9,7 @@ Layer 2 模型设计哲学（docs/core-function/template.md / 四层职责设计
 type 字段只放 Rule + Attribute 两层（template 不加 type），
 业务允许 template 混用 CONDITION + TRANSFORM rule。
 """
+
 from sqlalchemy import (
     String,
     Integer,
@@ -38,6 +39,7 @@ class AttributeType(str, enum.Enum):
 # Template（聚合根）
 # ============================================================
 
+
 class Template(Base, TimestampMixin):
     """模板（聚合根）—— v4 设计：不含 type 字段
 
@@ -50,6 +52,7 @@ class Template(Base, TimestampMixin):
     - description: 备注
     - is_active: 软启用
     """
+
     __tablename__ = "template"
 
     name: Mapped[str] = mapped_column(String(100), nullable=False)
@@ -78,7 +81,6 @@ class Template(Base, TimestampMixin):
         "Rule",
         secondary="template_rule",
         back_populates="templates",
-        passive_deletes=True,
         viewonly=True,
     )
 
@@ -93,6 +95,7 @@ class Template(Base, TimestampMixin):
 # Rule（计分单位，v4 新增 type 字段）
 # ============================================================
 
+
 class Rule(Base, TimestampMixin):
     """规则（计分单位）—— v4 设计：新增 type 字段
 
@@ -104,6 +107,7 @@ class Rule(Base, TimestampMixin):
     - description: 备注
     - is_active: 软启用
     """
+
     __tablename__ = "rule"
 
     type: Mapped[str] = mapped_column(
@@ -131,7 +135,6 @@ class Rule(Base, TimestampMixin):
         "Template",
         secondary="template_rule",
         back_populates="rules",
-        passive_deletes=True,
         viewonly=True,
     )
 
@@ -149,6 +152,7 @@ class Rule(Base, TimestampMixin):
 # Attribute（选项 / 公式）
 # ============================================================
 
+
 class Attribute(Base, TimestampMixin):
     """属性（一个选项 / 一段公式）
 
@@ -164,6 +168,7 @@ class Attribute(Base, TimestampMixin):
     - description: 备注
     - is_active: 软启用
     """
+
     __tablename__ = "attribute"
 
     name: Mapped[str] = mapped_column(String(100), nullable=False)
@@ -203,11 +208,13 @@ class Attribute(Base, TimestampMixin):
 # TemplateRule（template ↔ rule 极简关联表）
 # ============================================================
 
+
 class TemplateRule(Base, TimestampMixin):
     """template ↔ rule 多对多关联（极简，不带 sort_order）
 
     rule 全局排序由 rule.sort_order 决定；本表只承担"绑定事实"。
     """
+
     __tablename__ = "template_rule"
 
     template_id: Mapped[int] = mapped_column(
@@ -235,12 +242,14 @@ class TemplateRule(Base, TimestampMixin):
 # RuleAttribute（rule ↔ attribute 极简关联表）
 # ============================================================
 
+
 class RuleAttribute(Base, TimestampMixin):
     """rule ↔ attribute 多对多关联（极简，不带 sort_order）
 
     attribute 排序由 attribute.sort_order 决定；本表只承担"绑定事实"。
     service 层校验：rule.type == attribute.type（v4 唯一硬校验）。
     """
+
     __tablename__ = "rule_attribute"
 
     rule_id: Mapped[int] = mapped_column(

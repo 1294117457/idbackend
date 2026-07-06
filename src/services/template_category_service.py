@@ -177,6 +177,11 @@ class TemplateCategoryService:
             raise NotFoundError(f"分类(id={category_id})不存在")
         if category.is_bind_template:
             return category
+        child_count = await TemplateCategoryRepository.count_children(db, category_id)
+        if child_count > 0:
+            raise BadRequestError(
+                f"分类(id={category_id})下已有 {child_count} 个子分类，不可绑定 template"
+            )
         await TemplateCategoryRepository.set_bind_template(category, value=True)
         await TemplateCategoryRepository.commit(db)
         await TemplateCategoryRepository.refresh(db, category)

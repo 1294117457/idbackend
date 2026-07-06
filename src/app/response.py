@@ -55,6 +55,11 @@ def too_many_requests_resp(msg: str = "请求过于频繁，请稍后再试") ->
     return _resp(429, msg)
 
 
+def conflict_resp(msg: str = "资源冲突") -> JSONResponse:
+    """409 业务状态冲突（如重复投票、状态不允许）"""
+    return _resp(409, msg)
+
+
 # ===== 5xx 服务端错误 =====
 
 def server_error_resp(msg: str = "服务器内部错误") -> JSONResponse:

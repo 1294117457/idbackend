@@ -123,6 +123,13 @@ class TemplateService:
         if category is None:
             raise NotFoundError(f"分类(id={req.categoryId})不存在")
 
+        # 校验分类无子分类才可绑 template（必须在 commit 前，否则 template 已落盘）
+        child_count = await TemplateCategoryRepository.count_children(db, req.categoryId)
+        if child_count > 0:
+            raise BadRequestError(
+                f"分类(id={req.categoryId})下已有 {child_count} 个子分类，不可绑定 template"
+            )
+
         template = req.to_orm()
 
         db.add(template)

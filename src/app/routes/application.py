@@ -66,7 +66,7 @@ class SaveDraftRequest(BaseModel):
     apply_score: float
     proof_data_list: List[ProofDataItem] = Field(default_factory=list)
     remark: Optional[str] = None
-    review_count: int = 1
+    # review_count 不接受客户端传值，由路由从 template 读取
 
 
 class ResubmitRequest(BaseModel):
@@ -111,12 +111,18 @@ async def save_draft(
     req: SaveDraftRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """保存草稿（v4.2：草稿允许 0 proof）"""
+    """保存草稿（v4.3：允许同模板多草稿，review_count 从模板读取）"""
     user_id = get_user_id()
     if not user_id:
         return R.unauthorized_resp("未登录")
 
     try:
+        # 从模板读取 review_count（不信任客户端）
+        template = await TemplateService.get_by_id(db, req.template_id)
+        if not template:
+            return R.not_found_resp("模板不存在")
+        review_count = template.review_count or 1
+
         application = await ApplicationService.save_draft(
             db,
             user_id=user_id,
@@ -125,14 +131,16 @@ async def save_draft(
             category_id=req.category_id,
             apply_score=Decimal(str(req.apply_score)),
             proof_data_list=[p.model_dump() for p in req.proof_data_list],
-            review_count=req.review_count,
+            review_count=review_count,
             remark=req.remark,
         )
         return R.created_resp(format_application(application))
+    except ConflictError as e:
+        return R.conflict_resp(str(e))
     except (NotFoundError, BadRequestError) as e:
         return R.bad_request_resp(str(e))
     except Exception as e:
-        return R.error_resp(f"保存草稿失败: {e}")
+        return R.server_error_resp(f"保存草稿失败: {e}")
 
 
 @router.delete("/api/applications/draft/{application_id}")
@@ -319,7 +327,7 @@ async def review_proof(
     except BadRequestError as e:
         return R.bad_request_resp(str(e))
     except ConflictError as e:
-        return R._resp(409, str(e))
+        return R.conflict_resp(str(e))
 
 
 @router.post("/api/applications/{application_id}/pass")
@@ -350,7 +358,9 @@ async def pass_application(
             "gainScore": float(application.gain_score) if application.gain_score else None,
         })
     except (NotFoundError, ConflictError, BadRequestError) as e:
-        return R._resp(409, str(e))
+        if isinstance(e, ConflictError):
+            return R.conflict_resp(str(e))
+        return R.bad_request_resp(str(e))
 
 
 @router.post("/api/applications/{application_id}/reject")
@@ -379,7 +389,9 @@ async def reject_application(
             "rejectedCount": application.rejected_count,
         })
     except (NotFoundError, ConflictError, BadRequestError) as e:
-        return R._resp(409, str(e))
+        if isinstance(e, ConflictError):
+            return R.conflict_resp(str(e))
+        return R.bad_request_resp(str(e))
 
 
 @router.get("/api/admin/applications")
@@ -423,9 +435,16 @@ async def list_audit_history(
 # ════════════════════════════════════════════════════════════════════════
 def format_application(a, with_proofs: bool = False) -> dict:
     """格式化 application（前后端约定 camelCase）"""
+    # 尝试从 user 关联读取姓名（service 已用 selectinload 加载）
+    user_name: Optional[str] = None
+    if hasattr(a, 'user') and a.user:
+        u = a.user
+        user_name = getattr(u, 'full_name', None) or getattr(u, 'username', None) or f"user#{a.user_id}"
+
     base = {
         "id": a.id,
         "userId": a.user_id,
+        "userName": user_name,
         "templateId": a.template_id,
         "templateName": a.template_name,
         "categoryId": a.category_id,
