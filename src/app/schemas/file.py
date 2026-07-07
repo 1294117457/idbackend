@@ -131,6 +131,10 @@ class FileQueryRequest(BaseModel):
 
     fileName: Optional[str] = Field(default=None, description="文件名模糊查询")
     fileCategory: Optional[str] = Field(default=None, description="文件分类")
+    fileExtension: Optional[str] = Field(
+        default=None,
+        description="文件扩展名（如 '.pdf'），精确匹配；后端 SQL 过滤",
+    )
     uploadUserId: Optional[int] = Field(default=None, description="上传用户 ID")
     startTime: Optional[str] = Field(default=None, description="开始时间（ISO8601）")
     endTime: Optional[str] = Field(default=None, description="结束时间（ISO8601）")
@@ -164,6 +168,12 @@ class FileQueryRequest(BaseModel):
         conds: list = []
         if self.fileName:
             conds.append(FileMetadata.original_name.ilike(f"%{self.fileName}%"))
+        if self.fileExtension:
+            # 归一化：去首尾空白、确保以 '.' 开头（前端可选值已经是 '.pdf' 这种形式）
+            ext = self.fileExtension.strip()
+            if ext and not ext.startswith("."):
+                ext = "." + ext
+            conds.append(FileMetadata.file_extension == ext.lower())
         if self.fileCategory:
             try:
                 conds.append(
