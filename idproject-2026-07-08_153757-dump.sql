@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict QngPAl6I2TyBgPamQkrGztg8qMgniCmHWHdRNLLSDdXQOu2tQfPWk7rOdFwCxIC
+\restrict 7rA0mCLYoI7g4GbTpGcG7QEOhLchNdzLziOkATMqppXIz7d3IQ9xeK2o5Me5biG
 
 -- Dumped from database version 16.14 (Debian 16.14-1.pgdg12+1)
 -- Dumped by pg_dump version 16.14 (Ubuntu 16.14-0ubuntu0.24.04.1)
@@ -77,22 +77,58 @@ ALTER SEQUENCE public.agent_sessions_id_seq OWNED BY public.agent_sessions.id;
 
 
 --
+-- Name: application_operation; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.application_operation (
+    application_id integer NOT NULL,
+    operator_id integer NOT NULL,
+    operator_name character varying(100) NOT NULL,
+    operation character varying(30) NOT NULL,
+    remark text,
+    id integer NOT NULL,
+    created_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone NOT NULL
+);
+
+
+ALTER TABLE public.application_operation OWNER TO postgres;
+
+--
+-- Name: application_operation_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.application_operation_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.application_operation_id_seq OWNER TO postgres;
+
+--
+-- Name: application_operation_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.application_operation_id_seq OWNED BY public.application_operation.id;
+
+
+--
 -- Name: application_proofs; Type: TABLE; Schema: public; Owner: postgres
 --
 
 CREATE TABLE public.application_proofs (
     application_id integer NOT NULL,
-    proof_file_id integer NOT NULL,
-    proof_value double precision NOT NULL,
-    review_count integer NOT NULL,
-    approved_count integer NOT NULL,
-    status integer NOT NULL,
-    reviewer_ids json,
-    review_records json,
-    remark character varying(500),
+    file_id integer,
+    proof_score numeric(5,2) NOT NULL,
+    status character varying(20) NOT NULL,
     id integer NOT NULL,
     created_at timestamp without time zone NOT NULL,
-    updated_at timestamp without time zone NOT NULL
+    updated_at timestamp without time zone NOT NULL,
+    CONSTRAINT ck_proof_status CHECK (((status)::text = ANY ((ARRAY['PENDING'::character varying, 'APPROVED'::character varying, 'REJECTED'::character varying])::text[])))
 );
 
 
@@ -118,6 +154,53 @@ ALTER SEQUENCE public.application_proofs_id_seq OWNER TO postgres;
 --
 
 ALTER SEQUENCE public.application_proofs_id_seq OWNED BY public.application_proofs.id;
+
+
+--
+-- Name: applications; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.applications (
+    user_id integer NOT NULL,
+    template_name character varying(100) NOT NULL,
+    apply_score numeric(5,2) NOT NULL,
+    gain_score numeric(5,2),
+    status character varying(20) NOT NULL,
+    review_count integer NOT NULL,
+    rule_id integer,
+    template_id integer,
+    id integer NOT NULL,
+    created_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone NOT NULL,
+    category_id integer,
+    rejected_count integer DEFAULT 0,
+    approved_count integer DEFAULT 0 NOT NULL,
+    CONSTRAINT ck_application_status CHECK (((status)::text = ANY ((ARRAY['DRAFT'::character varying, 'APPLYING'::character varying, 'PASSED'::character varying, 'REJECTED'::character varying, 'WITHDRAWN'::character varying, 'DISCARDED'::character varying])::text[])))
+);
+
+
+ALTER TABLE public.applications OWNER TO postgres;
+
+--
+-- Name: applications_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.applications_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.applications_id_seq OWNER TO postgres;
+
+--
+-- Name: applications_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.applications_id_seq OWNED BY public.applications.id;
 
 
 --
@@ -165,155 +248,6 @@ ALTER SEQUENCE public.attribute_id_seq OWNER TO postgres;
 
 ALTER SEQUENCE public.attribute_id_seq OWNED BY public.attribute.id;
 
-
---
--- Name: demand_applications; Type: TABLE; Schema: public; Owner: postgres
---
-
-CREATE TABLE public.demand_applications (
-    student_id character varying(255) NOT NULL,
-    application_data json NOT NULL,
-    submit_time timestamp without time zone,
-    id integer NOT NULL,
-    created_at timestamp without time zone NOT NULL,
-    updated_at timestamp without time zone NOT NULL
-);
-
-
-ALTER TABLE public.demand_applications OWNER TO postgres;
-
---
--- Name: demand_applications_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
---
-
-CREATE SEQUENCE public.demand_applications_id_seq
-    AS integer
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.demand_applications_id_seq OWNER TO postgres;
-
---
--- Name: demand_applications_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
---
-
-ALTER SEQUENCE public.demand_applications_id_seq OWNED BY public.demand_applications.id;
-
-
---
--- Name: demand_templates_bak; Type: TABLE; Schema: public; Owner: postgres
---
-
-CREATE TABLE public.demand_templates_bak (
-    template_name character varying(100),
-    conditions json,
-    description text,
-    created_by character varying(50),
-    is_active boolean,
-    sort_order integer,
-    id integer,
-    created_at timestamp without time zone,
-    updated_at timestamp without time zone
-);
-
-
-ALTER TABLE public.demand_templates_bak OWNER TO postgres;
-
---
--- Name: evaluation_applications; Type: TABLE; Schema: public; Owner: postgres
---
-
-CREATE TABLE public.evaluation_applications (
-    user_id integer NOT NULL,
-    student_id character varying(20) NOT NULL,
-    student_name character varying(100) NOT NULL,
-    foreign_language_level character varying(200),
-    disciplinary_violations integer NOT NULL,
-    failed_courses integer NOT NULL,
-    special_skills_remark text,
-    attachment_files json,
-    application_reason text,
-    status character varying(20) NOT NULL,
-    required_approvals integer NOT NULL,
-    current_approvals integer NOT NULL,
-    approval_records json,
-    id integer NOT NULL,
-    created_at timestamp without time zone NOT NULL,
-    updated_at timestamp without time zone NOT NULL
-);
-
-
-ALTER TABLE public.evaluation_applications OWNER TO postgres;
-
---
--- Name: evaluation_applications_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
---
-
-CREATE SEQUENCE public.evaluation_applications_id_seq
-    AS integer
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.evaluation_applications_id_seq OWNER TO postgres;
-
---
--- Name: evaluation_applications_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
---
-
-ALTER SEQUENCE public.evaluation_applications_id_seq OWNED BY public.evaluation_applications.id;
-
-
---
--- Name: field_config_bak; Type: TABLE; Schema: public; Owner: postgres
---
-
-CREATE TABLE public.field_config_bak (
-    field_key character varying(50),
-    display_name character varying(100),
-    field_type character varying(20),
-    max_score numeric(5,2),
-    conditions json,
-    description character varying(255),
-    college_code character varying(50),
-    academic_year integer,
-    sort_order integer,
-    is_active boolean,
-    created_by character varying(50),
-    id integer,
-    created_at timestamp without time zone,
-    updated_at timestamp without time zone
-);
-
-
-ALTER TABLE public.field_config_bak OWNER TO postgres;
-
---
--- Name: field_subcategory_bak; Type: TABLE; Schema: public; Owner: postgres
---
-
-CREATE TABLE public.field_subcategory_bak (
-    field_id integer,
-    sub_key character varying(50),
-    display_name character varying(100),
-    max_score numeric(5,2),
-    description character varying(255),
-    sort_order integer,
-    is_active boolean,
-    id integer,
-    created_at timestamp without time zone,
-    updated_at timestamp without time zone
-);
-
-
-ALTER TABLE public.field_subcategory_bak OWNER TO postgres;
 
 --
 -- Name: file_metadata; Type: TABLE; Schema: public; Owner: postgres
@@ -578,45 +512,6 @@ ALTER SEQUENCE public.rule_attribute_id_seq OWNED BY public.rule_attribute.id;
 
 
 --
--- Name: rule_attribute_mapping_bak; Type: TABLE; Schema: public; Owner: postgres
---
-
-CREATE TABLE public.rule_attribute_mapping_bak (
-    rule_id integer,
-    attribute_id integer,
-    is_required boolean,
-    display_order integer,
-    id integer,
-    created_at timestamp without time zone,
-    updated_at timestamp without time zone
-);
-
-
-ALTER TABLE public.rule_attribute_mapping_bak OWNER TO postgres;
-
---
--- Name: rule_attributes_bak; Type: TABLE; Schema: public; Owner: postgres
---
-
-CREATE TABLE public.rule_attributes_bak (
-    attribute_code character varying(50),
-    attribute_type character varying(20),
-    attribute_value text,
-    input_max numeric(10,4),
-    input_min numeric(10,4),
-    input_interval character varying(20),
-    display_order integer,
-    description text,
-    is_active boolean,
-    id integer,
-    created_at timestamp without time zone,
-    updated_at timestamp without time zone
-);
-
-
-ALTER TABLE public.rule_attributes_bak OWNER TO postgres;
-
---
 -- Name: rule_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
 --
 
@@ -639,42 +534,29 @@ ALTER SEQUENCE public.rule_id_seq OWNED BY public.rule.id;
 
 
 --
--- Name: score_applications; Type: TABLE; Schema: public; Owner: postgres
+-- Name: score_data; Type: TABLE; Schema: public; Owner: postgres
 --
 
-CREATE TABLE public.score_applications (
+CREATE TABLE public.score_data (
     user_id integer NOT NULL,
-    student_id character varying(50) NOT NULL,
-    student_name character varying(100),
-    major character varying(100),
-    enrollment_year integer,
-    template_name character varying(100) NOT NULL,
-    score_type integer NOT NULL,
-    apply_score double precision NOT NULL,
-    gain_score double precision,
-    status integer NOT NULL,
-    review_count integer NOT NULL,
-    current_review_count integer NOT NULL,
-    reviewer_ids json,
-    review_records json,
-    remark text,
-    apply_input double precision,
-    proofs_input double precision NOT NULL,
-    rule_id integer,
-    template_id integer,
+    application_id integer NOT NULL,
+    category_id integer NOT NULL,
+    name character varying(100),
+    score numeric(5,2) NOT NULL,
+    is_active boolean NOT NULL,
     id integer NOT NULL,
     created_at timestamp without time zone NOT NULL,
     updated_at timestamp without time zone NOT NULL
 );
 
 
-ALTER TABLE public.score_applications OWNER TO postgres;
+ALTER TABLE public.score_data OWNER TO postgres;
 
 --
--- Name: score_applications_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+-- Name: score_data_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
 --
 
-CREATE SEQUENCE public.score_applications_id_seq
+CREATE SEQUENCE public.score_data_id_seq
     AS integer
     START WITH 1
     INCREMENT BY 1
@@ -683,58 +565,14 @@ CREATE SEQUENCE public.score_applications_id_seq
     CACHE 1;
 
 
-ALTER SEQUENCE public.score_applications_id_seq OWNER TO postgres;
+ALTER SEQUENCE public.score_data_id_seq OWNER TO postgres;
 
 --
--- Name: score_applications_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+-- Name: score_data_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
 
-ALTER SEQUENCE public.score_applications_id_seq OWNED BY public.score_applications.id;
+ALTER SEQUENCE public.score_data_id_seq OWNED BY public.score_data.id;
 
-
---
--- Name: score_template_rules_bak; Type: TABLE; Schema: public; Owner: postgres
---
-
-CREATE TABLE public.score_template_rules_bak (
-    template_id integer,
-    rule_type character varying(20),
-    rule_name character varying(100),
-    rule_score numeric(5,2),
-    priority integer,
-    description text,
-    id integer,
-    created_at timestamp without time zone,
-    updated_at timestamp without time zone
-);
-
-
-ALTER TABLE public.score_template_rules_bak OWNER TO postgres;
-
---
--- Name: score_templates_bak; Type: TABLE; Schema: public; Owner: postgres
---
-
-CREATE TABLE public.score_templates_bak (
-    template_name character varying(100),
-    template_type character varying(20),
-    score_type integer,
-    template_max_score numeric(5,2),
-    input_unit character varying(50),
-    description text,
-    created_by character varying(50),
-    is_active boolean,
-    review_count integer,
-    field_id integer,
-    subcategory_id integer,
-    id integer,
-    created_at timestamp without time zone,
-    updated_at timestamp without time zone,
-    category_id integer
-);
-
-
-ALTER TABLE public.score_templates_bak OWNER TO postgres;
 
 --
 -- Name: system_config; Type: TABLE; Schema: public; Owner: postgres
@@ -960,7 +798,9 @@ CREATE TABLE public.users (
     comprehensive_score double precision NOT NULL,
     id integer NOT NULL,
     created_at timestamp without time zone NOT NULL,
-    updated_at timestamp without time zone NOT NULL
+    updated_at timestamp without time zone NOT NULL,
+    score_info jsonb DEFAULT '{}'::jsonb,
+    extra_info jsonb DEFAULT '{}'::jsonb
 );
 
 
@@ -996,6 +836,13 @@ ALTER TABLE ONLY public.agent_sessions ALTER COLUMN id SET DEFAULT nextval('publ
 
 
 --
+-- Name: application_operation id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.application_operation ALTER COLUMN id SET DEFAULT nextval('public.application_operation_id_seq'::regclass);
+
+
+--
 -- Name: application_proofs id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
@@ -1003,24 +850,17 @@ ALTER TABLE ONLY public.application_proofs ALTER COLUMN id SET DEFAULT nextval('
 
 
 --
+-- Name: applications id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.applications ALTER COLUMN id SET DEFAULT nextval('public.applications_id_seq'::regclass);
+
+
+--
 -- Name: attribute id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.attribute ALTER COLUMN id SET DEFAULT nextval('public.attribute_id_seq'::regclass);
-
-
---
--- Name: demand_applications id; Type: DEFAULT; Schema: public; Owner: postgres
---
-
-ALTER TABLE ONLY public.demand_applications ALTER COLUMN id SET DEFAULT nextval('public.demand_applications_id_seq'::regclass);
-
-
---
--- Name: evaluation_applications id; Type: DEFAULT; Schema: public; Owner: postgres
---
-
-ALTER TABLE ONLY public.evaluation_applications ALTER COLUMN id SET DEFAULT nextval('public.evaluation_applications_id_seq'::regclass);
 
 
 --
@@ -1073,10 +913,10 @@ ALTER TABLE ONLY public.rule_attribute ALTER COLUMN id SET DEFAULT nextval('publ
 
 
 --
--- Name: score_applications id; Type: DEFAULT; Schema: public; Owner: postgres
+-- Name: score_data id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
-ALTER TABLE ONLY public.score_applications ALTER COLUMN id SET DEFAULT nextval('public.score_applications_id_seq'::regclass);
+ALTER TABLE ONLY public.score_data ALTER COLUMN id SET DEFAULT nextval('public.score_data_id_seq'::regclass);
 
 
 --
@@ -1138,6 +978,14 @@ ALTER TABLE ONLY public.agent_sessions
 
 
 --
+-- Name: application_operation application_operation_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.application_operation
+    ADD CONSTRAINT application_operation_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: application_proofs application_proofs_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -1146,35 +994,19 @@ ALTER TABLE ONLY public.application_proofs
 
 
 --
+-- Name: applications applications_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.applications
+    ADD CONSTRAINT applications_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: attribute attribute_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.attribute
     ADD CONSTRAINT attribute_pkey PRIMARY KEY (id);
-
-
---
--- Name: demand_applications demand_applications_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
---
-
-ALTER TABLE ONLY public.demand_applications
-    ADD CONSTRAINT demand_applications_pkey PRIMARY KEY (id);
-
-
---
--- Name: demand_applications demand_applications_student_id_key; Type: CONSTRAINT; Schema: public; Owner: postgres
---
-
-ALTER TABLE ONLY public.demand_applications
-    ADD CONSTRAINT demand_applications_student_id_key UNIQUE (student_id);
-
-
---
--- Name: evaluation_applications evaluation_applications_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
---
-
-ALTER TABLE ONLY public.evaluation_applications
-    ADD CONSTRAINT evaluation_applications_pkey PRIMARY KEY (id);
 
 
 --
@@ -1266,11 +1098,11 @@ ALTER TABLE ONLY public.rule
 
 
 --
--- Name: score_applications score_applications_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+-- Name: score_data score_data_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
-ALTER TABLE ONLY public.score_applications
-    ADD CONSTRAINT score_applications_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.score_data
+    ADD CONSTRAINT score_data_pkey PRIMARY KEY (id);
 
 
 --
@@ -1362,6 +1194,27 @@ ALTER TABLE ONLY public.users
 
 
 --
+-- Name: idx_applications_category; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_applications_category ON public.applications USING btree (category_id);
+
+
+--
+-- Name: idx_applications_status; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_applications_status ON public.applications USING btree (status);
+
+
+--
+-- Name: idx_applications_user_template_status; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_applications_user_template_status ON public.applications USING btree (user_id, template_id, status);
+
+
+--
 -- Name: idx_attribute_active; Type: INDEX; Schema: public; Owner: postgres
 --
 
@@ -1376,10 +1229,38 @@ CREATE INDEX idx_attribute_group ON public.attribute USING btree (group_code);
 
 
 --
+-- Name: idx_operation_app_op; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_operation_app_op ON public.application_operation USING btree (application_id, operation);
+
+
+--
+-- Name: idx_operation_application; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_operation_application ON public.application_operation USING btree (application_id);
+
+
+--
 -- Name: idx_permission_api_path; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX idx_permission_api_path ON public.permission USING btree (api_path);
+
+
+--
+-- Name: idx_proofs_application; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_proofs_application ON public.application_proofs USING btree (application_id);
+
+
+--
+-- Name: idx_proofs_application_status; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_proofs_application_status ON public.application_proofs USING btree (application_id, status);
 
 
 --
@@ -1422,6 +1303,27 @@ CREATE INDEX idx_rule_attribute_rule ON public.rule_attribute USING btree (rule_
 --
 
 CREATE INDEX idx_rule_type ON public.rule USING btree (type);
+
+
+--
+-- Name: idx_score_data_application; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_score_data_application ON public.score_data USING btree (application_id);
+
+
+--
+-- Name: idx_score_data_user_active; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_score_data_user_active ON public.score_data USING btree (user_id, is_active);
+
+
+--
+-- Name: idx_score_data_user_category; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_score_data_user_category ON public.score_data USING btree (user_id, category_id);
 
 
 --
@@ -1481,11 +1383,19 @@ CREATE INDEX idx_user_role_user_id ON public.user_role USING btree (user_id);
 
 
 --
+-- Name: application_operation application_operation_application_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.application_operation
+    ADD CONSTRAINT application_operation_application_id_fkey FOREIGN KEY (application_id) REFERENCES public.applications(id) ON DELETE CASCADE;
+
+
+--
 -- Name: application_proofs application_proofs_application_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.application_proofs
-    ADD CONSTRAINT application_proofs_application_id_fkey FOREIGN KEY (application_id) REFERENCES public.score_applications(id) ON DELETE CASCADE;
+    ADD CONSTRAINT application_proofs_application_id_fkey FOREIGN KEY (application_id) REFERENCES public.applications(id) ON DELETE CASCADE;
 
 
 --
@@ -1493,30 +1403,22 @@ ALTER TABLE ONLY public.application_proofs
 --
 
 ALTER TABLE ONLY public.application_proofs
-    ADD CONSTRAINT application_proofs_proof_file_id_fkey FOREIGN KEY (proof_file_id) REFERENCES public.file_metadata(id);
+    ADD CONSTRAINT application_proofs_proof_file_id_fkey FOREIGN KEY (file_id) REFERENCES public.file_metadata(id);
 
 
 --
--- Name: evaluation_applications evaluation_applications_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+-- Name: applications fk_application_rule_v4; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
-ALTER TABLE ONLY public.evaluation_applications
-    ADD CONSTRAINT evaluation_applications_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
-
-
---
--- Name: score_applications fk_application_rule_v4; Type: FK CONSTRAINT; Schema: public; Owner: postgres
---
-
-ALTER TABLE ONLY public.score_applications
+ALTER TABLE ONLY public.applications
     ADD CONSTRAINT fk_application_rule_v4 FOREIGN KEY (rule_id) REFERENCES public.rule(id);
 
 
 --
--- Name: score_applications fk_application_template_v4; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+-- Name: applications fk_application_template_v4; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
-ALTER TABLE ONLY public.score_applications
+ALTER TABLE ONLY public.applications
     ADD CONSTRAINT fk_application_template_v4 FOREIGN KEY (template_id) REFERENCES public.template(id);
 
 
@@ -1561,11 +1463,43 @@ ALTER TABLE ONLY public.rule_attribute
 
 
 --
--- Name: score_applications score_applications_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+-- Name: applications score_applications_category_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
-ALTER TABLE ONLY public.score_applications
+ALTER TABLE ONLY public.applications
+    ADD CONSTRAINT score_applications_category_id_fkey FOREIGN KEY (category_id) REFERENCES public.template_category(id);
+
+
+--
+-- Name: applications score_applications_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.applications
     ADD CONSTRAINT score_applications_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+--
+-- Name: score_data score_data_application_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.score_data
+    ADD CONSTRAINT score_data_application_id_fkey FOREIGN KEY (application_id) REFERENCES public.applications(id) ON DELETE CASCADE;
+
+
+--
+-- Name: score_data score_data_category_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.score_data
+    ADD CONSTRAINT score_data_category_id_fkey FOREIGN KEY (category_id) REFERENCES public.template_category(id);
+
+
+--
+-- Name: score_data score_data_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.score_data
+    ADD CONSTRAINT score_data_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 
 
 --
@@ -1612,5 +1546,5 @@ ALTER TABLE ONLY public.user_role
 -- PostgreSQL database dump complete
 --
 
-\unrestrict QngPAl6I2TyBgPamQkrGztg8qMgniCmHWHdRNLLSDdXQOu2tQfPWk7rOdFwCxIC
+\unrestrict 7rA0mCLYoI7g4GbTpGcG7QEOhLchNdzLziOkATMqppXIz7d3IQ9xeK2o5Me5biG
 

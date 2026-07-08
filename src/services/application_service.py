@@ -1,22 +1,19 @@
 """加分申请服务（v4.3）
 
 ═══════════════════════════════════════════════════════════════════════
-v4.3 关键设计（在 v4.2 基础上调整）
+v4.3 关键设计
 ═══════════════════════════════════════════════════════════════════════
-1. application 状态机 6 态：DRAFT / APPLYING / PASSED / REJECTED / WITHDRAWN / DISCARDED
-2. submit / resubmit 同构：整体替换 proof 列表 + sum(proof_score)==apply_score
-3. proof.status 是会签中间状态：任意审核员可修改（包括覆盖前审核员）
-4. pass_application 前置条件：所有 proof.status=='APPROVED'
-5. pass_application 触发条件：approved_count==review_count → PASSED
-6. gain_score 随 proof 审核动态累加（v4.3 变更）：
-   - proof APPROVED: gain_score += proof_score（原子 SQL）
-   - proof APPROVED→REJECTED: gain_score -= proof_score（原子 SQL）
-   - PASSED 时 gain_score 已等于 apply_score（不再在 pass_application 中写）
-   - resubmit 时重置 gain_score=0（所有 proof 回到 PENDING）
-7. 同审核员对 application 只允许投一次票（PASS/REJECT 互斥）
-8. review_proof 不写 application_operation（proof 是辅助表）
-9. 草稿 save_draft 不写 operation（噪音），允许同一用户对同一 template 多次创建草稿
-10. review_count 从 template 快照读取，路由层不接受客户端传值
+1. application 状态机 5 态：DRAFT / APPLYING / PASSED / REJECTED / CANCELLED / REVOKED
+2. CANCELLED = 学生取消（终态），REVOKED = 老师撤回（终态），REJECTED = 老师拒绝（非终态）
+3. submit / resubmit 同构：整体替换 proof 列表 + sum(proof_score)==apply_score
+4. proof.status 是会签中间状态：任意审核员可修改（包括覆盖前审核员）
+5. pass_application 前置条件：所有 proof.status=='APPROVED'
+6. pass_application 触发条件：approved_count==review_count → PASSED
+7. gain_score 随 proof 审核动态累加
+8. 同审核员对 application 只允许投一次票（PASS/REJECT 互斥）
+9. review_proof 不写 application_operation（proof 是辅助表）
+10. operation.status 直接记录操作后的 application 状态
+11. review_count 从 template 快照读取，路由层不接受客户端传值
 
 ═══════════════════════════════════════════════════════════════════════
 事务边界（关键）
@@ -37,7 +34,6 @@ from src.models import (
     ApplicationProof,
     ApplicationOperation,
     ApplicationStatus,
-    ApplicationOperationType,
     ProofStatus,
     User,
 )
@@ -96,7 +92,7 @@ class ApplicationService:
           1. 校验 user 存在
           2. 校验该用户对此 template 没有 APPLYING 或 PASSED 的活申请
              （有则抛 ConflictError；DRAFT 不阻塞，允许多草稿）
-          3. INSERT score_applications（status='DRAFT', apply_score=?, gain_score=0）
+          3. INSERT applications（status='DRAFT', apply_score=?, gain_score=0）
           4. 整体替换 proof 集合（status='PENDING', file_id nullable）
           5. 不写 application_operation
         """
@@ -154,39 +150,39 @@ class ApplicationService:
         await db.refresh(application)
         result = await db.execute(
             select(Application)
-            .options(selectinload(Application.proofs))
+            .options(selectinload(Application.proofs), selectinload(Application.user))
             .where(Application.id == application.id)
         )
         return result.scalar_one()
 
     # ------------------------------------------------------------------
-    # 4.2 discard_draft（学生丢弃草稿）
+    # 4.2 cancel（学生取消草稿/申请）
     # ------------------------------------------------------------------
     @staticmethod
-    async def discard_draft(
+    async def cancel(
         db: AsyncSession,
         application_id: int,
         user_id: int,
         operator_name: str,
         remark: Optional[str] = None,
     ) -> Application:
-        """丢弃草稿 DRAFT → DISCARDED（终态）"""
+        """取消草稿/申请 DRAFT/APPLYING → CANCELLED（终态）"""
         application = await ApplicationService._get_for_update(db, application_id)
 
         if application.user_id != user_id:
             raise ForbiddenError("仅本人可操作")
-        if application.status != ApplicationStatus.DRAFT.value:
+        if application.status not in (ApplicationStatus.DRAFT.value, ApplicationStatus.APPLYING.value):
             raise ConflictError(
-                f"申请当前状态 {application.status}，仅 DRAFT 可 discard"
+                f"申请当前状态 {application.status}，仅 DRAFT 或 APPLYING 可取消"
             )
 
-        application.status = ApplicationStatus.DISCARDED.value
+        application.status = ApplicationStatus.CANCELLED.value
 
         op = ApplicationOperation(
             application_id=application.id,
             operator_id=user_id,
             operator_name=operator_name,
-            operation=ApplicationOperationType.DISCARD_DRAFT.value,
+            operation=ApplicationStatus.CANCELLED.value,
             remark=remark,
         )
         db.add(op)
@@ -232,7 +228,7 @@ class ApplicationService:
             application_id=application.id,
             operator_id=user_id,
             operator_name=operator_name,
-            operation=ApplicationOperationType.SUBMIT.value,
+            operation=ApplicationStatus.APPLYING.value,
         )
         db.add(op)
         await db.commit()
@@ -240,42 +236,7 @@ class ApplicationService:
         return application
 
     # ------------------------------------------------------------------
-    # 4.4 withdraw（APPLYING → WITHDRAWN）
-    # ------------------------------------------------------------------
-    @staticmethod
-    async def withdraw(
-        db: AsyncSession,
-        application_id: int,
-        user_id: int,
-        operator_name: str,
-        remark: Optional[str] = None,
-    ) -> Application:
-        """学生主动撤回（APPLYING → WITHDRAWN，终态）"""
-        application = await ApplicationService._get_for_update(db, application_id)
-
-        if application.user_id != user_id:
-            raise ForbiddenError("仅本人可撤回")
-        if application.status != ApplicationStatus.APPLYING.value:
-            raise ConflictError(
-                f"申请当前状态 {application.status}，仅 APPLYING 可 withdraw"
-            )
-
-        application.status = ApplicationStatus.WITHDRAWN.value
-
-        op = ApplicationOperation(
-            application_id=application.id,
-            operator_id=user_id,
-            operator_name=operator_name,
-            operation=ApplicationOperationType.WITHDRAW.value,
-            remark=remark,
-        )
-        db.add(op)
-        await db.commit()
-        await db.refresh(application)
-        return application
-
-    # ------------------------------------------------------------------
-    # 4.5 review_proof（审核员改 proof.status，原子更新 gain_score）
+    # 4.4 resubmit（REJECTED → APPLYING）
     # ------------------------------------------------------------------
     @staticmethod
     async def review_proof(
@@ -457,7 +418,7 @@ class ApplicationService:
             application_id=application.id,
             operator_id=reviewer_id,
             operator_name=reviewer_name,
-            operation=ApplicationOperationType.PASS.value,
+            operation=ApplicationStatus.PASSED.value,
             remark=remark,
         )
         db.add(op)
@@ -507,7 +468,53 @@ class ApplicationService:
             application_id=application.id,
             operator_id=reviewer_id,
             operator_name=reviewer_name,
-            operation=ApplicationOperationType.REJECT.value,
+            operation=ApplicationStatus.REJECTED.value,
+            remark=remark.strip(),
+        )
+        db.add(op)
+        await db.commit()
+        await db.refresh(application)
+        return application
+
+
+    # ------------------------------------------------------------------
+    # 4.7 revoke（审核员撤回已通过的申请）
+    # ------------------------------------------------------------------
+    @staticmethod
+    async def revoke(
+        db: AsyncSession,
+        application_id: int,
+        operator_id: int,
+        operator_name: str,
+        remark: str,
+    ) -> Application:
+        """审核员撤回已通过的申请（PASSED → REJECTED）
+
+        前置条件:
+          1. application.status == 'PASSED'
+          2. remark.strip() 非空（必须填写撤回原因）
+
+        同一事务:
+          - UPDATE application SET status='REJECTED'
+          - INSERT application_operation(REVOKE)
+        """
+        if not remark or not remark.strip():
+            raise BadRequestError("撤回原因 remark 必填")
+
+        application = await ApplicationService._get_for_update(db, application_id)
+
+        if application.status != ApplicationStatus.PASSED.value:
+            raise BadRequestError(
+                f"申请当前状态 {application.status}，仅 PASSED 可撤回"
+            )
+
+        application.status = ApplicationStatus.REVOKED.value
+
+        op = ApplicationOperation(
+            application_id=application.id,
+            operator_id=operator_id,
+            operator_name=operator_name,
+            operation=ApplicationStatus.REVOKED.value,
             remark=remark.strip(),
         )
         db.add(op)
@@ -573,9 +580,72 @@ class ApplicationService:
             application_id=application.id,
             operator_id=user_id,
             operator_name=operator_name,
-            operation=ApplicationOperationType.RESUBMIT.value,
+            operation=ApplicationStatus.APPLYING.value,
         )
         db.add(op)
+        await db.commit()
+        await db.refresh(application)
+
+        result = await db.execute(
+            select(Application)
+            .options(selectinload(Application.proofs))
+            .where(Application.id == application.id)
+        )
+        return result.scalar_one()
+
+    # ------------------------------------------------------------------
+    # 4.9 update_draft（更新草稿证明材料）
+    # ------------------------------------------------------------------
+    @staticmethod
+    async def update_draft(
+        db: AsyncSession,
+        application_id: int,
+        user_id: int,
+        proof_data_list: List[Dict[str, Any]],
+    ) -> Application:
+        """更新草稿证明材料（DRAFT/REVOKED/REJECTED → 替换 proof 列表）
+
+        不改变申请状态，不重置 approved_count / rejected_count。
+        """
+        application = await ApplicationService._get_for_update(db, application_id)
+
+        if application.user_id != user_id:
+            raise ForbiddenError("仅本人可更新草稿")
+        if application.status not in (
+            ApplicationStatus.DRAFT.value,
+            ApplicationStatus.REVOKED.value,
+            ApplicationStatus.REJECTED.value,
+        ):
+            raise ConflictError(
+                f"申请当前状态 {application.status}，DRAFT/REVOKED/REJECTED 才可更新草稿"
+            )
+
+        # 校验 proof 集合
+        if not proof_data_list:
+            raise BadRequestError("proof_data_list 不能为空")
+        proof_sum = sum(
+            Decimal(str(p["proof_score"])) for p in proof_data_list
+        )
+        if proof_sum != application.apply_score:
+            raise BadRequestError(
+                f"proof_score 之和 {proof_sum} != apply_score {application.apply_score}"
+            )
+
+        # 整体替换 proof 集合（先删后插）
+        await db.execute(
+            delete(ApplicationProof).where(
+                ApplicationProof.application_id == application_id
+            )
+        )
+        for proof_data in proof_data_list:
+            proof = ApplicationProof(
+                application_id=application.id,
+                file_id=proof_data.get("file_id"),
+                proof_score=Decimal(str(proof_data["proof_score"])),
+                status=ProofStatus.PENDING.value,
+            )
+            db.add(proof)
+
         await db.commit()
         await db.refresh(application)
 
@@ -601,10 +671,15 @@ class ApplicationService:
             stmt = (
                 select(Application)
                 .where(Application.id == application_id)
+                .options(selectinload(Application.user))
                 .with_for_update()
             )
         else:
-            stmt = select(Application).where(Application.id == application_id)
+            stmt = (
+                select(Application)
+                .where(Application.id == application_id)
+                .options(selectinload(Application.user))
+            )
         result = await db.execute(stmt)
         application = result.scalar_one_or_none()
         if not application:
@@ -649,8 +724,8 @@ class ApplicationService:
                     ApplicationOperation.application_id == application_id,
                     ApplicationOperation.operator_id == reviewer_id,
                     ApplicationOperation.operation.in_([
-                        ApplicationOperationType.PASS.value,
-                        ApplicationOperationType.REJECT.value,
+                        ApplicationStatus.PASSED.value,
+                        ApplicationStatus.REJECTED.value,
                     ]),
                 )
             )
@@ -698,7 +773,7 @@ class ApplicationService:
                 selectinload(Application.proofs),
                 selectinload(Application.user),
             )
-            .order_by(Application.created_at.desc())
+            .order_by(Application.created_at.asc())
             .offset((page - 1) * size)
             .limit(size)
         )
@@ -737,13 +812,13 @@ class ApplicationService:
         page: int = 1,
         size: int = 20,
     ) -> tuple[List[Application], int]:
-        """审核历史（PASSED / REJECTED / WITHDRAWN / DISCARDED）"""
+        """审核历史（PASSED / REJECTED / CANCELLED / REVOKED）"""
         query = select(Application).where(
             Application.status.in_([
                 ApplicationStatus.PASSED.value,
                 ApplicationStatus.REJECTED.value,
-                ApplicationStatus.WITHDRAWN.value,
-                ApplicationStatus.DISCARDED.value,
+                ApplicationStatus.CANCELLED.value,
+                ApplicationStatus.REVOKED.value,
             ])
         )
 
@@ -762,6 +837,51 @@ class ApplicationService:
         result = await db.execute(query)
         return list(result.scalars().all()), total
 
+    @staticmethod
+    async def list_my_audit_history(
+        db: AsyncSession,
+        reviewer_id: int,
+        page: int = 1,
+        size: int = 20,
+    ) -> tuple[List[Application], int]:
+        """当前审核员操作过的申请（去重，按最新操作时间排序）
+
+        只包含 PASSED/REJECTED 操作（老师投票）
+        """
+        from src.models import ApplicationOperation
+
+        # 子查询：审核员操作过的 application_id
+        op_subq = (
+            select(ApplicationOperation.application_id)
+            .where(
+                and_(
+                    ApplicationOperation.operator_id == reviewer_id,
+                    ApplicationOperation.operation.in_([
+                        ApplicationStatus.PASSED.value,
+                        ApplicationStatus.REJECTED.value,
+                    ]),
+                )
+            )
+            .distinct()
+        ).subquery()
+
+        query = select(Application).where(Application.id.in_(op_subq))
+
+        count_q = select(func.count()).select_from(query.subquery())
+        total = (await db.execute(count_q)).scalar() or 0
+
+        query = (
+            query.options(
+                selectinload(Application.proofs),
+                selectinload(Application.user),
+            )
+            .order_by(Application.updated_at.desc())
+            .offset((page - 1) * size)
+            .limit(size)
+        )
+        result = await db.execute(query)
+        return list(result.scalars().all()), total
+
 
 # 兼容旧 service 名（保留给老代码调用——但语义已对齐 v4.2）
 def get_application_status_text(status: str) -> str:
@@ -770,6 +890,6 @@ def get_application_status_text(status: str) -> str:
         ApplicationStatus.APPLYING.value: "审核中",
         ApplicationStatus.PASSED.value: "已通过",
         ApplicationStatus.REJECTED.value: "已驳回",
-        ApplicationStatus.WITHDRAWN.value: "已撤回",
-        ApplicationStatus.DISCARDED.value: "已丢弃",
+        ApplicationStatus.CANCELLED.value: "已取消",
+        ApplicationStatus.REVOKED.value: "已撤回",
     }.get(status, "未知")

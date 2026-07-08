@@ -1,6 +1,7 @@
-"""申请操作审计服务（v4.2）
+"""申请操作审计服务（v4.3）
 
-只读接口（v4.2 不在本 service 写 operation——写在 application_service 内）。
+只读接口（v4.3 不在本 service 写 operation——写在 application_service 内）。
+operation.status 直接存储操作后的 application 状态。
 """
 from __future__ import annotations
 
@@ -9,7 +10,7 @@ from typing import List
 from sqlalchemy import select, and_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.models import ApplicationOperation, ApplicationOperationType
+from src.models import ApplicationOperation, ApplicationStatus
 
 
 class ApplicationOperationService:
@@ -33,15 +34,15 @@ class ApplicationOperationService:
         db: AsyncSession,
         application_id: int,
     ) -> List[ApplicationOperation]:
-        """仅返回 operation IN ('PASS','REJECT') 的投票记录"""
+        """仅返回 status IN ('PASSED','REJECTED') 的投票记录"""
         result = await db.execute(
             select(ApplicationOperation)
             .where(
                 and_(
                     ApplicationOperation.application_id == application_id,
-                    ApplicationOperation.operation.in_([
-                        ApplicationOperationType.PASS.value,
-                        ApplicationOperationType.REJECT.value,
+                    ApplicationOperation.status.in_([
+                        ApplicationStatus.PASSED.value,
+                        ApplicationStatus.REJECTED.value,
                     ]),
                 )
             )
@@ -63,9 +64,9 @@ class ApplicationOperationService:
                 and_(
                     ApplicationOperation.application_id == application_id,
                     ApplicationOperation.operator_id == operator_id,
-                    ApplicationOperation.operation.in_([
-                        ApplicationOperationType.PASS.value,
-                        ApplicationOperationType.REJECT.value,
+                    ApplicationOperation.status.in_([
+                        ApplicationStatus.PASSED.value,
+                        ApplicationStatus.REJECTED.value,
                     ]),
                 )
             )

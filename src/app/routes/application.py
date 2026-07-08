@@ -1,13 +1,12 @@
-"""申请路由（v4.2）
+"""申请路由（v4.3）
 
 ═══════════════════════════════════════════════════════════════════════
 RESTful 设计
 ═══════════════════════════════════════════════════════════════════════
 学生端:
   POST   /api/applications/draft                  save_draft
-  DELETE /api/applications/draft/{id}             discard_draft
+  POST   /api/applications/{id}/cancel            cancel（取消草稿/申请）
   POST   /api/applications/{id}/submit            submit
-  POST   /api/applications/{id}/withdraw          withdraw
   POST   /api/applications/{id}/resubmit          resubmit
   GET    /api/applications                        我的申请列表（学生）
   GET    /api/applications/{id}                   详情（含 proofs + operations）
@@ -16,8 +15,18 @@ RESTful 设计
   POST   /api/applications/{id}/proofs/{pid}/review   review_proof
   POST   /api/applications/{id}/pass                  pass_application
   POST   /api/applications/{id}/reject                reject_application
+  POST   /api/applications/{id}/revoke               revoke_application
   GET    /api/admin/applications                      待审核列表
   GET    /api/admin/applications/history              审核历史
+
+状态语义：
+  DRAFT      - 草稿（学生可编辑）
+  APPLYING   - 审核中（学生锁定）
+  PASSED     - 已通过（终态）
+  REJECTED   - 已驳回（可重提）
+  CANCELLED  - 已取消（终态，学生主动取消）
+  REVOKED    - 已撤回（终态，老师撤回）
+═══════════════════════════════════════════════════════════════════════
 """
 from __future__ import annotations
 
@@ -41,7 +50,6 @@ from src.services import (
 from src.models import (
     ApplicationStatus,
     ProofStatus,
-    ApplicationOperationType,
 )
 from src.app.schemas.errors import (
     NotFoundError, BadRequestError, ConflictError, ForbiddenError,
@@ -69,6 +77,10 @@ class SaveDraftRequest(BaseModel):
     # review_count 不接受客户端传值，由路由从 template 读取
 
 
+class UpdateDraftRequest(BaseModel):
+    proof_data_list: List[ProofDataItem]
+
+
 class ResubmitRequest(BaseModel):
     proof_data_list: List[ProofDataItem]
 
@@ -86,11 +98,7 @@ class RejectRequest(BaseModel):
     remark: str   # 必填
 
 
-class DiscardDraftRequest(BaseModel):
-    remark: Optional[str] = None
-
-
-class WithdrawRequest(BaseModel):
+class CancelRequest(BaseModel):
     remark: Optional[str] = None
 
 
@@ -104,7 +112,7 @@ async def _get_user_full_name(db: AsyncSession, user_id: int) -> str:
 
 
 # ════════════════════════════════════════════════════════════════════════
-# 学生端：草稿 / 提交 / 撤回 / 重提
+# 学生端：草稿 / 提交 / 取消 / 重提
 # ════════════════════════════════════════════════════════════════════════
 @router.post("/api/applications/draft")
 async def save_draft(
@@ -143,20 +151,50 @@ async def save_draft(
         return R.server_error_resp(f"保存草稿失败: {e}")
 
 
-@router.delete("/api/applications/draft/{application_id}")
-async def discard_draft(
+@router.put("/api/applications/{application_id}/draft")
+async def update_draft(
     application_id: int,
-    req: DiscardDraftRequest = Body(default=DiscardDraftRequest()),
+    req: UpdateDraftRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """丢弃草稿（DRAFT → DISCARDED）"""
+    """更新草稿（DRAFT/REVOKED/REJECTED → 替换 proof 列表）"""
+    user_id = get_user_id()
+    if not user_id:
+        return R.unauthorized_resp("未登录")
+
+    try:
+        application = await ApplicationService.update_draft(
+            db,
+            application_id=application_id,
+            user_id=user_id,
+            proof_data_list=[p.model_dump() for p in req.proof_data_list],
+        )
+        return R.success_resp(format_application(application))
+    except (NotFoundError, ForbiddenError, ConflictError, BadRequestError) as e:
+        code = e.__class__.__name__
+        if code == "ForbiddenError":
+            return R.forbidden_resp(str(e))
+        if code == "ConflictError":
+            return R.conflict_resp(str(e))
+        if code == "BadRequestError":
+            return R.bad_request_resp(str(e))
+        return R.not_found_resp(str(e))
+
+
+@router.post("/api/applications/{application_id}/cancel")
+async def cancel_application(
+    application_id: int,
+    req: CancelRequest = Body(default=CancelRequest()),
+    db: AsyncSession = Depends(get_db),
+):
+    """取消草稿/申请（DRAFT/APPLYING → CANCELLED）"""
     user_id = get_user_id()
     if not user_id:
         return R.unauthorized_resp("未登录")
 
     try:
         operator_name = await _get_user_full_name(db, user_id)
-        application = await ApplicationService.discard_draft(
+        application = await ApplicationService.cancel(
             db,
             application_id=application_id,
             user_id=user_id,
@@ -196,31 +234,6 @@ async def submit_application(
         return R.bad_request_resp(str(e))
 
 
-@router.post("/api/applications/{application_id}/withdraw")
-async def withdraw_application(
-    application_id: int,
-    req: WithdrawRequest = Body(default=WithdrawRequest()),
-    db: AsyncSession = Depends(get_db),
-):
-    """APPLYING → WITHDRAWN"""
-    user_id = get_user_id()
-    if not user_id:
-        return R.unauthorized_resp("未登录")
-
-    try:
-        operator_name = await _get_user_full_name(db, user_id)
-        application = await ApplicationService.withdraw(
-            db,
-            application_id=application_id,
-            user_id=user_id,
-            operator_name=operator_name,
-            remark=req.remark,
-        )
-        return R.success_resp({"id": application.id, "status": application.status})
-    except (NotFoundError, ForbiddenError, ConflictError) as e:
-        return R.bad_request_resp(str(e))
-
-
 @router.post("/api/applications/{application_id}/resubmit")
 async def resubmit_application(
     application_id: int,
@@ -257,8 +270,8 @@ async def resubmit_application(
 @router.get("/api/applications")
 async def list_my_applications(
     status: Optional[str] = Query(None),
-    page: int = Query(1, ge=1),
-    size: int = Query(20, ge=1, le=100),
+    pageNum: int = Query(1, ge=1),
+    pageSize: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
 ):
     """我的申请列表（学生）"""
@@ -267,13 +280,13 @@ async def list_my_applications(
         return R.unauthorized_resp("未登录")
 
     applications, total = await ApplicationService.list_user_applications(
-        db, user_id, status, page, size,
+        db, user_id, status, pageNum, pageSize,
     )
     return R.success_resp({
         "list": [format_application(a) for a in applications],
         "total": total,
-        "page": page,
-        "size": size,
+        "pageNum": pageNum,
+        "pageSize": pageSize,
     })
 
 
@@ -394,39 +407,89 @@ async def reject_application(
         return R.bad_request_resp(str(e))
 
 
+@router.post("/api/admin/applications/{application_id}/revoke")
+async def revoke_application(
+    application_id: int,
+    req: RejectRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """审核员撤回已通过的申请（PASSED → REJECTED）"""
+    user_id = get_user_id()
+    if not user_id:
+        return R.unauthorized_resp("未登录")
+
+    try:
+        operator_name = await _get_user_full_name(db, user_id)
+        application = await ApplicationService.revoke(
+            db,
+            application_id=application_id,
+            operator_id=user_id,
+            operator_name=operator_name,
+            remark=req.remark,
+        )
+        return R.success_resp({
+            "id": application.id,
+            "status": application.status,
+        })
+    except (NotFoundError, BadRequestError) as e:
+        return R.bad_request_resp(str(e))
+
+
 @router.get("/api/admin/applications")
 async def list_pending_applications(
-    page: int = Query(1, ge=1),
-    size: int = Query(20, ge=1, le=100),
+    pageNum: int = Query(1, ge=1),
+    pageSize: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
 ):
     """审核员：待审核列表（status=APPLYING）"""
     applications, total = await ApplicationService.list_pending_applications(
-        db, page, size,
+        db, pageNum, pageSize,
     )
     return R.success_resp({
         "list": [format_application(a, with_proofs=True) for a in applications],
         "total": total,
-        "page": page,
-        "size": size,
+        "pageNum": pageNum,
+        "pageSize": pageSize,
     })
 
 
 @router.get("/api/admin/applications/history")
 async def list_audit_history(
-    page: int = Query(1, ge=1),
-    size: int = Query(20, ge=1, le=100),
+    pageNum: int = Query(1, ge=1),
+    pageSize: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
 ):
-    """审核员：审核历史"""
+    """审核员：审核历史（所有终态）"""
     applications, total = await ApplicationService.list_audit_history(
-        db, page, size,
+        db, pageNum, pageSize,
     )
     return R.success_resp({
         "list": [format_application(a) for a in applications],
         "total": total,
-        "page": page,
-        "size": size,
+        "pageNum": pageNum,
+        "pageSize": pageSize,
+    })
+
+
+@router.get("/api/admin/applications/my-history")
+async def list_my_audit_history(
+    pageNum: int = Query(1, ge=1),
+    pageSize: int = Query(20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+):
+    """当前审核员操作过的申请（按最新操作时间排序）"""
+    user_id = get_user_id()
+    if not user_id:
+        return R.unauthorized_resp("未登录")
+
+    applications, total = await ApplicationService.list_my_audit_history(
+        db, user_id, pageNum, pageSize,
+    )
+    return R.success_resp({
+        "list": [format_application(a) for a in applications],
+        "total": total,
+        "pageNum": pageNum,
+        "pageSize": pageSize,
     })
 
 
@@ -492,8 +555,8 @@ def get_application_status_text(status: str) -> str:
         ApplicationStatus.APPLYING.value: "审核中",
         ApplicationStatus.PASSED.value: "已通过",
         ApplicationStatus.REJECTED.value: "已驳回",
-        ApplicationStatus.WITHDRAWN.value: "已撤回",
-        ApplicationStatus.DISCARDED.value: "已丢弃",
+        ApplicationStatus.CANCELLED.value: "已取消",
+        ApplicationStatus.REVOKED.value: "已撤回",
     }.get(status, "未知")
 
 

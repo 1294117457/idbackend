@@ -1,4 +1,4 @@
-"""申请域模型（v4.2）
+"""申请域模型（v4.3）
 
 三个实体:
   - Application          申请主表（核心）
@@ -7,49 +7,35 @@
 """
 from __future__ import annotations
 
+import enum
 from decimal import Decimal
 from typing import Optional, List
 
 from sqlalchemy import (
-    String, Integer, ForeignKey, DECIMAL, Text, Enum as SAEnum, Index,
+    String, Integer, ForeignKey, DECIMAL, Numeric, Text, Enum as SAEnum, Index,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-import enum
 
 from .base import Base, TimestampMixin
 
-
 # ════════════════════════════════════════════════════════════════════════
-# 状态枚举（v4.2 字符串 6 态）
+# 状态枚举（v4.3 字符串 5 态）
 # ════════════════════════════════════════════════════════════════════════
 class ApplicationStatus(str, enum.Enum):
-    """application 状态机（v4.2 字符串 6 态）"""
+    """application 状态机（v4.3 字符串 5 态）"""
     DRAFT = "DRAFT"          # 草稿（学生可编辑）
     APPLYING = "APPLYING"    # 审核中（学生锁定）
-    PASSED = "PASSED"        # 通过（终态）
-    REJECTED = "REJECTED"    # 驳回（可 RESUBMIT）
-    WITHDRAWN = "WITHDRAWN"  # 学生主动撤回（终态）
-    DISCARDED = "DISCARDED"  # 学生丢弃草稿（终态）
+    PASSED = "PASSED"       # 通过（终态）
+    REJECTED = "REJECTED"   # 拒绝（可重提，老师操作）
+    CANCELLED = "CANCELLED" # 已取消（终态，学生主动取消）
+    REVOKED = "REVOKED"     # 已撤回（终态，老师撤回通过的申请）
 
 
 class ProofStatus(str, enum.Enum):
-    """proof 状态机（v4.2 字符串 3 态）"""
+    """proof 状态机（v4.3 字符串 3 态）"""
     PENDING = "PENDING"
     APPROVED = "APPROVED"
     REJECTED = "REJECTED"
-
-
-class ApplicationOperationType(str, enum.Enum):
-    """application 层面的事件类型（v4.2 不含 REVIEW_PROOF）"""
-    CREATE_DRAFT = "CREATE_DRAFT"
-    UPDATE_DRAFT = "UPDATE_DRAFT"      # 本期不触发，结构保留
-    DISCARD_DRAFT = "DISCARD_DRAFT"
-    SUBMIT = "SUBMIT"
-    PASS = "PASS"
-    REJECT = "REJECT"
-    RESUBMIT = "RESUBMIT"
-    WITHDRAW = "WITHDRAW"
-    REVOKE = "REVOKE"                  # 本期不实现，结构保留
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -57,7 +43,7 @@ class ApplicationOperationType(str, enum.Enum):
 # ════════════════════════════════════════════════════════════════════════
 class Application(Base, TimestampMixin):
     """加分申请表（核心实体）"""
-    __tablename__ = "score_applications"
+    __tablename__ = "applications"
 
     # 基础
     user_id: Mapped[int] = mapped_column(
@@ -78,7 +64,7 @@ class Application(Base, TimestampMixin):
         DECIMAL(5, 2), default=0,
     )                                                       # PASSED 时一次性写为 apply_score
 
-    # 状态（v4.2 字符串 6 态）
+    # 状态（v4.3 字符串 5 态）
     status: Mapped[str] = mapped_column(
         String(20),
         SAEnum(ApplicationStatus, native_enum=False, length=20, validate_strings=True),
@@ -96,12 +82,14 @@ class Application(Base, TimestampMixin):
         back_populates="application",
         cascade="all, delete-orphan",
         passive_deletes=True,
+        lazy="selectin",
     )
     operations: Mapped[List["ApplicationOperation"]] = relationship(
         back_populates="application",
         cascade="all, delete-orphan",
         passive_deletes=True,
         order_by="ApplicationOperation.created_at",
+        lazy="selectin",
     )
 
     __table_args__ = (
@@ -125,7 +113,7 @@ class ApplicationProof(Base, TimestampMixin):
     __tablename__ = "application_proofs"
 
     application_id: Mapped[int] = mapped_column(
-        ForeignKey("score_applications.id", ondelete="CASCADE"),
+        ForeignKey("applications.id", ondelete="CASCADE"),
     )
     file_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("file_metadata.id"), nullable=True,
@@ -153,21 +141,23 @@ class ApplicationProof(Base, TimestampMixin):
 class ApplicationOperation(Base, TimestampMixin):
     """申请操作审计日志（application 层）
 
-    v4.2 关键决策：
-      - 仅记 application 级别的事件，不记 proof 状态变更
+    v4.3 关键决策：
+      - operation 字段存储操作后的 application.status（DRAFT/APPLYING/PASSED/REJECTED/CANCELLED/REVOKED）
+      - 没有 operator_type 字段（谁操作由业务逻辑隐含）
       - 没有 target_id / target_type 字段
       - 草稿修改（save_draft）本期不写——噪音大
     """
     __tablename__ = "application_operation"
 
     application_id: Mapped[int] = mapped_column(
-        ForeignKey("score_applications.id", ondelete="CASCADE"),
+        ForeignKey("applications.id", ondelete="CASCADE"),
     )
     operator_id: Mapped[int] = mapped_column(Integer)
     operator_name: Mapped[str] = mapped_column(String(100))
+    # 操作后 application 的状态（DRAFT / APPLYING / PASSED / REJECTED / CANCELLED / REVOKED）
     operation: Mapped[str] = mapped_column(
-        String(30),
-        SAEnum(ApplicationOperationType, native_enum=False, length=30, validate_strings=True),
+        String(20),
+        SAEnum(ApplicationStatus, native_enum=False, length=20, validate_strings=True),
     )
     remark: Mapped[Optional[str]] = mapped_column(Text)
 
@@ -175,5 +165,5 @@ class ApplicationOperation(Base, TimestampMixin):
 
     __table_args__ = (
         Index("idx_operation_application", "application_id"),
-        Index("idx_operation_app_op", "application_id", "operation"),
+        Index("idx_operation_app_status", "application_id", "operation"),
     )

@@ -31,7 +31,7 @@ class ScoreData(Base, TimestampMixin):
         ForeignKey("users.id", ondelete="CASCADE"),
     )
     application_id: Mapped[int] = mapped_column(
-        ForeignKey("score_applications.id", ondelete="CASCADE"),
+        ForeignKey("applications.id", ondelete="CASCADE"),
     )
     category_id: Mapped[int] = mapped_column(
         ForeignKey("template_category.id"),

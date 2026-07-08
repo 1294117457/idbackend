@@ -6,7 +6,6 @@ from src.models.application import (
     ApplicationProof,
     ApplicationOperation,
     ApplicationStatus,
-    ApplicationOperationType,
     ProofStatus,
 )
 from src.models.score_data import ScoreData
@@ -35,7 +34,6 @@ __all__ = [
     "ApplicationProof",
     "ApplicationOperation",
     "ApplicationStatus",
-    "ApplicationOperationType",
     "ProofStatus",
     # ScoreData
     "ScoreData",

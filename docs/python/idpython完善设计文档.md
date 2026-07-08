@@ -718,8 +718,8 @@ ALTER TABLE rule_attributes
 ADD CONSTRAINT uk_code_value_type
 UNIQUE (attribute_code, attribute_value(100), attribute_type);
 
--- score_applications 添加字段
-ALTER TABLE score_applications
+-- applications 添加字段
+ALTER TABLE applications
 ADD COLUMN revoke_reason VARCHAR(255) AFTER gain_score;
 
 -- demand_applications 表结构

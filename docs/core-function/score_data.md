@@ -12,7 +12,7 @@
 CREATE TABLE score_data (
     id             SERIAL PRIMARY KEY,
     user_id        INTEGER NOT NULL REFERENCES users(id),
-    application_id INTEGER NOT NULL REFERENCES score_applications(id),
+    application_id INTEGER NOT NULL REFERENCES applications(id),
     category_id    INTEGER NOT NULL REFERENCES template_category(id),  -- 叶子节点
     name           VARCHAR(100),                  -- 模板名快照，展示用
     score          DECIMAL(5,2) NOT NULL,         -- application.apply_score 快照（不是 gain_score）

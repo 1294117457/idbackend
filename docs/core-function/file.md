@@ -812,7 +812,7 @@ def _build_object_name(category: FileCategory, original_name: str, user_id: int)
 **关系链**：
 
 ```
-score_applications (申请人 + 申请本身)
+applications (申请人 + 申请本身)
    ↑ 1:N
 score_application_proofs (证明材料列表)
    ↑ N:1
