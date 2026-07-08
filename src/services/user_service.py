@@ -17,7 +17,7 @@ class UserService:
     Service 层签名约定：
     - 写接口统一接 DTO Request 对象（路由不展开字段）
     - 业务异常统一用 BusinessError 子类（见 src.app.schemas.errors）
-    - 单字段副作用（如 confirm_student 写 is_confirmed）由 service 内部直接 ORM 写回，不走 DTO
+    - 单字段副作用由 service 内部直接 ORM 写回，不走 DTO
     """
 
     @staticmethod
@@ -117,29 +117,22 @@ class UserService:
         return user
 
     @staticmethod
-    async def confirm_student(
-        db: AsyncSession,
-        user_id: int,
-    ) -> User:
-        """确认学生身份（单字段副作用，直接 ORM 写回）"""
-        user = await UserService.get_user_by_id_or_raise(db, user_id)
-        user.is_confirmed = True
-        await db.commit()
-        await db.refresh(user)
-        return user
-
-    @staticmethod
     async def get_user_scores(
         db: AsyncSession,
         user_id: int,
     ) -> dict:
-        """获取用户积分（返回 UserScoreVO dict —— 前端约定格式）"""
-        from src.app.schemas.user import UserScoreVO
+        """获取用户积分（从 score_info 读取）
 
+        如果 score_info 为空，返回空结构。
+        """
         user = await UserService.get_user_by_id(db, user_id)
-        if not user:
-            return {"academic": 0, "specialty": 0, "comprehensive": 0, "total": 0}
-        return UserScoreVO.from_orm_to_vo(user).model_dump()
+        if not user or not user.score_info:
+            return {"categories": {}, "total": 0.0}
+        return {
+            "categories": user.score_info.get("categories", {}),
+            "total": user.score_info.get("total", 0.0),
+            "calculated_at": user.score_info.get("calculated_at"),
+        }
 
     @staticmethod
     async def list_users(

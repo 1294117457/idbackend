@@ -103,24 +103,12 @@ class User(Base, TimestampMixin):
     graduation_year: Mapped[Optional[int]] = mapped_column(Integer)
     enrollment_year: Mapped[Optional[int]] = mapped_column(Integer)
     major: Mapped[Optional[str]] = mapped_column(String(100))
-    student_id: Mapped[Optional[str]] = mapped_column(String(50))
-    gpa: Mapped[Optional[float]] = mapped_column()
-    is_confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
 
-    # 成绩相关 (JSON 存储)
-    demand_value: Mapped[Optional[dict]] = mapped_column(JSON, default=dict)
-    demand_files: Mapped[Optional[dict]] = mapped_column(JSON, default=dict)
-
-    # v4.2 快照：recalculate 写入（避免每次聚合重算）
+    # 成绩快照（由 recalculate 写入）
     score_info: Mapped[Optional[dict]] = mapped_column(JSON, default=dict)
 
-    # v4.2 备用扩展槽（学生维度动态扩展，避免再开新表）
+    # 备用扩展槽（学生维度动态扩展）
     extra_info: Mapped[Optional[dict]] = mapped_column(JSON, default=dict)
-
-    # 分数（v4.2 兼容字段——保留以便旧 API 不报错，新代码读 user.score_info）
-    academic_score: Mapped[float] = mapped_column(default=0.0)
-    specialty_score: Mapped[float] = mapped_column(default=0.0)
-    comprehensive_score: Mapped[float] = mapped_column(default=0.0)
 
     # 关系
     roles: Mapped[List["Role"]] = relationship(
@@ -131,3 +119,16 @@ class User(Base, TimestampMixin):
     @property
     def is_active(self) -> bool:
         return self.status == UserStatus.ACTIVE.value
+
+    @staticmethod
+    def extract_student_id(username: str) -> Optional[str]:
+        """从 username 提取学号
+
+        规则: username 格式为 "学号@stu.xmu.edu.cn"
+        例如: "33120202201909@stu.xmu.edu.cn" -> "33120202201909"
+        """
+        if '@' in username:
+            prefix = username.split('@')[0]
+            if prefix.isdigit():
+                return prefix
+        return None

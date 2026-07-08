@@ -1,7 +1,7 @@
 """路由统一导出"""
 # ============== 路由 import ==============
 from src.app.routes.auth import router as auth_router
-from src.app.routes.user import router as user_router, system_router as user_system_router
+from src.app.routes.user import router as user_router, users_router as user_profile_router, system_router as user_system_router
 from src.app.routes.application import router as application_router
 from src.app.routes.score_data import router as score_data_router
 from src.app.routes.template import router as template_router
@@ -14,19 +14,18 @@ from src.app.routes.proof import router as proof_router
 from src.app.routes.role import router as role_router
 from src.app.routes.permission import router as permission_router
 from src.app.routes.system_config import router as system_config_router
-# 注：menu_router 已废弃，me 接口迁移至 user.system_router
 
 
 # ============== 注册顺序（按业务分组） ==============
-# 顺序很重要：路径匹配按注册顺序查找，特殊路由（如 health）放最前
 ROUTERS = [
     # 系统
     health_router,
     # 认证
     auth_router,
     # 用户
-    user_router,
-    user_system_router,
+    user_profile_router,  # /api/users/me
+    user_router,          # /api/user/admin/*
+    user_system_router,   # /api/system/user/me
     # 业务核心
     application_router,
     score_data_router,
@@ -53,6 +52,7 @@ def register_all_routes(app) -> None:
 __all__ = [
     "auth_router",
     "user_router",
+    "user_profile_router",
     "user_system_router",
     "application_router",
     "score_data_router",

@@ -4,8 +4,8 @@
 路由清单
 ═══════════════════════════════════════════════════════════════════════
 学生端:
-  GET  /api/score/summary                  拉自己的分数快照（命中或兜底 recalculate）
-  POST /api/score/recalculate              手动触发重算
+  GET  /api/score/me                  拉自己的分数快照（命中或兜底 recalculate）
+  POST /api/score/recalculate          手动触发重算
 
 管理员端:
   POST /api/score/recalculate-all          批量重算（遍历所有学生）
@@ -28,14 +28,14 @@ from src.services import ScoreDataService
 from src.models import User
 
 
-router = APIRouter(prefix="/api/score", tags=["分数流水"])
+router = APIRouter(prefix="/api/score", tags=["成绩"])
 
 
 # ════════════════════════════════════════════════════════════════════════
 # 学生端
 # ════════════════════════════════════════════════════════════════════════
-@router.get("/summary")
-async def get_summary(
+@router.get("/me")
+async def get_my_score(
     db: AsyncSession = Depends(get_db),
 ):
     """拉自己的分数快照（未命中则兜底 recalculate）"""
@@ -44,7 +44,11 @@ async def get_summary(
         return R.unauthorized_resp("未登录")
 
     result = await ScoreDataService.get_summary(db, user_id)
-    return R.success_resp(result)
+    # 返回 score_info，hit 仅用于前端判断是否需要刷新
+    return R.success_resp({
+        "hit": result.get("hit", False),
+        "score_info": result.get("score_info", {})
+    })
 
 
 @router.post("/recalculate")
@@ -57,10 +61,7 @@ async def recalculate_self(
         return R.unauthorized_resp("未登录")
 
     score_info = await ScoreDataService.recalculate(db, user_id)
-    return R.success_resp({
-        "hit": True,
-        "score_info": score_info,
-    })
+    return R.success_resp(score_info, msg="成绩已重新计算")
 
 
 # ════════════════════════════════════════════════════════════════════════

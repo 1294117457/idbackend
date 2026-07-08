@@ -80,24 +80,15 @@ from src.app.schemas.template import (  # noqa: E402, F401
 # ========== 用户 ==========
 
 from src.app.schemas.user import (  # noqa: E402, F401
-    UpdateProfileRequest,
-    BindStudentRequest,
-    UpdateStudentRequest,
     UpdateUserStatusRequest,
     CreateUserRequest,
     BatchCreateUserRequest,
     UserQueryRequest,
-    UserProfileVO,
-    UserCompleteInfoVO,
-    UserStudentInfoVO,
+    UpdateUserMeRequest,
+    CurrentUserInfoVO,
     UserAdminListItemVO,
     UserAdminListVO,
-    UserScoreVO,
-    CurrentUserInfoVO,
 )
-
-# 别名：历史上 UserResponse = 当前最全的 UserCompleteInfoVO（兼容旧引用）
-UserResponse = UserCompleteInfoVO
 
 # ========== 角色 ==========
 

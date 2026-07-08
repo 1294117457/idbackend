@@ -3,6 +3,7 @@ from typing import Optional, List
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from services import UserService, TemplateService, ApplicationService
+from src.models.user import User
 
 
 async def get_user_info_tool(
@@ -18,12 +19,11 @@ async def get_user_info_tool(
         "userId": user.id,
         "username": user.username,
         "fullName": user.full_name,
-        "studentId": user.student_id,
+        "studentId": User.extract_student_id(user.username),
         "major": user.major,
-        "isConfirmed": user.is_confirmed,
-        "academicScore": user.academic_score,
-        "specialtyScore": user.specialty_score,
-        "comprehensiveScore": user.comprehensive_score,
+        "grade": user.grade,
+        "enrollmentYear": user.enrollment_year,
+        "graduationYear": user.graduation_year,
     }
 
 

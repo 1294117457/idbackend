@@ -1,11 +1,18 @@
-"""用户路由 - 兼容前端
+"""用户路由
 
-架构约定：
-- Request 直接喂给 service（service 内部用 req.apply_to 写回 ORM）
-- 业务异常 → 由全局 exception_handlers 自动翻译为 HTTP 响应
-- VO 由 schema.from_orm_to_vo 生成，路由只用 model_dump() 透传
-- 分页场景走 Page.from_list_to_page
-- 路由层不再 try/except ValueError
+学生端:
+  GET  /api/users/me        - 获取账户信息
+  PUT  /api/users/me        - 更新账户信息
+
+管理端:
+  GET  /api/user/me/roles           - 获取我的角色
+  GET  /api/user/{user_id}/roles   - 获取用户角色
+  POST /api/user/{user_id}/roles    - 分配用户角色
+  GET  /api/user/admin/list         - 用户列表
+  POST /api/user/admin/create       - 创建用户
+  POST /api/user/admin/batch-create - 批量创建用户
+  DELETE /api/user/admin/{user_id}  - 删除用户
+  PUT  /api/user/admin/{user_id}/status - 更新用户状态
 """
 from typing import Annotated
 
@@ -15,101 +22,71 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.app.deps import get_db
 from src.app.context import get_user_id, get_user_roles, get_user_permissions
 from src.app import response as R
+from src.services import UserProfileService, UserService
+from src.services.rbac_service import RbacService
 from src.app.schemas.user import (
-    UpdateProfileRequest,
-    BindStudentRequest,
-    UpdateStudentRequest,
     UpdateUserStatusRequest,
     CreateUserRequest,
     BatchCreateUserRequest,
     UserQueryRequest,
-    UserProfileVO,
-    UserCompleteInfoVO,
-    UserStudentInfoVO,
     UserAdminListItemVO,
     UserAdminListVO,
     CurrentUserInfoVO,
+    UpdateUserMeRequest,
 )
-from src.services import UserService
-from src.services.rbac_service import RbacService
 from src.app.schemas.page import Page
 
-# /api/user/** 下的标准用户路由
-router = APIRouter(prefix="/api/user", tags=["用户"])
 
-# /api/system/user/me 等系统级用户接口（无 prefix，独立挂载）
-system_router = APIRouter(tags=["用户"])
+# ========== 学生端账户信息 ==========
 
-
-# ========== 用户基本信息 ==========
-
-@router.get("/profile")
-async def get_profile(db: AsyncSession = Depends(get_db)):
-    """获取用户基本信息"""
-    user = await UserService.get_user_by_id_or_raise(db, get_user_id())
-    return R.success_resp(
-        UserProfileVO.from_orm_to_vo(user, roles=get_user_roles()).model_dump()
-    )
+# /api/users/* - 学生端账户信息路由
+users_router = APIRouter(prefix="/api/users", tags=["用户账户信息"])
 
 
-@router.put("/profile")
-async def update_profile(
-    req: UpdateProfileRequest,
+@users_router.get("/me")
+async def get_my_profile(
     db: AsyncSession = Depends(get_db),
 ):
-    """更新用户基本信息（DTO.apply_to 写回 ORM）"""
-    await UserService.update_user_from_request(db, get_user_id(), req)
-    return R.success_resp(msg="更新成功")
+    """获取当前用户的账户信息
 
-
-@router.get("/complete-info")
-async def get_complete_info(db: AsyncSession = Depends(get_db)):
-    """获取完整用户信息 (包含学生信息)"""
-    user = await UserService.get_user_by_id_or_raise(db, get_user_id())
-    return R.success_resp(UserCompleteInfoVO.from_orm_to_vo(user).model_dump())
-
-
-# ========== 学生信息 ==========
-
-@router.post("/student/bind")
-async def bind_student(
-    req: BindStudentRequest,
-    db: AsyncSession = Depends(get_db),
-):
-    """绑定学生信息"""
+    返回: id, student_id, username, full_name, phone, avatar, grade, enrollment_year, graduation_year, major
+    """
     user_id = get_user_id()
-    user = await UserService.bind_student_from_request(db, user_id, req)
-    return R.success_resp(
-        {"userId": user.id, "status": "success"},
-        msg="绑定成功",
-    )
+    if not user_id:
+        return R.unauthorized_resp("未登录")
+
+    profile = await UserProfileService.get_profile(db, user_id)
+    if not profile:
+        return R.error_resp("用户不存在", code=404)
+
+    return R.success_resp(profile)
 
 
-@router.get("/student/info")
-async def get_student_info(db: AsyncSession = Depends(get_db)):
-    """获取学生信息"""
-    user = await UserService.get_user_by_id_or_raise(db, get_user_id())
-    return R.success_resp(UserStudentInfoVO.from_orm_to_vo(user).model_dump())
-
-
-@router.put("/student/info")
-async def update_student_info(
-    req: UpdateStudentRequest,
+@users_router.put("/me")
+async def update_my_profile(
+    req: UpdateUserMeRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """更新学生信息"""
-    await UserService.update_user_from_request(db, get_user_id(), req)
-    return R.success_resp(msg="更新成功")
+    """更新当前用户的账户信息
+
+    可更新字段: phone, full_name, avatar, grade, enrollment_year, graduation_year, major
+    不可更新: username, student_id（从 username 提取）
+    """
+    user_id = get_user_id()
+    if not user_id:
+        return R.unauthorized_resp("未登录")
+
+    update_data = req.model_dump(exclude_none=True)
+    modified = await UserProfileService.update_profile(db, user_id, update_data)
+
+    return R.success_resp(msg="更新成功" if modified else "无变更")
 
 
-@router.post("/student/confirm")
-async def confirm_student(db: AsyncSession = Depends(get_db)):
-    """确认学生身份"""
-    await UserService.confirm_student(db, get_user_id())
-    return R.success_resp(msg="确认成功")
+# ========== 管理端用户路由 ==========
 
+# /api/user/* - 管理端用户路由
+router = APIRouter(prefix="/api/user", tags=["用户管理"])
 
-# ========== 角色相关 ==========
 
 @router.get("/me/roles")
 async def get_my_roles():
@@ -140,14 +117,12 @@ async def assign_user_roles(
     return R.success_resp(msg="角色分配成功")
 
 
-# ========== 管理员接口 ==========
-
 @router.get("/admin/list")
 async def list_users(
     req: Annotated[UserQueryRequest, Query()],
     db: AsyncSession = Depends(get_db),
 ):
-    """获取用户列表 (管理员) —— service 直接返回 (users, total)，路由组装 Page"""
+    """获取用户列表 (管理员)"""
     users, total = await UserService.list_users(db, req)
 
     items = []
@@ -221,7 +196,7 @@ async def admin_create_user(
         {
             "userId": user.id,
             "username": user.username,
-            "password": password,  # 仅在管理员创建场景下回显初始密码
+            "password": password,
         },
         msg="用户创建成功",
     )
@@ -257,11 +232,14 @@ async def admin_batch_create_users(
     return R.success_resp({"created": created, "failed": failed})
 
 
-# ========== 当前登录用户信息 ==========
+# ========== 系统级接口（无 prefix） ==========
+
+system_router = APIRouter(tags=["用户"])
+
 
 @system_router.get("/api/system/user/me")
 async def get_current_user_info(db: AsyncSession = Depends(get_db)):
-    """获取当前用户信息（角色 + 权限均来自 ContextVar，无额外 DB 查询）"""
+    """获取当前用户信息（角色 + 权限均来自 ContextVar）"""
     user = await UserService.get_user_by_id_or_raise(db, get_user_id())
     return R.success_resp(
         CurrentUserInfoVO.from_orm_to_vo(
