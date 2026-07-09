@@ -214,15 +214,7 @@ class TemplateCategoryService:
         )
         descendant_ids = [c.id for c in descendants]
 
-        active_count = await TemplateCategoryRepository.count_active_applications(
-            db, descendant_ids
-        )
-        if active_count > 0:
-            raise ConflictError(
-                f"该分类及其子分类下还有 {active_count} 条未关闭的申请，禁止删除"
-            )
-
-        deleted_count = await TemplateCategoryRepository.delete_many(db, descendant_ids)
+        deleted_count = await TemplateCategoryRepository.soft_delete_many(db, descendant_ids)
         await TemplateCategoryRepository.commit(db)
         return deleted_count
 
@@ -240,9 +232,6 @@ class TemplateCategoryService:
         )
         descendant_ids = [c.id for c in descendants]
 
-        active_count = await TemplateCategoryRepository.count_active_applications(
-            db, descendant_ids
-        )
         template_count = await TemplateCategoryRepository.count_templates(
             db, descendant_ids
         )
@@ -251,7 +240,6 @@ class TemplateCategoryService:
             "category": category,
             "descendants": descendants,
             "totalDeletedCount": len(descendants),
-            "activeApplicationCount": active_count,
             "templateCount": template_count,
         }
 

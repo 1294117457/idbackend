@@ -179,7 +179,6 @@ class TemplateCategoryDeletePreviewVO(BaseModel):
     category: TemplateCategoryVO
     descendants: List[TemplateCategoryVO]
     totalDeletedCount: int
-    activeApplicationCount: int
     templateCount: int
 
     @classmethod
@@ -190,7 +189,6 @@ class TemplateCategoryDeletePreviewVO(BaseModel):
                 TemplateCategoryVO.from_orm_to_vo(d) for d in payload["descendants"]
             ],
             totalDeletedCount=payload["totalDeletedCount"],
-            activeApplicationCount=payload["activeApplicationCount"],
             templateCount=payload["templateCount"],
         )
 

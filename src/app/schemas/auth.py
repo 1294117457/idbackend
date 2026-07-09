@@ -54,6 +54,8 @@ class SendCodeRequest(BaseModel):
 
     email: str = Field(...)
     type: str = Field(default="register", description="register / reset")
+    captchaId: Optional[str] = Field(default=None, description="图形验证码 ID")
+    captchaCode: Optional[str] = Field(default=None, description="图形验证码答案")
 
     @field_validator("email")
     @classmethod

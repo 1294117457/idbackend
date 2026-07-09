@@ -39,7 +39,7 @@ class TemplateCategory(Base, TimestampMixin):
 
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     parent_id: Mapped[Optional[int]] = mapped_column(
-        ForeignKey("template_category.id", ondelete="CASCADE"),
+        ForeignKey("template_category.id", ondelete="SET NULL"),
         nullable=True,
     )
     max_score: Mapped[float] = mapped_column(DECIMAL(5, 2), nullable=False)
@@ -48,6 +48,7 @@ class TemplateCategory(Base, TimestampMixin):
     )
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    is_deleted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     description: Mapped[Optional[str]] = mapped_column(String(255))
 
     # 自关联：children/parent（service 层组装树时使用）
@@ -72,4 +73,5 @@ class TemplateCategory(Base, TimestampMixin):
         CheckConstraint("max_score >= 0", name="ck_template_category_max_score_nonneg"),
         Index("idx_template_category_parent_sort", "parent_id", "sort_order", "id"),
         Index("idx_template_category_active", "is_active"),
+        Index("idx_template_category_deleted", "is_deleted"),
     )

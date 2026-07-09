@@ -140,6 +140,10 @@ async def send_email_code(
     _: None = Depends(ip_rate_limit("send_email_code", max_count=5, window_seconds=60)),
 ):
     """发送邮箱验证码（注册用）"""
+    if req.captchaId and req.captchaCode:
+        is_valid, err = await Captcha.verify(req.captchaId, req.captchaCode)
+        if not is_valid:
+            raise BadRequestError(err)
     ok, err = await EmailCode.send(req.email, req.type)
     if not ok:
         return R.too_many_requests_resp(err)
@@ -176,7 +180,7 @@ async def reset_password(
 
 @router.get("/captcha/generate")
 async def get_captcha(
-    _: None = Depends(ip_rate_limit("captcha", max_count=20, window_seconds=60)),
+    _: None = Depends(ip_rate_limit("captcha", max_count=100, window_seconds=60)),
 ):
     """获取图形验证码"""
     captcha_id, base64_image = await Captcha.generate()

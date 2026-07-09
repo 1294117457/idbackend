@@ -45,7 +45,7 @@ class TemplateCategoryRepository:
             TemplateCategory.parent_id.nulls_first(),
             TemplateCategory.sort_order.asc(),
             TemplateCategory.id.asc(),
-        )
+        ).where(TemplateCategory.is_deleted == False)
         if not include_inactive:
             stmt = stmt.where(TemplateCategory.is_active == True)
         if only_bindable:
@@ -60,7 +60,9 @@ class TemplateCategoryRepository:
         include_inactive: bool = False,
     ) -> int:
         """满足 is_active 条件（按需）的总数。"""
-        stmt = select(func.count(TemplateCategory.id))
+        stmt = select(func.count(TemplateCategory.id)).where(
+            TemplateCategory.is_deleted == False
+        )
         if not include_inactive:
             stmt = stmt.where(TemplateCategory.is_active == True)
         result = await db.execute(stmt)
@@ -154,7 +156,11 @@ class TemplateCategoryRepository:
             cond = TemplateCategory.parent_id == parent_id
 
         stmt = select(TemplateCategory).where(
-            and_(TemplateCategory.name == name, cond)
+            and_(
+                TemplateCategory.name == name,
+                TemplateCategory.is_deleted == False,
+                cond,
+            )
         )
         if exclude_id is not None:
             stmt = stmt.where(TemplateCategory.id != exclude_id)
@@ -190,7 +196,10 @@ class TemplateCategoryRepository:
     ) -> int:
         """统计直接子节点数量（利用 parent_id 索引，O(1) 级别）。"""
         stmt = select(func.count(TemplateCategory.id)).where(
-            TemplateCategory.parent_id == parent_id
+            and_(
+                TemplateCategory.parent_id == parent_id,
+                TemplateCategory.is_deleted == False,
+            )
         )
         result = await db.execute(stmt)
         return int(result.scalar_one() or 0)
@@ -297,11 +306,27 @@ class TemplateCategoryRepository:
         return int(result.rowcount or 0)
 
     @staticmethod
+    async def soft_delete_many(
+        db: AsyncSession,
+        category_ids: List[int],
+    ) -> int:
+        """批量软删除（is_deleted=True）；返回受影响行数。"""
+        if not category_ids:
+            return 0
+        stmt = (
+            update(TemplateCategory)
+            .where(TemplateCategory.id.in_(category_ids))
+            .values(is_deleted=True)
+        )
+        result = await db.execute(stmt)
+        return int(result.rowcount or 0)
+
+    @staticmethod
     async def delete_many(
         db: AsyncSession,
         category_ids: List[int],
     ) -> int:
-        """批量删除指定 id 的分类；返回受影响行数。"""
+        """批量物理删除指定 id 的分类；返回受影响行数。"""
         if not category_ids:
             return 0
         stmt = delete(TemplateCategory).where(
@@ -325,7 +350,11 @@ class TemplateCategoryRepository:
     @staticmethod
     async def _get_all(db: AsyncSession) -> List[TemplateCategory]:
         """全表查一遍（小幅数据专用）；用于 path / descendants 兜底。"""
-        stmt = select(TemplateCategory).order_by(TemplateCategory.id.asc())
+        stmt = (
+            select(TemplateCategory)
+            .where(TemplateCategory.is_deleted == False)
+            .order_by(TemplateCategory.id.asc())
+        )
         result = await db.execute(stmt)
         return list(result.scalars().all())
 
