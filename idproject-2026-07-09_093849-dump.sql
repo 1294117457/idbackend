@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict 7rA0mCLYoI7g4GbTpGcG7QEOhLchNdzLziOkATMqppXIz7d3IQ9xeK2o5Me5biG
+\restrict 3zSMZfPODBdyjwUehkJJkRTLomlFUXPtRuTwp73kNJEFpeyxEkNb9b5TvbJL349
 
 -- Dumped from database version 16.14 (Debian 16.14-1.pgdg12+1)
 -- Dumped by pg_dump version 16.14 (Ubuntu 16.14-0ubuntu0.24.04.1)
@@ -175,7 +175,7 @@ CREATE TABLE public.applications (
     category_id integer,
     rejected_count integer DEFAULT 0,
     approved_count integer DEFAULT 0 NOT NULL,
-    CONSTRAINT ck_application_status CHECK (((status)::text = ANY ((ARRAY['DRAFT'::character varying, 'APPLYING'::character varying, 'PASSED'::character varying, 'REJECTED'::character varying, 'WITHDRAWN'::character varying, 'DISCARDED'::character varying])::text[])))
+    CONSTRAINT ck_application_status CHECK (((status)::text = ANY ((ARRAY['DRAFT'::character varying, 'APPLYING'::character varying, 'PASSED'::character varying, 'REJECTED'::character varying, 'CANCELLED'::character varying, 'REVOKED'::character varying, 'WITHDRAWN'::character varying, 'DISCARDED'::character varying])::text[])))
 );
 
 
@@ -788,14 +788,6 @@ CREATE TABLE public.users (
     graduation_year integer,
     enrollment_year integer,
     major character varying(100),
-    student_id character varying(50),
-    gpa double precision,
-    is_confirmed boolean NOT NULL,
-    demand_value json,
-    demand_files json,
-    academic_score double precision NOT NULL,
-    specialty_score double precision NOT NULL,
-    comprehensive_score double precision NOT NULL,
     id integer NOT NULL,
     created_at timestamp without time zone NOT NULL,
     updated_at timestamp without time zone NOT NULL,
@@ -1546,5 +1538,5 @@ ALTER TABLE ONLY public.user_role
 -- PostgreSQL database dump complete
 --
 
-\unrestrict 7rA0mCLYoI7g4GbTpGcG7QEOhLchNdzLziOkATMqppXIz7d3IQ9xeK2o5Me5biG
+\unrestrict 3zSMZfPODBdyjwUehkJJkRTLomlFUXPtRuTwp73kNJEFpeyxEkNb9b5TvbJL349
 

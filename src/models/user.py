@@ -68,6 +68,20 @@ class Permission(Base, TimestampMixin):
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[bool] = mapped_column(Boolean, default=True)
 
+    # 分组字段（015 加）
+    # 参照 attribute 的 group_code/group_name 设计：
+    #   - group_code: 前端 GROUP BY 用
+    #   - group_name: 显示名（中文）
+    # permission 是代码层语义，不加 is_active / is_deprecated。
+    group_code: Mapped[str] = mapped_column(
+        String(50), nullable=False, default="other",
+        doc="权限分组技术 key（如 user/role/permission/template/rule/system）",
+    )
+    group_name: Mapped[str] = mapped_column(
+        String(100), nullable=False, default="其他",
+        doc="权限分组显示名（中文）",
+    )
+
     @property
     def code(self) -> str:
         return self.permission_code
