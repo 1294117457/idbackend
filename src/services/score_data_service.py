@@ -118,8 +118,14 @@ class ScoreDataService:
         }
 
         # Step 2: 加载分类树（含 is_bind_template，用于判断 isLeaf）
+        # 过滤 is_active=True 且 is_deleted=False（排除软删除的分类）
         result = await db.execute(
-            select(TemplateCategory).where(TemplateCategory.is_active == True)  # noqa: E712
+            select(TemplateCategory).where(
+                and_(
+                    TemplateCategory.is_active == True,  # noqa: E712
+                    TemplateCategory.is_deleted == False,  # noqa: E712
+                )
+            )
         )
         all_categories = list(result.scalars().all())
         cat_data = []
