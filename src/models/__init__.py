@@ -18,6 +18,7 @@ from src.models.template import (
     AttributeType,
 )
 from src.models.template_category import TemplateCategory
+from src.models.extra_info_field import ExtraInfoField
 from src.models.file import FileMetadata, FileCategory, PolicyDocument
 from src.models.config import SystemConfig, AgentSession
 
@@ -46,6 +47,8 @@ __all__ = [
     "AttributeType",
     # Template Category (Layer 1)
     "TemplateCategory",
+    # Extra Info Field
+    "ExtraInfoField",
     # File
     "FileMetadata",
     "FileCategory",

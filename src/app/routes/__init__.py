@@ -6,6 +6,7 @@ from src.app.routes.application import router as application_router
 from src.app.routes.score_data import router as score_data_router
 from src.app.routes.template import router as template_router
 from src.app.routes.template_category import router as template_category_router
+from src.app.routes.extra_info_field import router as extra_info_field_router
 from src.app.routes.rule import router as rule_router
 from src.app.routes.attribute import router as attribute_router
 from src.app.routes.file import router as file_router
@@ -33,6 +34,7 @@ ROUTERS = [
     rule_router,
     attribute_router,
     template_category_router,
+    extra_info_field_router,
     file_router,
     proof_router,
     # 权限管理
@@ -60,6 +62,7 @@ __all__ = [
     "rule_router",
     "attribute_router",
     "template_category_router",
+    "extra_info_field_router",
     "file_router",
     "health_router",
     "proof_router",

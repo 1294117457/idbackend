@@ -38,6 +38,10 @@ class UserQueryRequest(BaseModel):
     pageSize: int = Field(default=20, ge=1, le=100)
     username: Optional[str] = None
     fullName: Optional[str] = None
+    major: Optional[str] = Field(default=None, description="专业（模糊查询）")
+    grade: Optional[int] = Field(default=None, description="年级")
+    graduationYear: Optional[int] = Field(default=None, description="毕业年份")
+    enrollmentYear: Optional[int] = Field(default=None, description="入学年份")
 
 
 class UpdateUserMeRequest(BaseModel):
@@ -49,6 +53,14 @@ class UpdateUserMeRequest(BaseModel):
     enrollment_year: Optional[int] = Field(default=None, ge=2000, le=2100)
     graduation_year: Optional[int] = Field(default=None, ge=2000, le=2100)
     major: Optional[str] = Field(default=None, max_length=100)
+
+
+class UpdateUserExtraInfoRequest(BaseModel):
+    """更新用户扩展信息（PUT /api/users/me/extra-info）
+
+    extra_info 为 dict，key 为 f_{id} 格式，如 {"f_1": 425, "f_2": "pass"}
+    """
+    extra_info: dict = Field(..., description="扩展信息字典")
 
 
 # ========== 响应 VO ==========
@@ -89,10 +101,13 @@ class UserAdminListItemVO(BaseModel):
     status: str
     lastLoginAt: Optional[str]
     fullName: Optional[str]
+    studentId: Optional[str]
     major: Optional[str]
     grade: Optional[int]
     graduationYear: Optional[int]
-    studentId: Optional[str]
+    enrollmentYear: Optional[int]
+    scoreInfo: Optional[dict] = Field(default_factory=dict, description="积分信息")
+    extraInfo: Optional[dict] = Field(default_factory=dict, description="扩展信息")
 
     @classmethod
     def from_orm_to_vo(cls, obj, *, roles: Optional[List[str]] = None) -> "UserAdminListItemVO":
@@ -104,10 +119,13 @@ class UserAdminListItemVO(BaseModel):
             status=obj.status,
             lastLoginAt=obj.last_login_at,
             fullName=obj.full_name,
+            studentId=obj.extract_student_id(obj.username),
             major=obj.major,
             grade=obj.grade,
             graduationYear=obj.graduation_year,
-            studentId=obj.extract_student_id(obj.username),
+            enrollmentYear=obj.enrollment_year,
+            scoreInfo=obj.score_info or {},
+            extraInfo=obj.extra_info or {},
         )
 
 
@@ -122,6 +140,7 @@ __all__ = [
     "BatchCreateUserRequest",
     "UserQueryRequest",
     "UpdateUserMeRequest",
+    "UpdateUserExtraInfoRequest",
     "CurrentUserInfoVO",
     "UserAdminListItemVO",
     "UserAdminListVO",

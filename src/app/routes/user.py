@@ -33,6 +33,7 @@ from src.app.schemas.user import (
     UserAdminListVO,
     CurrentUserInfoVO,
     UpdateUserMeRequest,
+    UpdateUserExtraInfoRequest,
 )
 from src.app.schemas.page import Page
 
@@ -80,6 +81,20 @@ async def update_my_profile(
     modified = await UserProfileService.update_profile(db, user_id, update_data)
 
     return R.success_resp(msg="更新成功" if modified else "无变更")
+
+
+@users_router.put("/me/extra-info")
+async def update_my_extra_info(
+    req: UpdateUserExtraInfoRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """更新当前用户的扩展信息（extra_info）"""
+    user_id = get_user_id()
+    if not user_id:
+        return R.unauthorized_resp("未登录")
+
+    modified = await UserProfileService.update_extra_info(db, user_id, req.extra_info)
+    return R.success_resp(msg="保存成功" if modified else "无变更")
 
 
 # ========== 管理端用户路由 ==========

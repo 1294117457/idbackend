@@ -139,13 +139,21 @@ class UserService:
         db: AsyncSession,
         req,
     ) -> tuple[List[User], int]:
-        """获取用户列表（req: UserQueryRequest，支持 username / full_name 过滤 + 分页）"""
+        """获取用户列表（req: UserQueryRequest，支持多字段过滤 + 分页）"""
         query = select(User)
 
         if req.username:
             query = query.where(User.username.ilike(f"%{req.username}%"))
         if req.fullName:
             query = query.where(User.full_name.ilike(f"%{req.fullName}%"))
+        if req.major:
+            query = query.where(User.major.ilike(f"%{req.major}%"))
+        if req.grade is not None:
+            query = query.where(User.grade == req.grade)
+        if req.graduationYear is not None:
+            query = query.where(User.graduation_year == req.graduationYear)
+        if req.enrollmentYear is not None:
+            query = query.where(User.enrollment_year == req.enrollmentYear)
 
         count_stmt = select(func.count()).select_from(query.subquery())
         count_result = await db.execute(count_stmt)

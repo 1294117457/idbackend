@@ -24,8 +24,8 @@ def success_resp(data: Any = None, msg: str = "操作成功") -> JSONResponse:
 
 
 def created_resp(data: Any = None, msg: str = "创建成功") -> JSONResponse:
-    """201 资源创建成功"""
-    return _resp(201, msg, data)
+    """201 资源创建成功；body code 保持 200 供前端统一判断"""
+    return _resp(200, msg, data)
 
 
 # ===== 4xx 客户端错误 =====

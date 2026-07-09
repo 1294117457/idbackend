@@ -213,7 +213,7 @@ class ScoreDataService:
         total_score_val = sum(node_score.get(root["id"], Decimal("0")) for root in roots)
         now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
-        # Step 7: 写 user.score_info（旧 flat 结构，兼容管理端）
+        # Step 7: 写 user.score_info（含 flat categories + tree，供 profile 接口直接返回）
         user = await db.get(User, user_id)
         if not user:
             raise ValueError(f"用户(id={user_id})不存在")
@@ -232,6 +232,7 @@ class ScoreDataService:
             "calculated_at": now_iso,
             "categories": categories_result,
             "total": float(total_score_val),
+            "tree": tree,
         }
         user.score_info = db_result_dict
 
