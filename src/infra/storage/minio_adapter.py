@@ -88,7 +88,7 @@ class MinIOAdapter(Storage):
         )
 
     def get_public_url(self, key: str) -> str:
-        return f"{self._public_url}/{key}"
+        return f"{self._public_url}/{self._bucket}/{key}"
 
     def set_bucket_public_read_prefix(self, prefix: str) -> None:
         """对 bucket 下指定前缀应用 anonymous=download 策略
