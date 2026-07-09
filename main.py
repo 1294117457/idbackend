@@ -25,6 +25,8 @@ async def lifespan(app: FastAPI):
     try:
         storage = get_storage()
         storage.ensure_bucket()
+        # avatar 目录下的对象走直链，必须设公开读策略，否则前端 GET 头像 403
+        storage.set_bucket_public_read_prefix("avatar")
         print(f"[idpython] 存储后端就绪: {type(storage).__name__}")
     except Exception as e:
         print(f"[idpython] 存储初始化失败: {e}")

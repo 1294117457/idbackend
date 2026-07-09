@@ -1,8 +1,8 @@
-# 学生成绩体系实施指南（v1.0）
+# 学生成绩体系实施指南（v1.1）
 
 > **配套文档**：[四层职责设计 § 4-5](./四层职责设计.md) / [score_data 实施指南](./score_data.md)
 >
-> 本指南给出学生成绩体系的**实施层面**细节：数据库清理、账户信息接口、成绩计算算法。
+> 本指南给出学生成绩体系的**实施层面**细节：数据库清理、账户信息接口、成绩计算算法、学生前端展示。
 
 ---
 
@@ -573,3 +573,593 @@ users (
     extra_info      JSONB DEFAULT '{}'
 )
 ```
+
+---
+
+## 九、我的成绩 - 学生前端展示（v1.1 新增）
+
+> 本章基于第一章的 recalculate 算法 + score_data 流水，定义学生端"我的成绩"卡片的渲染规范与后端 `recalculate` 返回结构升级。
+>
+> **核心目标**：
+> - 后台 `template_category` 树可动态调整（增删改节点、改 max_score、停用分类）—— 学生下次刷新成绩后视图自动适配
+> - 卡片内直接渲染分类树 + 节点封顶分数；点击叶子节点在卡片下方**嵌套展示**该叶子下的 PASSED application 列表
+> - 停用分类（`is_active = FALSE`）不在学生端出现
+
+### 9.1 设计原则
+
+1. **以 `score_info` 为唯一前端数据源**——recalculate 后写入 DB，前端 GET `/api/score/me` 读取，禁止前端自己 GROUP BY `score_data` 重新聚合
+2. **封顶逻辑只在后端**——`recalculate` 算好封顶前后两个数（`raw` / `score`），前端只负责展示，不做二次封顶
+3. **application 列表随 `tree` 一次返回**——recalculate 阶段多一条 SQL 拉该用户 `score_data` 行，按 `category_id` 分组塞到对应叶子节点，前端无需再为列表发请求
+4. **节点是 N-ary 树，不限层级**——渲染用扁平列表 + paddingLeft 缩进模拟树形（不用 el-tree 组件，避免点击行为与嵌套 card 展开冲突）
+5. **叶子节点标识**——`is_bind_template = TRUE` 的分类是叶子，只有叶子节点才持有 `applications` 列表与"展开"按钮
+
+### 9.2 后端：`recalculate` / `get_summary` 返回结构升级
+
+#### 9.2.1 新返回结构
+
+```jsonc
+{
+  "calculated_at": "2026-07-08T17:05:00+08:00",
+  "total": 60.0,                   // 根节点封顶后分数；多根时为各根 score 之和
+  "tree": [                         // 多根数组；空 [] 表示暂无任何激活分类
+    {
+      "id": 1,
+      "name": "加分总计",
+      "max": 100.0,                 // 该分类 max_score（封顶上限）
+      "score": 60.0,                // 封顶后分数
+      "raw": 80.0,                  // 封顶前原始分（仅展示用，给学生看"超额"幅度）
+      "depth": 0,                   // 根到当前节点的层级（preorder 累加，根=0）
+      "isLeaf": false,              // is_bind_template：true=叶子，false=非叶子
+      "applications": [],           // 非叶子恒为 []
+      "children": [
+        {
+          "id": 3, "name": "学业加分", "max": 60.0,
+          "score": 30.0, "raw": 40.0, "depth": 2,
+          "isLeaf": false, "applications": [],
+          "children": [
+            {
+              "id": 5, "name": "竞赛奖项", "max": 20.0,
+              "score": 20.0, "raw": 25.0, "depth": 3,
+              "isLeaf": true,
+              "applications": [     // 仅叶子节点非空
+                {
+                  "id": 101,                  // application.id
+                  "name": "ACM亚洲区域赛",      // score_data.name 快照
+                  "score": 10.0,               // 该条流水分数
+                  "created_at": "2026-07-01T10:00:00+08:00"
+                },
+                { "id": 102, "name": "数学建模国赛", "score": 5.0,  "created_at": "..." },
+                { "id": 103, "name": "蓝桥杯省一",   "score": 5.0,  "created_at": "..." }
+              ],
+              "children": []                  // 叶子恒为 []
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+#### 9.2.2 算法追加步骤（在原有 § 3.4 基础上扩展）
+
+原 recalculate 4 步算法扩展到 **5 步**：
+
+```
+Step 1: 同 SQL 聚合叶子分类原始分
+        SELECT category_id, SUM(score)
+        FROM score_data WHERE user_id=? AND is_active=TRUE GROUP BY category_id
+
+Step 2: 同 SQL 拉所有激活分类 + 内存建树
+
+Step 3: 同后序递归封顶，得 result dict 和 categories 计算结果
+
+Step 4: 收集节点时同时计算 depth（preorder 累加）：
+        - children=[] 且 result 中无 children 字段 → 标记 isLeaf = is_bind_template
+        - 此时持有 raw（封顶前）和 score（封顶后）
+
+Step 5（新增）：多一条 SQL 拉该用户所有 is_active=TRUE 的 score_data 流水，
+                按 category_id 分组装进叶子节点：
+        SELECT application_id, category_id, name, score, created_at
+        FROM score_data
+        WHERE user_id=:uid AND is_active=TRUE
+        ORDER BY category_id, created_at DESC
+
+Step 6（结构调整）：把 result 转为树形结构 + 顶层包成
+        {
+          "calculated_at": ISO datetime,
+          "total": <根节点封顶后 score 之和，多根求和>,
+          "tree": [root1, root2, ...]
+        }
+
+Step 7: 原覆盖写入 score_info 的逻辑不变（DB 仍存 flat 结构以便其他接口复用）；
+        新的 tree 字段**不写 DB**——只作为接口返回的派生字段
+```
+
+**为什么 tree 不写 DB**：前端一次请求用即可；存在 DB 里反而要处理"分类树改了 → 老 tree 数据不一致"的清理逻辑。recalculate 是幂等的，每次调用都会重新组装。
+
+#### 9.2.3 代码实现要点（伪代码）
+
+```python
+async def recalculate(db, user_id: int) -> dict:
+    # Step 1-3 不变：拿 leaf_scores，构建分类树，后序封顶
+    # Step 4：把 flat result + 节点元数据组合成带元信息的 dict
+    node_info = {}   # {category_id: {name, max, score, raw, depth, isLeaf}}
+    flat_score = {}  # 原有 result 别名，下方 compute 用
+
+    def compute(node, depth):
+        # 用原 calc(node, leaf_scores) 算 score
+        raw = _raw_sum(node, leaf_scores)       # 封顶前
+        score = calc(node, leaf_scores)          # 封顶后
+        node_info[str(node.id)] = {
+            "name": node.name,
+            "max": float(node.max_score),
+            "score": score,
+            "raw": raw,
+            "depth": depth,
+            "isLeaf": node.is_bind_template,
+        }
+        for child in sorted(node.children, key=lambda c: (c.sort_order, c.id)):
+            compute(child, depth + 1)
+
+    def _raw_sum(node, leaf_scores):
+        if not node.children:
+            return leaf_scores.get(node.id, 0.0)
+        return sum(_raw_sum(c, leaf_scores) for c in node.children)
+
+    # Step 5：拉 application 列表
+    app_rows = await db.execute(text("""
+        SELECT application_id, category_id, name, score, created_at
+        FROM score_data
+        WHERE user_id = :uid AND is_active = TRUE
+        ORDER BY category_id, created_at DESC
+    """), {"uid": user_id})
+    apps_by_cat = defaultdict(list)
+    for r in app_rows:
+        apps_by_cat[r.category_id].append({
+            "id": r.application_id,
+            "name": r.name,
+            "score": float(r.score),
+            "created_at": r.created_at.isoformat(),
+        })
+
+    # Step 6：组装树形结构
+    def build(node, depth):
+        info = node_info[str(node.id)]
+        children_list = []
+        for child in sorted(node.children, key=lambda c: (c.sort_order, c.id)):
+            children_list.append(build(child, depth + 1))
+        return {
+            "id": node.id,
+            "name": info["name"],
+            "max": info["max"],
+            "score": info["score"],
+            "raw": info["raw"],
+            "depth": info["depth"],
+            "isLeaf": info["isLeaf"],
+            "applications": apps_by_cat.get(node.id, []) if info["isLeaf"] else [],
+            "children": children_list,
+        }
+
+    all_categories = (await db.execute(text(
+        "SELECT * FROM template_category WHERE is_active = TRUE ORDER BY parent_id NULLS FIRST, sort_order, id"
+    ))).fetchall()
+    # ... 按原逻辑建 N-ary 树，root=parent_id IS NULL 的节点
+    tree = []
+    for root in roots:
+        # 先 compute(root, 0) 把整棵子树填充到 node_info
+        compute(root, 0)
+        tree.append(build(root, 0))
+
+    total = sum(t["score"] for t in tree)
+
+    response = {
+        "calculated_at": datetime.now().isoformat(),
+        "total": total,
+        "tree": tree,
+    }
+
+    # Step 7：DB 仍存 flat 结构（兼容其他接口），新 tree 字段只作为返回
+    flat = _flatten_for_db(node_info)   # 原 result dict 形态
+    await db.execute(
+        "UPDATE users SET score_info = :info WHERE id = :uid",
+        {"info": json.dumps({
+            "calculated_at": response["calculated_at"],
+            "categories": flat,
+            "total": total,
+        }), "uid": user_id}
+    )
+    return response
+```
+
+**SQL 总量**：5 条（4 原有 + 1 新增 application 列表）。仍然是 O(1)，无 N+1。
+
+**`get_summary` 同步升级**：调用 recalculate 后直接把 `response` 返回前端，不再单独写 flat dict。
+
+### 9.3 路由变化
+
+| Method | Path | 行为 |
+|---|---|---|
+| `GET  /api/score/me`        | 调 `get_summary` → 返回新 `tree` 结构 |
+| `POST /api/score/recalculate` | 调 `recalculate` → 返回新 `tree` 结构 |
+
+其他（`/api/score/recalculate-all` 管理端、`/api/score/recalculate-by-admin` 管理端）仍返回旧 flat 结构，不影响管理端。
+
+### 9.4 前端：profile 页面新加 card
+
+#### 9.4.1 布局
+
+```
+┌─ 我的成绩 ─────────────────────────[刷新成绩]┐
+│                                            │
+│         60.0                                │
+│         / 100      总加分上限               │
+│                                            │
+│  上次计算：2026-07-08 17:05                 │
+│  ─────────────────────────────────────     │
+│                                            │
+│  加分总计            ██████░░ 60.0 / 100    │
+│    加分              ██████░░ 60.0 / 80     │
+│      学业加分        ████░░░░ 30.0 / 60     │
+│        竞赛奖项      ████████ 20.0 / 20  [3 项]│  ← 叶子节点，右侧按钮点击展开
+│      ┌────────────────────────────────────┐│
+│      │「竞赛奖项」下的申请（共 3 项）      ││   ← 嵌套 card（仅叶子）
+│      │ ACM亚洲区域赛        10.0  07-01   ││
+│      │ 数学建模国赛          5.0  06-15   ││
+│      │ 蓝桥杯省一            5.0  05-22   ││
+│      │                [查看详情 →]        ││
+│      └────────────────────────────────────┘│
+│        学术论文        ████████ 10.0 / 10    │
+│      专长加分          ████████ 30.0 / 30    │
+│        体育            ████░░░░ 30.0 / 30    │
+└────────────────────────────────────────────┘
+```
+
+#### 9.4.2 关键交互
+
+| 节点类型 | 渲染 | 可点击行为 |
+|---|---|---|
+| **根节点**（depth=0, isLeaf=false） | 行 + 进度条 + score/max | 无（仅展示） |
+| **中间节点**（isLeaf=false） | 行 + 进度条 + score/max；raw > max 时加 "超额 X" tag | 无 |
+| **叶子节点**（isLeaf=true, applications=[]） | 行 + 进度条 + 0/max | 无（无展开按钮） |
+| **叶子节点**（isLeaf=true, applications.length > 0） | 行 + 进度条 + score/max + 右侧 `N 项` 按钮 | 点按钮 → 在行下方展开嵌套 card |
+
+**展开语义**：
+- `expandedCategoryId: number | null` 单值——同时只展开 1 个叶子节点
+- 点同一个叶子按钮 → 折叠（toggle）
+- 嵌套 card 内 `el-table` 列：`name` / `score` / `通过时间` / 操作（"详情" → 跳 `/application/{id}`）
+
+#### 9.4.3 示例代码（Vue 3 + Element Plus）
+
+```vue
+<script setup lang="ts">
+import { ref, computed, onMounted } from 'vue'
+import { ElMessage } from 'element-plus'
+import { Refresh } from '@element-plus/icons-vue'
+import { getMyScore, recalculateScore } from '@/api/components/apiScore'
+
+interface ScoreApplication {
+  id: number
+  name: string
+  score: number
+  created_at: string
+}
+
+interface ScoreTreeNode {
+  id: number
+  name: string
+  max: number
+  score: number
+  raw: number
+  depth: number
+  isLeaf: boolean
+  applications: ScoreApplication[]
+  children: ScoreTreeNode[]
+}
+
+interface ScoreTreeResponse {
+  calculated_at: string
+  total: number
+  tree: ScoreTreeNode[]
+}
+
+// 用深度优先把树拍扁成渲染数组
+function flattenTree(nodes: ScoreTreeNode[]): ScoreTreeNode[] {
+  const out: ScoreTreeNode[] = []
+  const walk = (ns: ScoreTreeNode[]) => {
+    for (const n of ns) {
+      out.push(n)
+      if (n.children?.length) walk(n.children)
+    }
+  }
+  walk(nodes)
+  return out
+}
+
+const loading = ref(true)
+const recalculating = ref(false)
+const scoreInfo = ref<ScoreTreeResponse | null>(null)
+const expandedCategoryId = ref<number | null>(null)
+
+const flatRows = computed(() =>
+  scoreInfo.value ? flattenTree(scoreInfo.value.tree) : []
+)
+const totalDisplay = computed(() => scoreInfo.value?.total ?? 0)
+const rootMax = computed(() => {
+  if (!scoreInfo.value?.tree?.length) return 0
+  return scoreInfo.value.tree.reduce((s, n) => s + n.max, 0)
+})
+const formattedCalculatedAt = computed(() => {
+  if (!scoreInfo.value?.calculated_at) return ''
+  return new Date(scoreInfo.value.calculated_at).toLocaleString('zh-CN')
+})
+
+const fetchScore = async () => {
+  loading.value = true
+  try {
+    const res = await getMyScore()
+    scoreInfo.value = res.data
+  } finally {
+    loading.value = false
+  }
+}
+
+const handleRecalculate = async () => {
+  recalculating.value = true
+  try {
+    const res = await recalculateScore()
+    scoreInfo.value = res.data
+    ElMessage.success('成绩已重新计算')
+  } finally {
+    recalculating.value = false
+  }
+}
+
+const toggleExpand = (node: ScoreTreeNode) => {
+  if (!node.isLeaf || !node.applications.length) return
+  expandedCategoryId.value = expandedCategoryId.value === node.id ? null : node.id
+}
+
+const formatTime = (iso: string) => new Date(iso).toLocaleString('zh-CN')
+
+const goApplicationDetail = (id: number) => {
+  // 跳转到申请详情页（已存在的 ApplyHistory 或 application 详情）
+  window.location.href = `/application/${id}`
+}
+
+onMounted(fetchScore)
+</script>
+
+<template>
+  <el-card>
+    <template #header>
+      <div class="flex items-center justify-between">
+        <h4 class="page-title">我的成绩</h4>
+        <el-button
+          type="primary"
+          :loading="recalculating"
+          @click="handleRecalculate"
+        >
+          <el-icon class="mr-1"><Refresh /></el-icon>
+          {{ scoreInfo ? '刷新成绩' : '计算成绩' }}
+        </el-button>
+      </div>
+    </template>
+
+    <div v-if="loading" class="flex justify-center py-10">
+      <el-icon class="is-loading" :size="32"><Loading /></el-icon>
+    </div>
+
+    <!-- 空状态 -->
+    <div v-else-if="!scoreInfo?.tree?.length" class="text-center py-10 text-gray-500">
+      <p>暂无激活分类</p>
+      <p class="text-xs mt-1">管理员尚未配置分类树</p>
+    </div>
+
+    <template v-else>
+      <!-- 总分大字 -->
+      <div class="text-center mb-6">
+        <div class="text-5xl font-bold text-primary">
+          {{ totalDisplay.toFixed(1) }}
+        </div>
+        <div class="text-sm text-gray-500 mt-1">
+          / {{ rootMax.toFixed(1) }} 总加分上限
+        </div>
+        <div v-if="formattedCalculatedAt" class="text-xs text-gray-400 mt-2">
+          上次计算：{{ formattedCalculatedAt }}
+        </div>
+      </div>
+
+      <!-- 扁平化行渲染 + 叶子行下方展开嵌套 card -->
+      <template v-for="node in flatRows" :key="node.id">
+        <div
+          class="flex items-center gap-3 py-2 hover:bg-gray-50 cursor-pointer"
+          :class="{ 'cursor-default': !node.isLeaf || !node.applications.length }"
+          :style="{ paddingLeft: (node.depth * 24 + 12) + 'px' }"
+          @click="toggleExpand(node)"
+        >
+          <span class="font-medium min-w-[120px]">{{ node.name }}</span>
+          <el-tag
+            v-if="node.raw > node.max"
+            size="small"
+            type="warning"
+            class="ml-1"
+          >
+            超额 {{ (node.raw - node.max).toFixed(1) }}
+          </el-tag>
+          <el-progress
+            :percentage="Math.min(100, (node.score / node.max) * 100)"
+            :stroke-width="6"
+            class="flex-1"
+            :show-text="false"
+          />
+          <span class="font-mono text-sm w-24 text-right">
+            {{ node.score.toFixed(1) }} / {{ node.max.toFixed(1) }}
+          </span>
+          <el-button
+            v-if="node.isLeaf && node.applications.length"
+            link
+            type="primary"
+            size="small"
+            @click.stop="toggleExpand(node)"
+          >
+            {{ expandedCategoryId === node.id ? '收起' : node.applications.length + ' 项' }}
+          </el-button>
+        </div>
+
+        <!-- 叶子展开：嵌套 card -->
+        <div
+          v-if="expandedCategoryId === node.id && node.applications.length"
+          class="mb-3"
+          :style="{ marginLeft: (node.depth * 24 + 36) + 'px' }"
+        >
+          <el-card shadow="never" class="bg-gray-50">
+            <template #header>
+              <span class="text-sm">
+                「{{ node.name }}」下的申请（共 {{ node.applications.length }} 项）
+              </span>
+            </template>
+            <el-table :data="node.applications" size="small">
+              <el-table-column prop="name" label="项目" />
+              <el-table-column
+                prop="score"
+                label="得分"
+                width="80"
+                align="right"
+              />
+              <el-table-column label="通过时间" width="180">
+                <template #default="{ row }">
+                  <span class="text-xs text-gray-500">
+                    {{ formatTime(row.created_at) }}
+                  </span>
+                </template>
+              </el-table-column>
+              <el-table-column label="操作" width="80" align="center">
+                <template #default="{ row }">
+                  <el-button
+                    link
+                    type="primary"
+                    size="small"
+                    @click="goApplicationDetail(row.id)"
+                  >
+                    详情
+                  </el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+          </el-card>
+        </div>
+      </template>
+    </template>
+  </el-card>
+</template>
+```
+
+#### 9.4.4 状态管理
+
+页面本地 `ref` 即可，不必上 Pinia——profile 页是单页独有数据。
+
+**空态 vs 已有数据态切换**：
+- 卡片右上按钮文案根据 `scoreInfo` 是否为空切换：
+  - `null` → "计算成绩"（首次进入）
+  - 已有 → "刷新成绩"
+- 学生点完后立刻看到新数据，按钮回到 "刷新成绩"
+
+### 9.5 政策变化适配矩阵
+
+| 后台操作 | recalculate 行为 | 学生下次刷新后看到 |
+|---|---|---|
+| 改了某分类 `max_score` | 该节点 `max` 字段变更；封顶重新计算 | 节点 `score` 按新上限重新封顶；进度条比例变化 |
+| 增了子分类 | 树多一个节点，depth 调整 | 树多一行（自动出现在父节点下） |
+| 删了某叶子（无未关 application） | 节点消失；其历史 PASSED 申请 score_data 不参与聚合 | 树少一行 |
+| 删了某中间节点（无未关 application，级联删子） | 该分支整段消失 | 学生可能在嵌套 card 里看不到原 application——但 score_data 行保留在 DB |
+| `is_active = FALSE` 某分类 | recalculate 时 `WHERE is_active = TRUE` 过滤掉 | 该节点直接从树里消失；其他不受影响 |
+| 启用（`FALSE → TRUE`） | 重新出现在树 | 学生下次刷新看到 |
+| 改 `is_bind_template`（由 template 解绑触发） | 是非叶子但当前无子节点的"伪叶子"——`isLeaf=false` 但 `children=[]`；前端按非叶子渲染（无 application 列表 + 无展开按钮） | 显示 0/max 的一行 |
+
+### 9.6 TypeScript 类型定义
+
+新增 `src/api/types/score.ts`：
+
+```typescript
+export interface ScoreApplication {
+  id: number                  // application.id
+  name: string                // score_data.name 快照
+  score: number
+  created_at: string          // ISO datetime
+}
+
+export interface ScoreTreeNode {
+  id: number
+  name: string
+  max: number
+  score: number               // 封顶后
+  raw: number                 // 封顶前
+  depth: number               // preorder 累加，根 = 0
+  isLeaf: boolean             // is_bind_template
+  applications: ScoreApplication[]
+  children: ScoreTreeNode[]
+}
+
+export interface ScoreTreeResponse {
+  calculated_at: string
+  total: number
+  tree: ScoreTreeNode[]
+}
+```
+
+### 9.7 边界情况
+
+| 情况 | 处理 |
+|---|---|
+| 用户没有任何 PASSED application | `tree` 各节点 `score = 0`、`applications = []`，UI 展示全 0 行；总分为 0 |
+| 用户有数据但 `template_category` 全停用 | `tree = []`，前端显示空状态 |
+| 多根节点（"加分总计" + "扣分总计"） | 总分 `total` 是所有根 score 之和；前端渲染时各自独立展示，根节点上不显示 rootMax（最大为各根 max 之和，但 UI 不强制总和等于该值） |
+| 分类被硬删除但学生历史 PASSED 申请还在 | score_data 行保留；但 recalculate 阶段该 category 不在树里，所以这条 application **不出现在任何叶子节点的 applications 列表中**——这条数据仅在 `GET /api/score/me` 失效；管理端列表视图仍可查 |
+| 同叶子下有 100+ 条 PASSED 申请 | 不分页（recalculate 一次性拉出来）；如未来需要分页，把 `applications` 字段改为只返前 10 条 + count 字段，前端按需再发请求 |
+| `raw > max` 同时该节点是叶子且 `applications` 为空 | 不可能（叶子 raw 只来自 score_data 求和，若 raw=0 但 max>0 才显示 0/max） |
+| `recalculate` 进行中用户多次点击 | 前端 `recalculating` loading 锁按钮 + 后端 recalculate 自身幂等（多次写入同一 score_info） |
+| 评分刷新过程中后台改了分类树 | recalculate 是"读时快照"——本次返回反映读时刻的树状态；下次再 recalculate 才反映新状态。可接受，不阻塞 |
+
+### 9.8 性能与扩展
+
+- **calculation 复杂度**：O(m + n)，m = 激活分类数（< 100），n = 该用户 score_data 行数（业务量级 < 200）。SQL 总数 5 条（含 application 列表）
+- **多根 total**：当前为各根 `score` 之和。如果业务希望"扣分独立展示"则前端不要用 total，由卡片独立展示各根
+- **历史成绩**：score_data 通过 `created_at` 日期范围查询历史 PASSED，不需 score_info 存历史（v4 设计）
+- **MQ 异步扩展**：未来若希望 PASSED 后立即更新视图，将 recalculate 改为 MQ consumer 异步触发；前端 GET 接口检测到 `score_info` 过期则自动 recalculate 一次（即当前 get_summary 兜底逻辑）
+
+### 9.9 相关文件清单（v1.1 新增）
+
+```
+src/
+  services/
+    score_data_service.py       # 升级：recalculate/get_summary 返回 tree
+  app/routes/
+    score.py                    # 接口返回值结构调整
+idfrontend/src/
+  api/types/
+    score.ts                    # 新增：ScoreTreeNode / ScoreTreeResponse
+  api/components/
+    apiScore.ts                 # 新增/补全：getMyScore / recalculateScore
+  views/profile/
+    index.vue                   # 追加第三个 card「我的成绩」
+```
+
+### 9.10 实施顺序（v1.1）
+
+1. **后端**：`score_data_service.py` 升级 `recalculate` / `get_summary` 返回结构（一次提交，包含 SQL 与组装逻辑）
+2. **后端**：路由 `/api/score/me` 与 `/api/score/recalculate` 透传新结构
+3. **前端**：新增 `score.ts` 类型
+4. **前端**：`profile/index.vue` 加第三个 card + 完整渲染逻辑
+5. **联调**：从空状态 → 提交一个 PASSED 申请 → 刷新 → 检查树形展开 + application 列表
+6. **回归**：后台改 max_score → 学生刷新 → UI 比例变化
+
+---
+
+## 十、版本变更记录
+
+| 版本 | 日期 | 改动 |
+|---|---|---|
+| v1.0 | 2026-07-08 | 初版：users 字段清理、/api/users/me、recalculate 算法 |
+| v1.1 | 2026-07-08 | 新增第九章"我的成绩 - 学生前端展示"：recalculate 返回 tree 结构、profile 加第三个 card、扁平行渲染 + 嵌套 application card、停用分类过滤、政策变化适配矩阵 |
+

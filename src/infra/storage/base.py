@@ -37,6 +37,14 @@ class Storage(ABC):
     def get_public_url(self, key: str) -> str:
         raise NotImplementedError
 
+    def set_bucket_public_read_prefix(self, prefix: str) -> None:
+        """将 bucket 指定前缀设为公开读（匿名下载）。
+
+        本地适配器无需实现，默认 no-op。
+        对象存储适配器（MinIO / S3）应 override 以调用 put_bucket_policy。
+        """
+        return None
+
     # ============= 生命周期 =============
 
     @abstractmethod

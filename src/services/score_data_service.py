@@ -1,26 +1,27 @@
-"""分数流水服务（v4.2）
+"""分数流水服务（v4.3）
 
 ═══════════════════════════════════════════════════════════════════════
 三个核心方法
 ═══════════════════════════════════════════════════════════════════════
 1. record() —— application.pass_application 同事务调用，写 score_data 行
 2. recalculate() —— 学生 / 管理员按需触发，全量聚合叶子分类 → 封顶 → 写 user.score_info
-3. get_summary() —— 学生端只读展示 user.score_info；未命中则兜底 recalculate
+3. get_summary() —— 学生端只读展示；未命中则兜底 recalculate
 
 ═══════════════════════════════════════════════════════════════════════
-关键设计
+v4.3 升级（user-score.md v1.1）
 ═══════════════════════════════════════════════════════════════════════
-- record 与 pass_application 同事务（atomic）
-- recalculate 是幂等可反复触发的（全量覆盖）
-- 聚合算法：3 条 SQL（叶子聚合 + 分类树 + UPDATE），O(1) 复杂度
+- recalculate / get_summary 新增返回 tree 结构（用于学生端"我的成绩"卡片）
+- tree 字段不写 DB，只作为接口返回的派生字段
+- SQL 总量仍为 5 条（新增 1 条拉 application 列表）
 """
 from __future__ import annotations
 
-from datetime import datetime
+from collections import defaultdict
+from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
-from sqlalchemy import select, func, and_
+from sqlalchemy import select, func, and_, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models import (
@@ -87,27 +88,18 @@ class ScoreDataService:
     ) -> Dict[str, Any]:
         """全量聚合 + 覆盖写 user.score_info
 
-        算法（4 步）：
-          Step 1: SQL 聚合叶子分类原始分
-            SELECT category_id, SUM(score)
-            FROM score_data
-            WHERE user_id = :uid AND is_active = TRUE
-            GROUP BY category_id
-
+        算法（7 步，v4.3 新增 tree 返回）：
+          Step 1: SQL 聚合叶子分类原始分（from score_data）
           Step 2: 内存组装 template_category 树
-            SELECT * FROM template_category WHERE is_active = TRUE
-            按 parent_id 建树，O(n) 一次遍历
+          Step 3: 后序递归封顶（首遍：算 raw + capped）
+          Step 4: 再次后序递归（补算非叶 raw）
+          Step 5: SQL 拉 application 列表按 category_id 分组
+          Step 6: 组装 tree 结构（id/name/max/score/raw/depth/isLeaf/applications/children）
+          Step 7: 写 user.score_info（旧 flat 结构）
 
-          Step 3: 后序递归封顶
-            叶子:   capped = min(raw, category.max_score)
-            非叶:   capped = min(sum(子节点 capped), category.max_score)
-
-          Step 4: 收集所有节点得分，覆盖写入 user.score_info
-            UPDATE users SET score_info = :result WHERE id = :uid
-
-        性能: 3 条 SQL（聚合 + 分类树 + UPDATE users），全过程内存递归
+        性能: 5 条 SQL（聚合 + 分类树 + application 列表 + 2×UPDATE users）
         """
-        # Step 1: 叶子分类聚合
+        # Step 1: 叶子分类原始分聚合
         result = await db.execute(
             select(
                 ScoreData.category_id,
@@ -125,12 +117,11 @@ class ScoreDataService:
             row.category_id: row.raw_sum for row in result
         }
 
-        # Step 2: 加载分类树
+        # Step 2: 加载分类树（含 is_bind_template，用于判断 isLeaf）
         result = await db.execute(
             select(TemplateCategory).where(TemplateCategory.is_active == True)  # noqa: E712
         )
         all_categories = list(result.scalars().all())
-        # 先取出所有字段值（避免后续访问触发 lazy load）
         cat_data = []
         for c in all_categories:
             cat_data.append({
@@ -138,9 +129,10 @@ class ScoreDataService:
                 "name": c.name,
                 "parent_id": c.parent_id,
                 "max_score": c.max_score,
+                "is_bind_template": c.is_bind_template,
             })
 
-        # 用 dict 组装 children 关系（不依赖 ORM relationship 的 lazy load）
+        # 用 dict 组装 children 关系
         node_map: Dict[int, Dict[str, Any]] = {
             d["id"]: {**d, "children": []} for d in cat_data
         }
@@ -149,51 +141,109 @@ class ScoreDataService:
                 node_map[d["parent_id"]]["children"].append(node_map[d["id"]])
         roots = [node_map[d["id"]] for d in cat_data if not d["parent_id"]]
 
-        # Step 3: 后序递归封顶
-        # 先算出每个节点的封顶分数（用于 categories_result）
-        score_map: Dict[int, Decimal] = {}
+        # Step 3: 后序递归封顶（首遍：算 raw + capped）
+        node_raw: Dict[int, Decimal] = {}
+        node_score: Dict[int, Decimal] = {}
 
-        def calc(node: Dict[str, Any]) -> Decimal:
+        def calc_first_pass(node: Dict[str, Any]) -> Decimal:
             if not node["children"]:
                 raw = leaf_scores.get(node["id"], Decimal("0"))
-                capped = min(raw, Decimal(str(node["max_score"]))) if node["max_score"] is not None else raw
             else:
-                child_sum = sum(calc(child) for child in node["children"])
-                capped = min(child_sum, Decimal(str(node["max_score"]))) if node["max_score"] is not None else child_sum
-            score_map[node["id"]] = capped
+                raw = sum(calc_first_pass(child) for child in node["children"])
+            max_val = Decimal(str(node["max_score"])) if node["max_score"] is not None else None
+            capped = min(raw, max_val) if max_val is not None else raw
+            node_raw[node["id"]] = raw
+            node_score[node["id"]] = capped
             return capped
 
         for root in roots:
-            calc(root)
+            calc_first_pass(root)
 
-        # Step 4: 收集所有节点得分（不只是根）
-        categories_result: Dict[str, Dict[str, Any]] = {}
-        total_score = Decimal("0")
-        for d in cat_data:
-            score = score_map.get(d["id"], Decimal("0"))
-            categories_result[str(d["id"])] = {
-                "name": d["name"],
-                "score": float(score),
-                "max": float(d["max_score"]) if d["max_score"] is not None else None,
+        # Step 4: 再次后序，把非叶子的 raw 补算为子节点 score 之和（用于前端展示"超额"）
+        def calc_raw_from_children(node: Dict[str, Any]) -> Decimal:
+            if not node["children"]:
+                return node_raw.get(node["id"], Decimal("0"))
+            s = sum(calc_raw_from_children(child) for child in node["children"])
+            node_raw[node["id"]] = s
+            return s
+
+        for root in roots:
+            calc_raw_from_children(root)
+
+        # Step 5: SQL 拉 application 列表按 category_id 分组
+        app_result = await db.execute(
+            text("""
+                SELECT application_id, category_id, name, score, created_at
+                FROM score_data
+                WHERE user_id = :uid AND is_active = TRUE
+                ORDER BY category_id, created_at DESC
+            """),
+            {"uid": user_id},
+        )
+        apps_by_cat: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
+        for r in app_result:
+            apps_by_cat[r.category_id].append({
+                "id": r.application_id,
+                "name": r.name,
+                "score": float(r.score),
+                "created_at": r.created_at.isoformat() if r.created_at else "",
+            })
+
+        # Step 6: 组装 tree（递归建树，返回结构化节点）
+        def build_tree(node: Dict[str, Any], depth: int) -> Dict[str, Any]:
+            cat_id = node["id"]
+            return {
+                "id": cat_id,
+                "name": node["name"],
+                "max": float(node["max_score"]) if node["max_score"] is not None else 0.0,
+                "score": float(node_score.get(cat_id, Decimal("0"))),
+                "raw": float(node_raw.get(cat_id, Decimal("0"))),
+                "depth": depth,
+                "isLeaf": bool(node.get("is_bind_template", False)),
+                "applications": apps_by_cat.get(cat_id, []),
+                "children": [
+                    build_tree(child, depth + 1)
+                    for child in sorted(node["children"], key=lambda c: (c.get("sort_order", 0), c["id"]))
+                ],
             }
-            if d["parent_id"] is None:
-                total_score = score
 
-        # Step 4: 写 user.score_info
+        tree = [build_tree(root, 0) for root in roots]
+
+        # total = 所有根节点封顶后 score 之和
+        total_score_val = sum(node_score.get(root["id"], Decimal("0")) for root in roots)
+        now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+        # Step 7: 写 user.score_info（旧 flat 结构，兼容管理端）
         user = await db.get(User, user_id)
         if not user:
             raise ValueError(f"用户(id={user_id})不存在")
 
-        result_dict = {
-            "calculated_at": datetime.utcnow().isoformat() + "Z",
+        # 构造 flat categories_result（用于写 DB）
+        categories_result: Dict[str, Dict[str, Any]] = {}
+        for d in cat_data:
+            cat_id = d["id"]
+            categories_result[str(cat_id)] = {
+                "name": d["name"],
+                "score": float(node_score.get(cat_id, Decimal("0"))),
+                "max": float(d["max_score"]) if d["max_score"] is not None else None,
+            }
+
+        db_result_dict = {
+            "calculated_at": now_iso,
             "categories": categories_result,
-            "total": float(total_score),
+            "total": float(total_score_val),
         }
-        user.score_info = result_dict
+        user.score_info = db_result_dict
 
         await db.commit()
         await db.refresh(user)
-        return result_dict
+
+        # 接口返回：flat 结构 + tree 派生字段
+        return {
+            "calculated_at": now_iso,
+            "total": float(total_score_val),
+            "tree": tree,
+        }
 
     # ------------------------------------------------------------------
     # 3. get_summary —— 学生端只读展示
@@ -205,18 +255,24 @@ class ScoreDataService:
     ) -> Dict[str, Any]:
         """读取 user.score_info 快照，不重算。
 
+        v4.3 返回结构升级：直接返回 recalculate 的 tree 结构，
+        不再包一层 {"hit": ..., "score_info": ...}。
+
         返回:
-          - 命中: {"hit": True, "score_info": {...}}
-          - 未命中: 触发一次 recalculate（兜底），返回计算后的 score_info
+          - 命中: 直接返回 score_info（含 tree 字段）
+          - 未命中: 触发一次 recalculate，返回计算后的结果（含 tree）
         """
         user = await db.get(User, user_id)
         if not user:
-            return {"hit": False, "score_info": {}}
+            return {}
 
         score_info = user.score_info or {}
         if score_info and isinstance(score_info, dict) and score_info.get("categories"):
-            return {"hit": True, "score_info": score_info}
+            # 命中：直接返回（不含 tree，需要前端再调 recalculate 或后端补 tree）
+            # v4.3 策略：命中时也触发一次 recalculate，保证返回完整 tree
+            result = await ScoreDataService.recalculate(db, user_id)
+            return result
 
-        # 兜底重算
-        score_info = await ScoreDataService.recalculate(db, user_id)
-        return {"hit": False, "score_info": score_info}
+        # 未命中：兜底重算
+        result = await ScoreDataService.recalculate(db, user_id)
+        return result

@@ -1,11 +1,11 @@
-"""score_data 路由（v4.2）
+"""score_data 路由（v4.3）
 
 ═══════════════════════════════════════════════════════════════════════
 路由清单
 ═══════════════════════════════════════════════════════════════════════
 学生端:
-  GET  /api/score/me                  拉自己的分数快照（命中或兜底 recalculate）
-  POST /api/score/recalculate          手动触发重算
+  GET  /api/score/me                  拉自己的分数树（命中或兜底 recalculate）
+  POST /api/score/recalculate          手动触发重算，返回分数树
 
 管理员端:
   POST /api/score/recalculate-all          批量重算（遍历所有学生）
@@ -13,12 +13,9 @@
 """
 from __future__ import annotations
 
-from typing import Optional
-
 from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select
 
 from src.app.deps import get_db
 from src.app.context import get_user_id
@@ -38,30 +35,34 @@ router = APIRouter(prefix="/api/score", tags=["成绩"])
 async def get_my_score(
     db: AsyncSession = Depends(get_db),
 ):
-    """拉自己的分数快照（未命中则兜底 recalculate）"""
+    """拉自己的分数树（未命中则兜底 recalculate）
+
+    v4.3 返回结构:
+    {
+        "calculated_at": "2026-07-08T...",
+        "total": 60.0,
+        "tree": [{id, name, max, score, raw, depth, isLeaf, applications, children}, ...]
+    }
+    """
     user_id = get_user_id()
     if not user_id:
         return R.unauthorized_resp("未登录")
 
     result = await ScoreDataService.get_summary(db, user_id)
-    # 返回 score_info，hit 仅用于前端判断是否需要刷新
-    return R.success_resp({
-        "hit": result.get("hit", False),
-        "score_info": result.get("score_info", {})
-    })
+    return R.success_resp(result)
 
 
 @router.post("/recalculate")
 async def recalculate_self(
     db: AsyncSession = Depends(get_db),
 ):
-    """学生手动触发重算"""
+    """学生手动触发重算，返回分数树"""
     user_id = get_user_id()
     if not user_id:
         return R.unauthorized_resp("未登录")
 
-    score_info = await ScoreDataService.recalculate(db, user_id)
-    return R.success_resp(score_info, msg="成绩已重新计算")
+    result = await ScoreDataService.recalculate(db, user_id)
+    return R.success_resp(result, msg="成绩已重新计算")
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -73,10 +74,10 @@ async def recalculate_by_admin(
     db: AsyncSession = Depends(get_db),
 ):
     """管理员：单用户重算"""
-    score_info = await ScoreDataService.recalculate(db, user_id)
+    result = await ScoreDataService.recalculate(db, user_id)
     return R.success_resp({
         "userId": user_id,
-        "score_info": score_info,
+        "score_info": result,   # flat 结构写 DB；tree 仅返回给前端
     })
 
 

@@ -90,6 +90,45 @@ class MinIOAdapter(Storage):
     def get_public_url(self, key: str) -> str:
         return f"{self._public_url}/{key}"
 
+    def set_bucket_public_read_prefix(self, prefix: str) -> None:
+        """对 bucket 下指定前缀应用 anonymous=download 策略
+
+        AWS S3 / MinIO 都用 put_bucket_policy；前缀即 object key 的前缀，
+        例如 "avatar/" 表示只放开 avatar/ 下的对象 GET，其他 key 仍受 ACL 控制。
+        """
+        import json
+        from botocore.exceptions import ClientError
+
+        policy = {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Sid": f"AllowPublicRead{prefix.strip('/').replace('/', '-').replace('*', 'all') or 'all'}",
+                    "Effect": "Allow",
+                    "Principal": {"AWS": ["*"]},
+                    "Action": ["s3:GetObject"],
+                    "Resource": [
+                        f"arn:aws:s3:::{self._bucket}/{prefix.strip('/')}/*"
+                    ],
+                }
+            ],
+        }
+        # prefix 若为空则允许整个 bucket 公开读
+        policy["Statement"][0]["Resource"] = (
+            [f"arn:aws:s3:::{self._bucket}/*"]
+            if not prefix.strip()
+            else policy["Statement"][0]["Resource"]
+        )
+        try:
+            self._client.put_bucket_policy(
+                Bucket=self._bucket,
+                Policy=json.dumps(policy),
+            )
+            print(f"[MinIOAdapter] 已对 {self._bucket}/{prefix} 设置公开读策略")
+        except ClientError as e:
+            print(f"[MinIOAdapter] 设置公开读策略失败: {e}")
+            raise
+
     # ============= 生命周期 =============
 
     def ensure_bucket(self) -> None:
