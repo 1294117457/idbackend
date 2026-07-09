@@ -1,0 +1,12 @@
+1.后台template_category
+    尝试删除分类，提示分类还有未处理的application
+    设计思想：template和template_category的管理不与已有application挂钩
+              application中是保存对应的快照信息，
+              这里不校验对应分类
+2.后台权限管理permission中
+    现在权限四十多个就很乱了，
+    参考attribute，给permission也增加group_name和group_code字段，用于后台permission中分组
+3.后台角色管理
+    绑定权限时，这里权限的显示也依据更菜的permission加的group_name和group_code字段分组
+4.学生端修改用户信息时
+    对应enrollment_year字段的入学年份没有修改的和显示的功能
