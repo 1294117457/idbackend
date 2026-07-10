@@ -39,7 +39,7 @@ jobs:
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
-          context: ./idbackend
+          context: .
           push: true
           tags: ${{ steps.meta.outputs.IMAGE }}:${{ steps.meta.outputs.TAG }}
           cache-from: type=gha
