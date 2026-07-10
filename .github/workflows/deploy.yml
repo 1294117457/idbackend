@@ -18,7 +18,7 @@ jobs:
           script: |
             cd /home/project/idbackend
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-            docker pull ghcr.io/${{ github.repository.toLowerCase() }}:latest
+            docker pull ghcr.io/${{ github.repository }}:latest
             docker compose up -d backend
 
       - name: Deploy to prod server
@@ -31,5 +31,5 @@ jobs:
           script: |
             cd /home/project/idbackend
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-            docker pull ghcr.io/${{ github.repository.toLowerCase() }}:latest
+            docker pull ghcr.io/${{ github.repository }}:latest
             docker compose up -d backend

@@ -26,6 +26,6 @@ jobs:
           context: .
           dockerfile: Dockerfile
           push: true
-          tags: ghcr.io/${{ github.repository.toLowerCase() }}:latest
+          tags: ghcr.io/${{ github.repository }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
