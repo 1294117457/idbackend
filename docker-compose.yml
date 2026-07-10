@@ -1,6 +1,6 @@
 services:
   backend:
-    image: ccr.ccs.tencentyun.com/idproject/idbackend:latest
+    build: .
     restart: unless-stopped
     ports:
       - "8000:8000"
