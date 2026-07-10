@@ -1,6 +1,6 @@
 services:
   backend:
-    image: ghcr.io/1294117457/idbackend:latest
+    image: ccr.ccs.tencentyun.com/idproject/idbackend:latest
     restart: unless-stopped
     ports:
       - "8000:8000"

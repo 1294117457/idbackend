@@ -17,12 +17,12 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login to GHCR
+      - name: Login to Tencent Cloud
         uses: docker/login-action@v3
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          registry: ${{ secrets.TENCENT_REGISTRY }}
+          username: ${{ secrets.TENCENT_REGISTRY_USERNAME }}
+          password: ${{ secrets.TENCENT_REGISTRY_PASSWORD }}
 
       - name: Build and push
         uses: docker/build-push-action@v5
@@ -30,7 +30,9 @@ jobs:
           context: .
           file: ./Dockerfile
           push: true
-          tags: ghcr.io/${{ github.repository }}:latest
+          tags: |
+            ${{ secrets.TENCENT_REGISTRY }}/${{ secrets.TENCENT_NAMESPACE }}/idbackend:latest
+            ghcr.io/${{ github.repository }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
           provenance: false
@@ -48,8 +50,8 @@ jobs:
           key: ${{ secrets.DEV_SSH_KEY }}
           script: |
             cd /home/project/idbackend
-            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-            docker pull ghcr.io/${{ github.repository }}:latest
+            docker login ${{ secrets.TENCENT_REGISTRY }} -u "${{ secrets.TENCENT_REGISTRY_USERNAME }}" -p "${{ secrets.TENCENT_REGISTRY_PASSWORD }}"
+            docker pull ${{ secrets.TENCENT_REGISTRY }}/${{ secrets.TENCENT_NAMESPACE }}/idbackend:latest
             docker compose up -d backend
 
   deploy-prod:
@@ -65,6 +67,6 @@ jobs:
           key: ${{ secrets.PROD_SSH_KEY }}
           script: |
             cd /home/project/idbackend
-            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-            docker pull ghcr.io/${{ github.repository }}:latest
+            docker login ${{ secrets.TENCENT_REGISTRY }} -u "${{ secrets.TENCENT_REGISTRY_USERNAME }}" -p "${{ secrets.TENCENT_REGISTRY_PASSWORD }}"
+            docker pull ${{ secrets.TENCENT_REGISTRY }}/${{ secrets.TENCENT_NAMESPACE }}/idbackend:latest
             docker compose up -d backend
