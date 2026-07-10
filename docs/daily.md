@@ -29,3 +29,5 @@ Depends作用
 lifesapn生命周期管理
     redis,存储等实例，在应用启动时最好同步注册，在lifesapn中注册
     llm等资源适合懒加载，在depends中基于lru_cache获取
+
+test
