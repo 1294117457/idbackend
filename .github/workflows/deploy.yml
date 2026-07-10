@@ -25,6 +25,19 @@ jobs:
           OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
           echo "TAG=${TAG}" >> $GITHUB_OUTPUT
           echo "IMAGE=${REGISTRY}/${OWNER}/${IMAGE_NAME##*/}" >> $GITHUB_OUTPUT
+          echo "IS_DEV=$([ "$TAG" = "dev" ] && echo "true" || echo "false")" >> $GITHUB_OUTPUT
+
+      - name: Set deploy env
+        run: |
+          if ${{ steps.meta.outputs.IS_DEV }}; then
+            echo "SERVER_HOST=${{ secrets.DEV_SERVER_HOST }}" >> $GITHUB_ENV
+            echo "SERVER_USER=${{ secrets.DEV_SERVER_USER }}" >> $GITHUB_ENV
+            echo "SERVER_KEY=${{ secrets.DEV_SSH_KEY }}" >> $GITHUB_ENV
+          else
+            echo "SERVER_HOST=${{ secrets.PROD_SERVER_HOST }}" >> $GITHUB_ENV
+            echo "SERVER_USER=${{ secrets.PROD_SERVER_USER }}" >> $GITHUB_ENV
+            echo "SERVER_KEY=${{ secrets.PROD_SSH_KEY }}" >> $GITHUB_ENV
+          fi
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -45,25 +58,12 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Set deploy target
-        id: target
-        run: |
-          if [ "${{ github.ref_name }}" = "main" ]; then
-            echo "host=${{ secrets.PROD_SERVER_HOST }}" >> $GITHUB_OUTPUT
-            echo "user=${{ secrets.PROD_SERVER_USER }}" >> $GITHUB_OUTPUT
-            echo "key=${{ secrets.PROD_SSH_KEY }}" >> $GITHUB_OUTPUT
-          else
-            echo "host=${{ secrets.DEV_SERVER_HOST }}" >> $GITHUB_OUTPUT
-            echo "user=${{ secrets.DEV_SERVER_USER }}" >> $GITHUB_OUTPUT
-            echo "key=${{ secrets.DEV_SSH_KEY }}" >> $GITHUB_OUTPUT
-          fi
-
       - name: Deploy to server
         uses: appleboy/ssh-action@v1
         with:
-          host: ${{ steps.target.outputs.host }}
-          username: ${{ steps.target.outputs.user }}
-          key: ${{ steps.target.outputs.key }}
+          host: ${{ env.SERVER_HOST }}
+          username: ${{ env.SERVER_USER }}
+          key: ${{ env.SERVER_KEY }}
           script: |
             set -e
             cd /home/project
