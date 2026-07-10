@@ -1,0 +1,70 @@
+name: Deploy
+
+on:
+  push:
+    branches: [dev, main]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/idbackend
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract branch tag
+        id: meta
+        run: |
+          TAG=${GITHUB_REF#refs/heads/}
+          echo "TAG=${TAG}" >> $GITHUB_OUTPUT
+          echo "IMAGE=${REGISTRY}/${IMAGE_NAME}" >> $GITHUB_OUTPUT
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./idbackend
+          push: true
+          tags: ${{ steps.meta.outputs.IMAGE }}:${{ steps.meta.outputs.TAG }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Set deploy target
+        id: target
+        run: |
+          if [ "${{ github.ref_name }}" = "main" ]; then
+            echo "host=${{ secrets.PROD_SERVER_HOST }}" >> $GITHUB_OUTPUT
+            echo "user=${{ secrets.PROD_SERVER_USER }}" >> $GITHUB_OUTPUT
+            echo "key=${{ secrets.PROD_SSH_KEY }}" >> $GITHUB_OUTPUT
+          else
+            echo "host=${{ secrets.DEV_SERVER_HOST }}" >> $GITHUB_OUTPUT
+            echo "user=${{ secrets.DEV_SERVER_USER }}" >> $GITHUB_OUTPUT
+            echo "key=${{ secrets.DEV_SSH_KEY }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Deploy to server
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ steps.target.outputs.host }}
+          username: ${{ steps.target.outputs.user }}
+          key: ${{ steps.target.outputs.key }}
+          script: |
+            set -e
+            cd /home/project
+            docker compose pull
+            docker compose up -d --remove-orphans
