@@ -1,14 +1,9 @@
 services:
   backend:
     image: crpi-9nn64ebnbxd035lo.cn-shenzhen.personal.cr.aliyuncs.com/idproject/idbackend:latest
+    container_name: backend
     restart: unless-stopped
     ports:
       - "8000:8000"
     env_file:
       - ./.env
-    networks:
-      - app-network
-
-networks:
-  app-network:
-    external: true
