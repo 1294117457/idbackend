@@ -24,7 +24,7 @@ services:
   # 后端
   backend:
     build:
-      context: ./idbackend
+      context: ./
       dockerfile: Dockerfile
     restart: unless-stopped
     ports:
