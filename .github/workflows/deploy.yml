@@ -16,13 +16,9 @@ jobs:
           username: ${{ secrets.DEV_SERVER_USER }}
           key: ${{ secrets.DEV_SSH_KEY }}
           script: |
-            set -e
-            cd /home/project/idbackend
-            git fetch origin
-            git checkout dev
+            cd /home/project
             git pull origin dev
-            docker build -t idbackend:dev .
-            docker compose up -d --remove-orphans
+            docker compose up -d --build backend
 
       - name: Deploy to prod server
         if: github.ref_name == 'main'
@@ -32,10 +28,6 @@ jobs:
           username: ${{ secrets.PROD_SERVER_USER }}
           key: ${{ secrets.PROD_SSH_KEY }}
           script: |
-            set -e
-            cd /home/project/idbackend
-            git fetch origin
-            git checkout main
+            cd /home/project
             git pull origin main
-            docker build -t idbackend:main .
-            docker compose up -d --remove-orphans
+            docker compose up -d --build backend
