@@ -16,7 +16,7 @@ jobs:
           username: ${{ secrets.DEV_SERVER_USER }}
           key: ${{ secrets.DEV_SSH_KEY }}
           script: |
-            cd /home/project
+            cd /home/project/idbackend
             git pull origin dev
             docker compose up -d --build backend
 
@@ -28,6 +28,6 @@ jobs:
           username: ${{ secrets.PROD_SERVER_USER }}
           key: ${{ secrets.PROD_SSH_KEY }}
           script: |
-            cd /home/project
+            cd /home/project/idbackend
             git pull origin main
             docker compose up -d --build backend
