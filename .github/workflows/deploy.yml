@@ -17,8 +17,9 @@ jobs:
           key: ${{ secrets.DEV_SSH_KEY }}
           script: |
             cd /home/project/idbackend
-            git pull origin dev
-            docker compose up -d --build backend
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+            docker pull ghcr.io/${{ github.repository.toLowerCase() }}:latest
+            docker compose up -d backend
 
       - name: Deploy to prod server
         if: github.ref_name == 'main'
@@ -29,5 +30,6 @@ jobs:
           key: ${{ secrets.PROD_SSH_KEY }}
           script: |
             cd /home/project/idbackend
-            git pull origin main
-            docker compose up -d --build backend
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+            docker pull ghcr.io/${{ github.repository.toLowerCase() }}:latest
+            docker compose up -d backend
