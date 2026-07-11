@@ -7,6 +7,7 @@
 - PUT /api/system/config/agent - 更新 Agent 配置
 - GET /api/system/config/smtp - 获取 SMTP 配置
 - PUT /api/system/config/smtp - 更新 SMTP 配置
+- POST /api/system/config/rbac/reset - 重置 RBAC（清空 + 重新 seed）
 """
 import os
 from fastapi import APIRouter, Depends
@@ -167,3 +168,21 @@ async def update_smtp_config(
         f.writelines(new_lines)
 
     return R.success_resp({"message": "SMTP 配置已更新"})
+
+
+@router.post("/rbac/reset")
+async def reset_rbac(
+    db: AsyncSession = Depends(get_db),
+):
+    """硬重置 RBAC：清空 role_permission / user_role + 删除 seed 维护的 role / permission → 重新 seed。
+
+    仅 super_admin 可调（依赖 rbac:reset 权限码 → super_admin 角色短路放行）。
+    业务侧新建的 role / permission 不会被删。
+    """
+    from src.scripts.init_rbac_data import reset_rbac_data
+
+    stats = await reset_rbac_data()
+    return R.success_resp({
+        "message": "RBAC 已重置",
+        "stats": stats,
+    })

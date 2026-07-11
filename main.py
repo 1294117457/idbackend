@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from src.infra.config import get_settings
-from src.infra.database import init_db, close_db
+from src.infra.database import close_db
 from src.infra.redis import close_redis
 from src.app.dependencies import get_storage
 from src.app.middleware import register_middlewares, register_exception_handlers
@@ -16,11 +16,6 @@ from src.app.routes import register_all_routes
 async def lifespan(app: FastAPI):
     """启动 → 运行 → 关闭"""
     print("[idpython] 启动中...")
-    try:
-        await init_db()
-        print("[idpython] 数据库初始化完成")
-    except Exception as e:
-        print(f"[idpython] 数据库初始化失败: {e}")
 
     try:
         storage = get_storage()

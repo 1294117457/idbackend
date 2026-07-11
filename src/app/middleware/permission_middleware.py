@@ -60,7 +60,8 @@ class PermissionMiddleware(BaseHTTPMiddleware):
         user_id = get_user_id()
         username = get_username()
 
-        # 白名单超管：跳过 DB 查询，直接给全部权限
+        # 白名单超管（.env 的 SYSTEM_ACCOUNTS）：跳过 DB 查询，直接给全部权限
+        # 这是逃生通道，用于 DB 清空 / RBAC 数据丢失等场景，仍能登录系统
         if is_system_account(username):
             set_user({
                 "user_id": user_id,
@@ -76,6 +77,19 @@ class PermissionMiddleware(BaseHTTPMiddleware):
         if user_auth is None:
             return unauthorized_resp("账号已被禁用，请联系管理员")
         set_user(user_auth)
+
+        # super_admin 角色短路：
+        #   用户在 DB 里被绑定了 super_admin 角色 → 直接给 ["*"]，无需逐项校验
+        #   与 SYSTEM_ACCOUNTS 白名单完全独立：
+        #     - 白名单：.env 配置，不走 DB
+        #     - super_admin 角色：DB role 表里的一行，走 DB
+        #   两者都走 "permissions=['*']" 短路，PermissionMiddleware 第 87 行生效
+        if any(
+            (r.get("roleCode") or r.get("role_code")) == "super_admin"
+            for r in user_auth.get("roles", [])
+        ):
+            user_auth["permissions"] = ["*"]
+            set_user(user_auth)
 
         # 查路径所需权限码（未绑定则无需校验）
         required = await RbacService.get_path_permission(path)

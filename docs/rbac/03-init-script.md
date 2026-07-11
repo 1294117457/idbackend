@@ -1,19 +1,33 @@
+# init_rbac_data.py · 完整可执行版
+
+> 直接用本文件**整文件替换** `src/scripts/init_rbac_data.py` 的内容，然后跑：
+> ```bash
+> python -m src.scripts.init_rbac_data
+> ```
+
+---
+
+## 完整代码
+
+```python
 """RBAC 初始化数据脚本 v3
 
-按真实路由写权限码绑定 + 4 系统角色 + super_admin 角色短路配合中间件。
+运行：
+    cd /home/dustp/codes/idproject/idbackend
+    python -m src.scripts.init_rbac_data
 
-详见 docs/rbac/00-overview.md / 02-init-permissions.md
+详见 docs/rbac/02-init-permissions.md
 """
 import asyncio
 import os
 import sys
 
-from sqlalchemy import select, delete, text
+from sqlalchemy import select, delete
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from src.infra.database import AsyncSessionLocal
-from src.models.user import Permission, Role, RolePermission, UserRole
+from src.models.user import Permission, Role, RolePermission
 
 
 # ============ 4 个系统角色 ============
@@ -22,7 +36,7 @@ ROLES_DATA = [
     {
         "role_code": "super_admin",
         "role_name": "超级管理员",
-        "description": "系统内置超管角色，PermissionMiddleware 识别到该角色后短路返回 ['*']，无需逐项校验权限码",
+        "description": "全权：可管理账户、角色、权限、系统配置，含全部业务功能",
         "sort_order": 1,
         "is_system": True,
     },
@@ -36,7 +50,7 @@ ROLES_DATA = [
     {
         "role_code": "reviewer",
         "role_name": "审核员",
-        "description": "审核学生申请（pass/reject），无 revoke、无任何管理写权限",
+        "description": "审核学生申请（pass/reject），无 revoke、无写权限",
         "sort_order": 3,
         "is_system": True,
     },
@@ -52,7 +66,6 @@ ROLES_DATA = [
 
 # ============ 权限码 ============
 # 格式：(permission_code, permission_name, api_path, group_code, group_name, sort_order)
-# api_path 若为 None 表示不绑到中间件路径（菜单项、抽象权限等）
 
 PERMISSIONS_DATA = [
     # ===== auth =====
@@ -173,18 +186,16 @@ PERMISSIONS_DATA = [
     ("system_config:read",    "查看 SMTP",      "/api/system/config/smtp",                  "system", "系统管理", 142),
     ("system_config:update",  "修改 Agent",     "/api/system/config/agent",                 "system", "系统管理", 143),
     ("system_config:update",  "修改 SMTP",      "/api/system/config/smtp",                  "system", "系统管理", 144),
-
-    # ===== 重置 RBAC（仅 super_admin 通过 .env 白名单可用） =====
-    ("rbac:reset",            "重置系统权限",   "/api/system/config/rbac/reset",            "system", "系统管理", 150),
 ]
 
 
 # ============ 4 角色 × 权限码 ============
-# super_admin 留空 —— PermissionMiddleware 识别到该角色就返回 permissions=["*"]
 
 ROLE_PERMISSIONS = {
-    # ============== super_admin：空列表（中间件短路） ==============
-    "super_admin": [],
+    # ============== super_admin：空列表（中间件角色短路返回 ["*"]） ==============
+    # 不需要在 role_permission 表里绑全部权限码
+    # PermissionMiddleware 第 80-87 行：识别到 roles 含 super_admin 就直接放行
+    "super_admin": [],  # 中间件角色短路返回 ["*"]，详见 PermissionMiddleware
 
     # ============== admin：业务全权（不含 rbac / system） ==============
     "admin": [
@@ -265,86 +276,96 @@ ROLE_PERMISSIONS = {
 
 # ============ 写入逻辑 ============
 
-async def _seed_roles(db, created_roles):
-    for role_data in ROLES_DATA:
-        result = await db.execute(select(Role).where(Role.role_code == role_data["role_code"]))
-        existing = result.scalar_one_or_none()
-        if existing:
-            created_roles[role_data["role_code"]] = existing
-        else:
-            role = Role(**role_data, status=True)
-            db.add(role); await db.flush()
-            created_roles[role_data["role_code"]] = role
-            print(f"[创建] 角色: {role_data['role_code']}")
-
-
-async def _seed_permissions(db, created_permissions):
-    for code, name, api_path, group_code, group_name, sort_order in PERMISSIONS_DATA:
-        result = await db.execute(select(Permission).where(Permission.permission_code == code))
-        existing = result.scalar_one_or_none()
-        if existing:
-            updated = False
-            if existing.group_code != group_code:
-                existing.group_code = group_code; updated = True
-            if existing.group_name != group_name:
-                existing.group_name = group_name; updated = True
-            if existing.api_path != api_path:
-                existing.api_path = api_path; updated = True
-            if updated:
-                print(f"[更新] 权限: {code}")
-            created_permissions[code] = existing
-        else:
-            perm = Permission(permission_code=code, permission_name=name, api_path=api_path,
-                              description=name, group_code=group_code, group_name=group_name,
-                              sort_order=sort_order, status=True)
-            db.add(perm); await db.flush()
-            created_permissions[code] = perm
-            print(f"[创建] 权限: {code}")
-
-
-async def _seed_role_permissions(db, created_roles, created_permissions):
-    for role_code, perm_codes in ROLE_PERMISSIONS.items():
-        role = created_roles.get(role_code)
-        if not role:
-            print(f"[警告] 角色不存在，跳过: {role_code}")
-            continue
-        await db.execute(delete(RolePermission).where(RolePermission.role_id == role.id))
-        bound = 0
-        for perm_code in perm_codes:
-            perm = created_permissions.get(perm_code)
-            if not perm:
-                print(f"[警告] 权限码未找到: {perm_code}（角色 {role_code}）")
-                continue
-            db.add(RolePermission(role_id=role.id, permission_id=perm.id))
-            bound += 1
-        print(f"[绑定] {role_code}: {bound} 条权限")
-
-
 async def init_rbac_data():
-    """幂等写入 RBAC 角色 / 权限码 / 角色-权限绑定。
-
-    ⚠️ 不再被 lifespan 自动调用 —— 启动时不再 seed。
-    部署/迁移场景请手动跑：python -m src.scripts.init_rbac_data
-    重置场景：调 POST /api/system/config/rbac/reset
-    """
     async with AsyncSessionLocal() as db:
         try:
+            # 1) 写入 4 个 role（已存在则跳过）
             created_roles = {}
+            for role_data in ROLES_DATA:
+                result = await db.execute(
+                    select(Role).where(Role.role_code == role_data["role_code"])
+                )
+                existing = result.scalar_one_or_none()
+                if existing:
+                    created_roles[role_data["role_code"]] = existing
+                    print(f"[跳过] 角色已存在: {role_data['role_code']}")
+                else:
+                    role = Role(**role_data, status=True)
+                    db.add(role)
+                    await db.flush()
+                    created_roles[role_data["role_code"]] = role
+                    print(f"[创建] 角色: {role_data['role_code']}")
+
+            # 2) 写入权限码（已存在则同步更新 group/api_path，缺则新增）
             created_permissions = {}
-            await _seed_roles(db, created_roles)
-            await _seed_permissions(db, created_permissions)
+            for code, name, api_path, group_code, group_name, sort_order in PERMISSIONS_DATA:
+                result = await db.execute(
+                    select(Permission).where(Permission.permission_code == code)
+                )
+                existing = result.scalar_one_or_none()
+                if existing:
+                    # 同步 group / api_path
+                    updated = False
+                    if existing.group_code != group_code:
+                        existing.group_code = group_code
+                        updated = True
+                    if existing.group_name != group_name:
+                        existing.group_name = group_name
+                        updated = True
+                    if existing.api_path != api_path:
+                        existing.api_path = api_path
+                        updated = True
+                    if updated:
+                        print(f"[更新] 权限: {code}")
+                    created_permissions[code] = existing
+                else:
+                    perm = Permission(
+                        permission_code=code,
+                        permission_name=name,
+                        api_path=api_path,
+                        description=name,
+                        group_code=group_code,
+                        group_name=group_name,
+                        sort_order=sort_order,
+                        status=True,
+                    )
+                    db.add(perm)
+                    await db.flush()
+                    created_permissions[code] = perm
+                    print(f"[创建] 权限: {code} → {api_path}")
+
             await db.flush()
-            await _seed_role_permissions(db, created_roles, created_permissions)
+
+            # 3) 写入 role_permission（先删后建，保证最新矩阵）
+            for role_code, perm_codes in ROLE_PERMISSIONS.items():
+                role = created_roles.get(role_code)
+                if not role:
+                    print(f"[警告] 角色不存在，跳过: {role_code}")
+                    continue
+
+                # 清掉该角色所有旧绑定
+                await db.execute(
+                    delete(RolePermission).where(RolePermission.role_id == role.id)
+                )
+
+                bound = 0
+                for perm_code in perm_codes:
+                    perm = created_permissions.get(perm_code)
+                    if not perm:
+                        print(f"[警告] 权限码未找到: {perm_code}（角色 {role_code}）")
+                        continue
+                    db.add(RolePermission(role_id=role.id, permission_id=perm.id))
+                    bound += 1
+                print(f"[绑定] {role_code}: {bound} 条权限")
+
             await db.commit()
 
             print("\n" + "=" * 60)
             print("[完成] RBAC 初始化数据已写入")
             print("=" * 60)
-            print("角色: super_admin / admin / reviewer / user")
+            print(f"角色: super_admin / admin / reviewer / user")
             print(f"权限码总数: {len(created_permissions)}")
-            print("-" * 60)
-            print("super_admin 绑 0 条：PermissionMiddleware 角色短路返回 ['*']")
-            print("admin / reviewer / user: 见上方 [绑定] 行")
+            print(f"分组: {sorted(set(p[3] for p in PERMISSIONS_DATA))}")
             print("=" * 60)
 
         except Exception as e:
@@ -355,46 +376,35 @@ async def init_rbac_data():
             raise
 
 
-async def reset_rbac_data() -> dict:
-    """硬重置 RBAC：清空 4 张表后重新 seed。
-
-    - TRUNCATE role_permission / user_role / role / permission（含业务侧手动添加的数据）
-    - 重新执行 seed
-
-    返回：本次操作的统计信息。
-    """
-    async with AsyncSessionLocal() as db:
-        try:
-            # TRUNCATE ... RESTART IDENTITY CASCADE 一并清掉序列和 FK 级联
-            await db.execute(text(
-                "TRUNCATE TABLE role_permission, user_role, role, permission RESTART IDENTITY CASCADE"
-            ))
-
-            created_roles = {}
-            created_permissions = {}
-            await _seed_roles(db, created_roles)
-            await _seed_permissions(db, created_permissions)
-            await db.flush()
-            await _seed_role_permissions(db, created_roles, created_permissions)
-            await db.commit()
-
-            stats = {
-                "recreated_roles": len(created_roles),
-                "recreated_permissions": len(created_permissions),
-            }
-            print(f"[reset] {stats}")
-            return stats
-
-        except Exception as e:
-            await db.rollback()
-            print(f"[错误] 重置失败: {e}")
-            import traceback
-            traceback.print_exc()
-            raise
-
-
 if __name__ == "__main__":
     print("=" * 60)
     print("RBAC 数据初始化")
     print("=" * 60)
     asyncio.run(init_rbac_data())
+```
+
+---
+
+## 跑完后验证
+
+```bash
+# 1. 各角色权限数
+psql "$DATABASE_URL" <<'EOF'
+SELECT r.role_code, COUNT(rp.permission_id) AS perm_count
+FROM role r
+LEFT JOIN role_permission rp ON rp.role_id = r.id
+GROUP BY r.id, r.role_code
+ORDER BY r.sort_order;
+EOF
+```
+
+预期：
+
+| role_code | perm_count |
+|-----------|-----------|
+| super_admin | 0 |
+| admin | 51 |
+| reviewer | 16 |
+| user | 18 |
+
+如果数字对不上，按 4 个文档的清单对比 `PERMISSIONS_DATA` 长度（~78）和 `ROLE_PERMISSIONS` 各角色列表长度。

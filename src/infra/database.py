@@ -6,20 +6,18 @@ from contextlib import contextmanager
 from typing import Generator
 import logging
 
-from .config import get_settings
+from .config import (
+    get_settings,
+    get_async_database_url,
+    get_sync_database_url,
+)
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-# 将 postgresql:// 转换为 postgresql+asyncpg://
-def _make_async_url(url: str) -> str:
-    if url.startswith("postgresql://"):
-        return url.replace("postgresql://", "postgresql+asyncpg://", 1)
-    return url
-
 # 异步引擎 (主要使用)
 async_engine = create_async_engine(
-    _make_async_url(settings.DATABASE_URL),
+    get_async_database_url(),
     echo=False,
     pool_pre_ping=True,
     pool_size=10,
@@ -36,7 +34,7 @@ AsyncSessionLocal = async_sessionmaker(
 
 # 同步引擎 (迁移和初始化使用)
 sync_engine = create_engine(
-    settings.DATABASE_URL.replace("postgresql://", "postgresql+psycopg2://"),
+    get_sync_database_url(),
     echo=settings.DEBUG,
     pool_pre_ping=True,
 )
@@ -65,16 +63,6 @@ def get_sync_db() -> Generator[Session, None, None]:
             yield session
         finally:
             session.close()
-
-
-async def init_db():
-    """初始化数据库 (创建表等)"""
-    from src.models.base import Base
-    from src.models import user, application, template, template_category, file, config
-
-    async with async_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    logger.info("数据库初始化完成")
 
 
 async def close_db():

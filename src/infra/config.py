@@ -86,6 +86,43 @@ def get_settings() -> Settings:
     return Settings()
 
 
+# ────── 数据库 URL 转换（统一实现，唯一一处） ──────
+def to_async_database_url(url: str) -> str:
+    """postgresql:// → postgresql+asyncpg://
+
+    若已是 +asyncpg 或 +psycopg2 则原样返回（幂等）。
+    """
+    if (
+        url.startswith("postgresql://")
+        and "+asyncpg" not in url
+        and "+psycopg2" not in url
+    ):
+        return url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    return url
+
+
+def to_sync_database_url(url: str) -> str:
+    """postgresql[+asyncpg]:// → postgresql+psycopg2://
+
+    若已是 +psycopg2 则原样返回（幂等）。
+    """
+    if url.startswith("postgresql+asyncpg://"):
+        return url.replace("postgresql+asyncpg://", "postgresql+psycopg2://", 1)
+    if url.startswith("postgresql://") and "+psycopg2" not in url:
+        return url.replace("postgresql://", "postgresql+psycopg2://", 1)
+    return url
+
+
+def get_async_database_url() -> str:
+    """应用运行时用的 DB URL（asyncpg）"""
+    return to_async_database_url(get_settings().DATABASE_URL)
+
+
+def get_sync_database_url() -> str:
+    """alembic / 同步脚本用的 DB URL（psycopg2）"""
+    return to_sync_database_url(get_settings().DATABASE_URL)
+
+
 def is_system_account(username: str) -> bool:
     """判断用户名是否在超管白名单中（白名单用户拥有全部权限）"""
     accounts = get_settings().SYSTEM_ACCOUNTS
