@@ -119,7 +119,7 @@ def get_async_database_url() -> str:
 
 
 def get_sync_database_url() -> str:
-    """alembic / 同步脚本用的 DB URL（psycopg2）"""
+    """同步脚本（`Base.metadata.create_all` / `init_rbac_data` 等）用的 DB URL（psycopg2）"""
     return to_sync_database_url(get_settings().DATABASE_URL)
 
 

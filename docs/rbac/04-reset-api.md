@@ -230,19 +230,23 @@ async def init_db():
 
 ## 6. 首次部署后的操作流程
 
-```
-1. alembic upgrade head              ← 建 22 张表（不变）
-2. 启动应用                            ← lifespan 不再自动 seed
-3. 手动创建 1 个 super_admin 用户      ← 绕过中间件，直接写库
-4. 用 super_admin 登录
-5. 调一次 POST /api/system/config/rbac/reset  ← 初始化 RBAC
-6. 之后正常使用
-```
+> 本节基于 **alembic 时代** 的部署步骤写。当前 idbackend **已不用 alembic**（详见 `docs/base/db-schema-sync.md`），
+> schema 同步由启动时的 `Base.metadata.create_all()` 自动完成。下列步骤的语义等价，对应如下：
+
+| 历史（alembic 时代） | 现在（create_all 时代） |
+|---------------------|------------------------|
+| `1. alembic upgrade head` 建 22 张表 | ~~自动同步~~ 启动 backend 时由 `python -m src.main` 自动建表（幂等，详见 db-schema-sync.md 第 2 节） |
+| `2. 启动应用` | `2. 启动 backend 容器`（启动时已自动建表，无需手动 db schema 步骤） |
+| `3. 手动创建 1 个 super_admin 用户` | `3. 手动创建 1 个 super_admin 用户` ← 同左 |
+| `4. 用 super_admin 登录` | `4. 用 super_admin 登录` ← 同左 |
+| `5. 调一次 POST /api/system/config/rbac/reset` ← 初始化 RBAC | `5. 调一次 POST /api/system/config/rbac/reset` ← 同左 |
+| `6. 之后正常使用` | `6. 之后正常使用` ← 同左 |
 
 **CI/CD 替代方案**（自动初始化）：
 
 ```bash
-alembic upgrade head
+# 1. schema 同步（create_all 已经在 python -m src.main 启动时自动完成，无需手动命令）
+# 2. RBAC seed（手动跑一次 init_rbac_data）
 python -c "import asyncio; from src.scripts.init_rbac_data import init_rbac_data; asyncio.run(init_rbac_data())"
 ```
 
@@ -264,7 +268,7 @@ python -c "import asyncio; from src.scripts.init_rbac_data import init_rbac_data
 
 1. **代码回滚**：`git revert` 三个改动
 2. **数据回滚**：因为 seed 是删了重建，DB 里的 system 资源就是 seed 内容，跟 git HEAD 一致
-3. **极端情况**：seed 脚本本身有 bug → 用户角色权限全丢 → alembic 不能恢复，需要从备份恢复 DB
+3. **极端情况**：seed 脚本本身有 bug → 用户角色权限全丢 → 需要从备份恢复 DB（因为 schema 现在只有 create_all，没有 version 表，无法以"非破坏性"方式回滚 RBAC 数据）
 
 ---
 

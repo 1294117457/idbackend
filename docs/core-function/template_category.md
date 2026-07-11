@@ -632,15 +632,92 @@ if category_id is not None:
 
 ---
 
-## 七、Alembic 迁移顺序
+## 七、Schema 改造步骤
 
-1. 新建 `template_category` 表（含 `is_bind_template` 字段、CHECK 约束）
-2. 改造 `template.category_id` FK 为 `ON DELETE CASCADE`
-3. 改造 `score_templates.template_type / score_type` 列数据 → 用 `category_id` 替换
-4. 老数据迁移：
-   - `FieldConfig` (score_type=SCORE) → `template_category` 根节点（parent_id=NULL）
-   - `FieldSubcategory` → `template_category` 子节点（parent_id=FieldConfig.id）
-   - 删除 `FieldConfig` / `FieldSubcategory`（如四层职责设计"六、与现有代码的迁移关系"所述）
+> 本项目当前**不使用 alembic**，schema 同步改用 `Base.metadata.create_all()`（详见 `docs/base/db-schema-sync.md`）。
+>
+> 本章针对 template_category 改造给一份实操清单：
+
+### 7.1 改造 model（单一来源）
+
+1. 新建 `src/models/template_category.py`
+
+   ```python
+   class TemplateCategory(Base, TimestampMixin):
+       __tablename__ = "template_category"
+       name:    Mapped[str]   = mapped_column(String(64), nullable=False)
+       parent_id: Mapped[Optional[int]] = mapped_column(
+           Integer, ForeignKey("template_category.id", ondelete="CASCADE")
+       )
+       max_score: Mapped[Decimal] = mapped_column(Numeric(5, 2), nullable=False)
+       is_bind_template: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+       __table_args__ = (
+           CheckConstraint("max_score > 0", name="ck_template_category_max_score_positive"),
+           Index("idx_template_category_parent", "parent_id", "id"),
+       )
+   ```
+
+2. 改造 `src/models/template.py`：把 `category_id` FK 的 `ondelete` 改成 `CASCADE`
+
+   ```python
+   category_id: Mapped[Optional[int]] = mapped_column(
+       Integer, ForeignKey("template_category.id", ondelete="CASCADE")
+   )
+   ```
+
+3. 在 `src/models/__init__.py` 导出新 model
+
+### 7.2 数据迁移（手工 SQL，一次性）
+
+> `create_all` 不负责迁移老数据。下面的 SQL 必须**先**在服务器上执行，才能把数据从旧结构迁到新结构。
+
+1. 新建 `template_category` 表（**create_all 会自动建**，但数据需手工迁移）：
+
+   ```sql
+   -- 如果 create_all 还没建（开发阶段手动操作），先建表：
+   -- CREATE TABLE template_category ( ... );
+   ```
+
+2. 改造 `template.category_id` FK 的 `ondelete`：
+
+   ```sql
+   ALTER TABLE template DROP CONSTRAINT IF EXISTS template_category_id_fkey;
+   ALTER TABLE template
+       ADD CONSTRAINT template_category_id_fkey
+       FOREIGN KEY (category_id) REFERENCES template_category(id) ON DELETE CASCADE;
+   ```
+
+3. 改造 `score_templates.template_type / score_type` 列数据 → 用 `category_id` 替换：
+
+   ```sql
+   -- 老数据迁移：
+   INSERT INTO template_category (name, parent_id, max_score, is_bind_template, created_at, updated_at)
+   SELECT '学业加分（迁移）', NULL, 100.00, TRUE, NOW(), NOW()
+   WHERE NOT EXISTS (SELECT 1 FROM template_category WHERE name = '学业加分（迁移）');
+   UPDATE template
+      SET category_id = (SELECT id FROM template_category WHERE name = '学业加分（迁移）' LIMIT 1)
+    WHERE category_id IS NULL;
+   ```
+
+4. 字段化类别数据迁移（FieldConfig / FieldSubcategory → TemplateCategory 树）：
+
+   ```sql
+   -- 1. 把 FieldConfig (score_type=SCORE) 行插入为根节点
+   INSERT INTO template_category (name, parent_id, max_score, ...)
+   SELECT field_key, NULL, default_max_score, NOW(), NOW() FROM field_config WHERE score_type='SCORE';
+
+   -- 2. 把 FieldSubcategory 插入为对应 parent_id 子节点
+   INSERT INTO template_category (name, parent_id, max_score, ...)
+   SELECT sub.field_key, p.id, sub.default_max_score, NOW(), NOW()
+     FROM field_subcategory sub
+     JOIN template_category p ON p.name = (SELECT field_key FROM field_config WHERE id = sub.config_id);
+
+   -- 3. 删旧表
+   DROP TABLE IF EXISTS field_subcategory CASCADE;
+   DROP TABLE IF EXISTS field_config CASCADE;
+   ```
+
+5. 部署 backend → 启动时 `Base.metadata.create_all` 跳过（表已存在）
 
 ---
 

@@ -557,10 +557,67 @@ WHERE extra_info ->> 'f_2' = '达标';
 
 ---
 
-## 九、Alembic 迁移
+## 九、Schema 同步（不再用 alembic）
+
+> 本项目当前**不使用 alembic**，所有 schema 变更通过 SQLAlchemy 的
+> `Base.metadata.create_all()` 在启动时自动同步。详见 `docs/base/db-schema-sync.md`。
+>
+> 本章针对 extra_info_field 表写一个实操示例：
+
+### 9.1 model 文件
+
+新文件：`src/models/extra_info_field.py`
 
 ```python
-# migrations/xxx_add_extra_info_field.py
+"""学生扩展字段模型"""
+from sqlalchemy import String, Integer, Text, Boolean, JSON
+from sqlalchemy.orm import Mapped, mapped_column
+from typing import Optional
+
+from .base import Base, TimestampMixin
+
+
+class ExtraInfoField(Base, TimestampMixin):
+    """extra_info_field 表"""
+    __tablename__ = "extra_info_field"
+
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    type: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="TEXT"
+    )  # TEXT / NUMBER / SELECT / DATE
+    options: Mapped[list] = mapped_column(JSON, default=list)  # SELECT 类型的选项列表
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    description: Mapped[Optional[str]] = mapped_column(String(255))
+```
+
+### 9.2 在 `src/models/__init__.py` 导出
+
+```python
+from src.models.extra_info_field import ExtraInfoField
+
+__all__ = [..., "ExtraInfoField"]
+```
+
+### 9.3 部署 / 同步
+
+```bash
+# 推送代码 → CI 自动构建新镜像
+git push
+
+# 服务器上拉新镜像并重启 backend
+docker compose pull idbackend
+docker compose up -d idbackend
+```
+
+启动时 `Base.metadata.create_all()` 自动检测到 `extra_info_field` 不存在 → 自动 CREATE TABLE + 索引。
+
+### 9.4 与历史 alembic 写法的对应
+
+原来 alembic 写法（**已废弃，不再使用**）：
+
+```python
+# migrations/xxx_add_extra_info_field.py —— 历史 / 仅供对照
 
 from alembic import op
 import sqlalchemy as sa
@@ -586,6 +643,19 @@ op.create_index(
     ["sort_order", "id"],
 )
 ```
+
+对比现在的 model 写法（**唯一来源，create_all 派生 schema**）：
+
+| 项 | 旧 alembic 写法 | 现 model 写法（推荐） |
+|----|----------------|---------------------|
+| 表名 | `op.create_table("extra_info_field", ...)` | `class ExtraInfoField(Base, ...)` 写 `__tablename__` |
+| 列定义 | `sa.Column("xxx", sa.String(N), nullable=False, server_default=...)` | `xxx: Mapped[str] = mapped_column(String(N), nullable=False, default=...)` |
+| 默认值 | `server_default="TEXT"`（DB 端） | `default="TEXT"`（Python 端，等价） |
+| 索引 | `op.create_index(...)` | `__table_args__ = (Index(...),)` |
+| 部署命令 | `alembic upgrade head` | 重部署 backend |
+
+**核心**：以前 schema 定义在两个地方（model + migration），容易漂移。
+现在 schema **单一来源 = model**，`create_all` 派生 SQL。对简单演进项目这是优势。
 
 ---
 

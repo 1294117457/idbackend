@@ -1468,7 +1468,7 @@ Settings.storage_backend == "s3"
 
 如果你要把当前代码升级到 4 层架构：
 
-- [ ] **DB 层**：写 Alembic 迁移（删 `bucket_name`、改 `file_category` 为 Enum、加索引）
+- [ ] **DB 层**：改 `src/models/file.py`（删 `bucket_name`、改 `file_category` 为 Enum、加索引）+ 重新部署 backend（启动时 `Base.metadata.create_all` 自动同步；**注意：create_all 不会改已存在列的类型，需手工 ALTER 或清库**）
 - [ ] **Model 层**：替换 `src/models/file.py`
 - [ ] **新增 ABC 层**：建 `src/infra/storage/base.py`，定义 `Storage(ABC)`
 - [ ] **改名 Adapter**：把 `src/infra/s3.py` 改成 `s3_adapter.py`，`class S3Adapter(Storage):`

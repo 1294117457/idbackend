@@ -5,7 +5,9 @@ uvicorn[standard]>=0.30.0
 sqlalchemy>=2.0.0
 asyncpg>=0.29.0
 psycopg2-binary>=2.9.0
-alembic>=1.13.0
+
+# Schema 同步改用 SQLAlchemy `Base.metadata.create_all()`（幂等建表），不再用 alembic。
+# 如未来需要 schema diff 管理，可重新引入 alembic>=1.13.0。
 
 # Redis
 redis>=5.0.0

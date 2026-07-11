@@ -9,4 +9,7 @@ COPY . .
 
 ENV PYTHONPATH=/app
 
-CMD ["sh", "-c", "alembic upgrade head && exec uvicorn main:app --host 0.0.0.0 --port 8000"]
+# 启动流程：src.main() 内部先调 Base.metadata.create_all（幂等同步 schema），
+# 再起 uvicorn serve。无需 alembic / 不用版本表。
+# 详细设计见 docs/base/db-schema-sync.md。
+CMD ["python", "-m", "src.main"]
