@@ -1,20 +1,3 @@
-"""idbackend 应用入口。
-
-启动方式（推荐）：
-    python -m src.main        ← 启动时自动同步 schema（Base.metadata.create_all）
-    uvicorn main:app           ← 直接启动 web server（**不会同步 schema**）
-
-Schema 同步策略：
-    本项目**不使用 alembic**。所有 model 通过 SQLAlchemy 的 `Base.metadata.create_all()`
-    在进程启动时同步到 DB。
-
-    - 表不存在 → CREATE TABLE
-    - 表已存在 → 跳过（完全幂等）
-    - 加新 model / 加字段 → 重新部署即可
-
-    注意：create_all **不会做 schema diff**（不会改列类型、不会删列、不会改默认）。
-    字段类型变更 / 删列 / 改 FK 行为需要手工 SQL 处理（详见 docs/base/db-schema-sync.md）。
-"""
 from contextlib import asynccontextmanager
 
 import uvicorn
@@ -100,11 +83,7 @@ register_all_routes(app)
 # ============ 启动入口 ============
 
 def main() -> None:
-    """`python -m src.main` 入口。
 
-    1. 同步建表（Base.metadata.create_all，幂等）
-    2. 起 uvicorn serve
-    """
     settings = get_settings()
 
     # 1. Schema 同步（幂等，可重复跑）
