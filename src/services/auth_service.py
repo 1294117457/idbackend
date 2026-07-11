@@ -9,12 +9,21 @@ from src.infra.jwt import (
     create_refresh_token,
     verify_token,
     verify_password,
-    JWTError,
+    TokenError,
+    AccessTokenExpiredError,
+    RefreshTokenExpiredError,
 )
 from src.infra.redis import RedisCache, get_redis
 from src.infra.config import is_system_account
 from src.models import User, Role, UserRole
-from src.app.schemas.errors import NotFoundError, BadRequestError, ConflictError, ForbiddenError
+from src.models.user import UserStatus
+from src.app.schemas.errors import (
+    NotFoundError,
+    BadRequestError,
+    ConflictError,
+    ForbiddenError,
+    AccountDisabledError,
+)
 from src.services.rbac_service import RbacService
 
 
@@ -75,7 +84,7 @@ class AuthService:
         if not verify_password(password, user.password):
             raise BadRequestError("用户名或密码错误")
 
-        if user.status != "active":
+        if user.status != UserStatus.ACTIVE.value:
             raise ForbiddenError("账户已被禁用")
 
         user.last_login_at = datetime.utcnow().isoformat()
@@ -108,7 +117,7 @@ class AuthService:
         if not verify_password(password, user.password):
             raise BadRequestError("用户名或密码错误")
 
-        if user.status != "active":
+        if user.status != UserStatus.ACTIVE.value:
             raise ForbiddenError("账户已被禁用")
 
         # 鉴权：白名单超管，或拥有 super_admin / admin / reviewer 角色之一
@@ -133,28 +142,43 @@ class AuthService:
         """刷新 token，返回 (新的 access_token, 新的 refresh_token)
 
         不再查询角色/权限，新 token 只含身份信息。
+
+        异常细分（被 exception_handler 按 body_code 映射）：
+        - RefreshTokenExpiredError  → HTTP 401 + body.code=10002（refresh 过期）
+        - TokenError                → HTTP 401 + body.code=10003（refresh 篡改/签错）
+        - AccountDisabledError      → HTTP 401 + body.code=10003（账号被禁用，msg 区分）
         """
-        # 1. 解析并验证 refresh token
-        payload = verify_token(refresh_token)
+        # 1. 解析 refresh token（校验类型 + 过期）
+        try:
+            payload = verify_token(refresh_token, expected_type="refresh")
+        except RefreshTokenExpiredError:
+            raise  # 透传：HTTP 401 + body.code=10002
+        except TokenError:
+            raise TokenError("refresh_token 无效")  # HTTP 401 + body.code=10003
+
         if payload.get("type") != "refresh":
-            raise JWTError("无效的 refresh token 类型")
+            raise TokenError("Token 类型错误，期望 refresh")
 
         jti = payload.get("jti")
         if not jti:
-            raise JWTError("Refresh token 缺少 jti")
+            raise TokenError("Refresh token 缺少 jti")
 
         # 2. 检查是否已撤销
         redis = await get_redis()
         cache = RedisCache(redis)
         if await cache.is_refresh_token_revoked(jti):
-            raise JWTError("Refresh token 已失效")
+            raise TokenError("Refresh token 已失效")
 
         # 3. 检查用户是否仍然有效
         user_id = payload.get("userId")
         result = await db.execute(select(User).where(User.id == user_id))
         user = result.scalar_one_or_none()
-        if not user or user.status != "active":
-            raise JWTError("用户不存在或已禁用")
+        if not user:
+            raise TokenError("用户不存在")
+        if user.status != UserStatus.ACTIVE.value:
+            # 用户中途被禁用 → 撤销所有 refresh token（防止继续 rotate）
+            await cache.revoke_all_user_refresh_tokens(user_id)
+            raise AccountDisabledError()  # HTTP 401 + body.code=10003
 
         # 4. 撤销旧 refresh token (rotation)
         await cache.revoke_refresh_token(jti)
@@ -167,7 +191,10 @@ class AuthService:
     @staticmethod
     async def revoke_refresh_token(refresh_token: str) -> None:
         """撤销指定的 refresh token（登出时调用）"""
-        payload = verify_token(refresh_token)
+        try:
+            payload = verify_token(refresh_token, expected_type="refresh")
+        except (TokenError, AccessTokenExpiredError, RefreshTokenExpiredError):
+            return  # token 无效，忽略
         if payload.get("type") != "refresh":
             return
         jti = payload.get("jti")

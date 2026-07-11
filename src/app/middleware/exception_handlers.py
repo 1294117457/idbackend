@@ -4,11 +4,16 @@
 app.add_exception_handler），不是 ASGI Middleware。但放在 middleware 目录下
 作为"横切关注点"统一管理。
 
-设计（v2）：
+设计（v3）：
 - 业务异常统一继承 BusinessError（见 src.app.schemas.errors）
 - handler 只注册基类一个：add_exception_handler(BusinessError, ...)
 - 新增业务异常子类时，**不需要修改本文件**——MRO 自动匹配
 - 兜底：未捕获异常 → 500；Pydantic 校验失败 → 400 + VALIDATION_ERROR
+
+双 token 场景（body.code 解耦）：
+- 优先用 exc.body_code 作为 body.code（如果非 None）
+- 否则用 exc.http_code 作为 body.code（业务层 4xx/5xx 默认一对一）
+- 这样 AccountDisabledError(http_code=401, body_code=10003) 可正常映射
 
 为什么不用 ASGI Middleware 捕获异常？
 - FastAPI 路由层抛出的异常已经被 @app.exception_handler 消费
@@ -33,10 +38,15 @@ def _to_business_response(
 ) -> JSONResponse:
     """业务异常 → 统一 JSON 响应（code/errorCode/msg/data 四段式）
 
+    body.code 解析规则（双 token 场景）：
+    - 如果 exc.body_code 非 None → 用 body_code 作为响应 code（http_code 仍按 exc.http_code）
+    - 否则 → 用 exc.http_code 同时作为 HTTP status 和 body.code（一对一）
+
     extra_data 用于携带额外结构化信息（如"activeApplicationCount"等业务字段）。
     """
+    body_code = exc.body_code if exc.body_code is not None else exc.http_code
     payload = {
-        "code": exc.http_code,
+        "code": body_code,
         "errorCode": exc.error_code,
         "msg": exc.message,
         "data": extra_data,

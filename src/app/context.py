@@ -1,7 +1,8 @@
 """请求用户上下文 - 基于 ContextVar 的异步安全存储（类似 Java ThreadLocal）
 
 使用方式：
-  中间件写入：set_user({user_id, username, is_admin, roles, permissions})
+  AuthMiddleware 写入身份（set_user({user_id, username})）
+  PermissionMiddleware 覆盖写入 RBAC（set_user({user_id, username, is_admin, roles, permissions})）
   业务代码读取：get_user_id() / get_username() / get_user_permissions() / ...
   请求结束清理：clear_user()
 """

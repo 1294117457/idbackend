@@ -1,4 +1,13 @@
-"""JWT 工具"""
+"""JWT 工具
+
+异常体系（向后兼容 TokenError / 子类继承自 JWTError）：
+- TokenError:                基类，body_code=10003（"Token 无效"）
+  - AccessTokenExpiredError:  body_code=10001（access 过期）
+  - RefreshTokenExpiredError: body_code=10002（refresh 过期）
+
+调用方根据异常 .body_code 字段映射到 response.py 的对应工厂。
+本文件不构造 JSONResponse，保持 jwt.py 是纯基础设施层。
+"""
 from datetime import datetime, timedelta
 from typing import Optional, List
 from jose import jwt, JWTError
@@ -16,6 +25,39 @@ try:
 except ImportError:
     pass
 
+
+# ============== 自定义异常 ==============
+
+class TokenError(JWTError):
+    """JWT 校验失败的基类，自带 http_code=401 + 默认 body.code=10003（"Token 无效"）
+
+    子异常携带 body_code 字段，由调用方（中间件 / service）映射到 response.py 的工厂。
+    本文件不构造 JSONResponse，保持 jwt.py 是纯基础设施层（不依赖 HTTP 框架）。
+    """
+
+    http_code: int = 401
+    body_code: int = 10003
+    default_message: str = "Token 无效"
+
+    def __init__(self, message: str = None):
+        super().__init__(message or self.default_message, self.http_code)
+
+
+class AccessTokenExpiredError(TokenError):
+    """access_token 过期 → 由 AuthMiddleware 映射到 access_token_expired_resp()"""
+
+    body_code = 10001
+    default_message = "access_token 已过期"
+
+
+class RefreshTokenExpiredError(TokenError):
+    """refresh_token 过期 → 由 AuthService.refresh 映射到 refresh_token_expired_resp()"""
+
+    body_code = 10002
+    default_message = "refresh_token 已过期"
+
+
+# ============== 密码 ==============
 
 def hash_password(password: str) -> str:
     """密码哈希"""
@@ -36,6 +78,8 @@ def verify_password(plain: str, hashed: str) -> bool:
     # 后备方案
     return hashlib.sha256(plain.encode()).hexdigest() == hashed
 
+
+# ============== Token 签发 ==============
 
 def create_token(
     user_id: int,
@@ -97,8 +141,39 @@ def create_refresh_token(
     return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
 
 
-def verify_token(token: str) -> Optional[dict]:
-    """验证并返回 payload"""
+# ============== Token 校验 ==============
+
+def verify_token(token: str, expected_type: str = "access") -> dict:
+    """校验 token 签名 + 类型 + 过期
+
+    Args:
+        token: JWT 字符串
+        expected_type: "access" / "refresh"
+
+    Returns:
+        payload dict（含 userId / username / type / exp / jti 等）
+
+    Raises:
+        AccessTokenExpiredError:  access 过期（仅 expected_type="access" 时，body_code=10001）
+        RefreshTokenExpiredError: refresh 过期（仅 expected_type="refresh" 时，body_code=10002）
+        TokenError:                签名错 / 篡改（body_code=10003）
+
+    Note:
+        - 调用方拿到 payload 后需自己校验 payload["type"] == expected_type
+          （auth_middleware 校验 type==access；auth_service.refresh 校验 type==refresh）
+        - 本方法不构造 JSONResponse，保持 jwt.py 是纯基础设施层
+        - 旧调用 verify_token(token) 不传 expected_type 时默认 "access"，向后兼容
+
+    Examples:
+        >>> try:
+        ...     payload = verify_token(token, expected_type="access")
+        ...     if payload.get("type") != "access":
+        ...         raise TokenError("Token 类型错误，期望 access")
+        ... except AccessTokenExpiredError:
+        ...     return access_token_expired_resp()
+        ... except TokenError:
+        ...     return invalid_token_resp()
+    """
     try:
         return jwt.decode(
             token,
@@ -106,6 +181,8 @@ def verify_token(token: str) -> Optional[dict]:
             algorithms=[settings.JWT_ALGORITHM],
         )
     except jwt.ExpiredSignatureError:
-        raise JWTError("Token 已过期", 401)
+        if expected_type == "access":
+            raise AccessTokenExpiredError() from None
+        raise RefreshTokenExpiredError() from None
     except JWTError as e:
-        raise JWTError(f"Token 验证失败: {e}", 401)
+        raise TokenError(f"Token 验证失败: {e}") from e

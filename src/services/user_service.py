@@ -21,26 +21,35 @@ class UserService:
     """
 
     @staticmethod
-    async def load_user_auth_info(user_id: int) -> Optional[Dict[str, Any]]:
-        """加载用户鉴权所需的数据库信息（状态 + 角色 + 权限），专供 PermissionMiddleware 调用。
+    async def verify_account_active(user_id: int) -> bool:
+        """仅校验账号是否 ACTIVE，专供 AuthMiddleware 调用。
 
         Returns:
-            None  → 账号已被禁用，中间件应返回 401
-            dict  → 包含 user_id / username / roles / permissions
+            True  → 账号正常
+            False → 用户不存在 / 账号被禁用
+
+        性能：1 次 SELECT，仅查 status 字段。
+        """
+        async with AsyncSessionLocal() as db:
+            user = await db.get(User, user_id)
+            return user is not None and user.status == UserStatus.ACTIVE.value
+
+    @staticmethod
+    async def load_user_rbac(user_id: int) -> Optional[Dict[str, Any]]:
+        """加载用户角色 + 权限码，专供 PermissionMiddleware 调用。
+
+        Returns:
+            None  → 用户不存在（账号状态由 AuthMiddleware 保证，这里不重复检查）
+            dict  → {user_id, username, roles, permissions}
+
+        与原 load_user_auth_info 的区别：
+        - 不再返回 None 表示"账号禁用"（那个职责下沉到 AuthMiddleware）
+        - 用户不存在时返回 None（PermissionMiddleware 防御性兜底）
         """
         async with AsyncSessionLocal() as db:
             user = await db.get(User, user_id)
             if not user:
-                return {
-                    "user_id": user_id,
-                    "username": "",
-                    "is_admin": False,
-                    "roles": [],
-                    "permissions": [],
-                }
-
-            if user.status != UserStatus.ACTIVE.value:
-                return None  # 账号禁用 → 触发 401
+                return None
 
             result = await db.execute(
                 select(
@@ -69,6 +78,30 @@ class UserService:
                 "roles": list(role_map.values()),
                 "permissions": sorted(perm_set),
             }
+
+    @staticmethod
+    async def load_user_auth_info(user_id: int) -> Optional[Dict[str, Any]]:
+        """⚠️ 已 deprecated：拆分为 verify_account_active + load_user_rbac 两个原子方法。
+
+        本方法保留仅作为过渡期兼容包装，内部直接转调两个新方法。
+        行为对齐旧实现：返回 None = 账号禁用；返回空角色字典 = 用户不存在。
+
+        计划：下下个迭代强删，所有调用方改用 verify_account_active + load_user_rbac。
+        """
+        if not await UserService.verify_account_active(user_id):
+            return None  # 账号被禁用 → 触发旧 401（兼容路径）
+
+        result = await UserService.load_user_rbac(user_id)
+        if result is None:
+            # 用户不存在（旧行为：返回空角色字典）
+            return {
+                "user_id": user_id,
+                "username": "",
+                "is_admin": False,
+                "roles": [],
+                "permissions": [],
+            }
+        return result
 
     @staticmethod
     async def get_user_by_id(
