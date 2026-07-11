@@ -93,7 +93,7 @@ pytest tests/ -v
 docker build -t idpython .
 docker run -p 8000:8000 --env-file .env idpython
 ```
-1
+
 ## 环境变量
 
 ```bash
