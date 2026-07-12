@@ -32,7 +32,6 @@ from src.app.schemas.auth import (
 from src.app.schemas.user import CurrentUserInfoVO
 from src.app.schemas.errors import BadRequestError
 from src.services import AuthService, UserService
-from src.infra.jwt import JWTError
 from src.infra.captcha import Captcha
 from src.infra.email import EmailCode
 

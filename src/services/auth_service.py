@@ -3,15 +3,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
 from datetime import datetime
+from jose import jwt as jose_jwt, JWTError
 
 from src.infra.jwt import (
     create_token,
     create_refresh_token,
     verify_token,
     verify_password,
-    TokenError,
-    AccessTokenExpiredError,
-    RefreshTokenExpiredError,
 )
 from src.infra.redis import RedisCache, get_redis
 from src.infra.config import is_system_account
@@ -23,6 +21,8 @@ from src.app.schemas.errors import (
     ConflictError,
     ForbiddenError,
     AccountDisabledError,
+    RefreshTokenExpiredError,
+    InvalidTokenError,
 )
 from src.services.rbac_service import RbacService
 
@@ -144,37 +144,43 @@ class AuthService:
         不再查询角色/权限，新 token 只含身份信息。
 
         异常细分（被 exception_handler 按 body_code 映射）：
-        - RefreshTokenExpiredError  → HTTP 401 + body.code=10002（refresh 过期）
-        - TokenError                → HTTP 401 + body.code=10003（refresh 篡改/签错）
-        - AccountDisabledError      → HTTP 401 + body.code=10003（账号被禁用，msg 区分）
+        - RefreshTokenExpiredError → HTTP 401 + body.code=10002（refresh 过期，业务异常）
+        - InvalidTokenError        → 重新 throw BadRequest（业务路由层）
+        - AccountDisabledError     → HTTP 401 + body.code=10003（账号被禁用，msg 区分）
+
+        设计：verify_token 直接透传 jose 原生异常（ExpiredSignatureError / JWTError），
+        本服务按"refresh 上下文"把 ExpiredSignatureError 翻译为业务异常 RefreshTokenExpiredError，
+        把其余 JWTError 翻译为 InvalidTokenError。
         """
-        # 1. 解析 refresh token（校验类型 + 过期）
+        # 1. 解析 refresh token（jose 层抛原生异常；本服务按上下文翻译为业务异常）
         try:
             payload = verify_token(refresh_token, expected_type="refresh")
-        except RefreshTokenExpiredError:
-            raise  # 透传：HTTP 401 + body.code=10002
-        except TokenError:
-            raise TokenError("refresh_token 无效")  # HTTP 401 + body.code=10003
+        except jose_jwt.ExpiredSignatureError:
+            # refresh 过期 → 10002
+            raise RefreshTokenExpiredError()
+        except JWTError as e:
+            # refresh 本身就是个 token，无效就是"身份不可信"，映射到 10003（与 access 篡改同号）
+            raise InvalidTokenError(f"refresh_token 无效: {e}")
 
         if payload.get("type") != "refresh":
-            raise TokenError("Token 类型错误，期望 refresh")
+            raise InvalidTokenError("Token 类型错误，期望 refresh")
 
         jti = payload.get("jti")
         if not jti:
-            raise TokenError("Refresh token 缺少 jti")
+            raise InvalidTokenError("Refresh token 缺少 jti")
 
         # 2. 检查是否已撤销
         redis = await get_redis()
         cache = RedisCache(redis)
         if await cache.is_refresh_token_revoked(jti):
-            raise TokenError("Refresh token 已失效")
+            raise InvalidTokenError("Refresh token 已失效")
 
         # 3. 检查用户是否仍然有效
         user_id = payload.get("userId")
         result = await db.execute(select(User).where(User.id == user_id))
         user = result.scalar_one_or_none()
         if not user:
-            raise TokenError("用户不存在")
+            raise NotFoundError(f"用户不存在: id={user_id}")
         if user.status != UserStatus.ACTIVE.value:
             # 用户中途被禁用 → 撤销所有 refresh token（防止继续 rotate）
             await cache.revoke_all_user_refresh_tokens(user_id)
@@ -193,8 +199,8 @@ class AuthService:
         """撤销指定的 refresh token（登出时调用）"""
         try:
             payload = verify_token(refresh_token, expected_type="refresh")
-        except (TokenError, AccessTokenExpiredError, RefreshTokenExpiredError):
-            return  # token 无效，忽略
+        except JWTError:
+            return  # token 无效或过期，忽略
         if payload.get("type") != "refresh":
             return
         jti = payload.get("jti")

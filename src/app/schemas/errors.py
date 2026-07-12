@@ -105,6 +105,42 @@ class AccountDisabledError(BusinessError):
     default_message = "账号已被禁用，请联系管理员"
 
 
+class RefreshTokenExpiredError(BusinessError):
+    """refresh_token 过期 → HTTP 401 + body.code=10002
+
+    业务层异常（非 jose 基础设施异常）。
+    由 auth_service.refresh() 捕获 jose 的 jwt.ExpiredSignatureError 后重新抛出。
+    exception_handler 按 body_code=10002 映射响应体。
+
+    设计：放在 schemas/errors.py 而非 jwt.py。
+    access / refresh 是业务概念，jwt 层面只有"过期"一种事实；
+    业务路由 expected_type → body_code 应该住在业务层。
+    """
+
+    http_code = 401
+    error_code = "REFRESH_TOKEN_EXPIRED"  # 日志用
+    body_code = 10002                    # 响应 body.code
+    default_message = "refresh_token 已过期，请重新登录"
+
+
+class InvalidTokenError(BusinessError):
+    """token 无效 / 类型错 / 篡改 → HTTP 401 + body.code=10003
+
+    与 UnauthorizedError（401/401）的区别：
+    - UnauthorizedError: 业务层 401（无身份）
+    - InvalidTokenError:  身份不可信（token 篡改/类型错/refresh 失效）
+
+    设计：用于 auth_service.refresh() 各种 refresh 失效场景（除 10002 之外）。
+    jwt.py 透传 jose 原生异常（jwt.ExpiredSignatureError / JWTError），
+    业务层翻译为 InvalidTokenError，自动映射到 10003。
+    """
+
+    http_code = 401
+    error_code = "INVALID_TOKEN"  # 日志用
+    body_code = 10003            # 响应 body.code
+    default_message = "Token 无效"
+
+
 __all__ = [
     "BusinessError",
     "NotFoundError",
@@ -113,4 +149,6 @@ __all__ = [
     "ConflictError",
     "UnauthorizedError",
     "AccountDisabledError",
+    "RefreshTokenExpiredError",
+    "InvalidTokenError",
 ]

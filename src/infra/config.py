@@ -64,14 +64,7 @@ class Settings(BaseSettings):
 
     # 文件上传
     MAX_FILE_SIZE: int = 50 * 1024 * 1024  # 50MB
-
-    # 系统超管白名单，逗号分隔，如 "zch,admin"
-    # 对应 .env: SYSTEM_ACCOUNTS=zch,admin
     SYSTEM_ACCOUNTS: str = "admin"
-
-    # CORS：允许跨域来源列表（JSON 数组形式）
-    # 开发环境默认 ["*"]，生产环境务必改为具体域名白名单
-    # 对应 .env: ALLOWED_ORIGINS=["https://yourdomain.com"]
     ALLOWED_ORIGINS: List[str] = ["*"]
 
     model_config = SettingsConfigDict(
