@@ -73,7 +73,13 @@ class FileService:
             raise
         await self._db.refresh(metadata)
 
-        return metadata, self._storage.get_access_url(key)
+        # v6.0：返回下载签名 URL（带 attachment），1 小时有效
+        return metadata, self._storage.get_download_url(
+            metadata.object_name,
+            original_name=metadata.original_name,
+            expiry=3600,
+            force_attachment=True,
+        )
 
     async def upload_avatar(
         self,
@@ -119,7 +125,12 @@ class FileService:
             except Exception:
                 await self._db.rollback()
 
-        return new_meta, self._storage.get_public_url(new_meta.object_name)
+        return new_meta, self._storage.get_download_url(
+            new_meta.object_name,
+            original_name=new_meta.original_name,
+            expiry=86400 * 7,           # 头像默认 7 天（业务长期展示）
+            force_attachment=False,     # 头像预览用，不强制下载
+        )
 
     # ---- 查询 ----
 
@@ -165,36 +176,46 @@ class FileService:
             page_size=req.pageSize,
         )
 
-    # ---- 预览 / 下载 ----
+    # ---- 预览 / 下载（v6.0 全签名模式）----
 
     async def get_preview_data(
         self,
         file_id: int,
         expiry_minutes: int = 60,
     ) -> Tuple[FileMetadata, str]:
+        """返回 (meta, url)——v6.0 统一签名 URL，移除 AVATAR 公开直链特例
 
+        所有 fileCategory 一律走 presigned URL，过期时间由 expiry_minutes 控制。
+        preview 场景 force_attachment=False：浏览器按 Content-Type 内联展示。
+        """
         meta = await self.get_file(file_id)
-        if meta.file_category == FileCategory.AVATAR:
-            url = self._storage.get_public_url(meta.object_name)
-        elif meta.file_category in (FileCategory.POLICY, FileCategory.PROOF):
-            url = self._storage.get_access_url(
-                meta.object_name,
-                expiry=expiry_minutes * 60,
-            )
-        else:
-            raise NotFoundError(
-                f"文件不存在：file_id={file_id}（未知分类 {meta.file_category}）"
-            )
+        url = self._storage.get_download_url(
+            meta.object_name,
+            original_name=meta.original_name,
+            expiry=expiry_minutes * 60,
+            force_attachment=False,
+        )
         return meta, url
 
-    async def get_download_stream(self, file_id: int) -> Tuple[bytes, str, str]:
+    async def get_download_data(
+        self,
+        file_id: int,
+        expiry_minutes: int = 60,
+    ) -> Tuple[FileMetadata, str]:
+        """v6.0：返回 (meta, url)——预签名下载 URL，后端不再中转字节
+
+        - 后端零带宽（MinIO 直发前端）
+        - URL 带 Content-Disposition: attachment（浏览器强制下载）
+        - 默认 60min 过期，前端可在 query 调整 expiryMinutes（1~1440）
+        """
         meta = await self.get_file(file_id)
-        file_data = await self._storage.download(meta.object_name)
-        return (
-            file_data,
-            meta.content_type or "application/octet-stream",
-            meta.original_name,
+        url = self._storage.get_download_url(
+            meta.object_name,
+            original_name=meta.original_name,
+            expiry=expiry_minutes * 60,
+            force_attachment=True,
         )
+        return meta, url
 
     # ---- 更新 / 删除 ----
 

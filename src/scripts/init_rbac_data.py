@@ -146,8 +146,8 @@ PERMISSIONS_DATA = [
     ("file:upload",           "上传头像",       "/api/file/avatar",                         "file", "文件管理", 111),
     ("file:list",             "文件搜索",       "/api/file/search",                         "file", "文件管理", 112),
     ("file:detail",           "文件元信息",     "/api/file/{id}",                           "file", "文件管理", 113),
-    ("file:preview",          "预览链接",       "/api/file/{id}/preview",                   "file", "文件管理", 114),
-    ("file:download",         "下载文件",       "/api/file/{id}/download",                  "file", "文件管理", 115),
+    ("file:preview",          "预览链接",       "/api/file/{id}/preview-url",              "file", "文件管理", 114),
+    ("file:download",         "下载文件",       "/api/file/{id}/download-url",             "file", "文件管理", 115),
     ("file:update",           "更新文件",       "/api/file/{id}",                           "file", "文件管理", 116),
     ("file:delete",           "删除文件",       "/api/file/{id}",                           "file", "文件管理", 117),
 

@@ -7,8 +7,15 @@
 - 原 S3Adapter 适配 SeaweedFS（S3 兼容网关）；
 - 现统一改名为 MinIOAdapter，后端从 SeaweedFS 切到 MinIO。
 - boto3 端不感知，MinIO 实现 100% 兼容 AWS S3 API。
+
+v6.0 新增：签名模式
+- get_presigned_upload_url: PUT URL（v6.0 预留，不启用）
+- get_download_url: GET URL 含 ResponseContentDisposition
 """
-from typing import BinaryIO
+from datetime import datetime, timedelta
+from typing import BinaryIO, Optional
+from urllib.parse import quote
+
 import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
@@ -86,6 +93,67 @@ class MinIOAdapter(Storage):
             Params={"Bucket": self._bucket, "Key": key},
             ExpiresIn=expiry,
         )
+
+    def get_download_url(
+        self,
+        key: str,
+        original_name: Optional[str] = None,
+        expiry: int = 3600,
+        force_attachment: bool = True,
+    ) -> str:
+        """v6.0：生成带 Content-Disposition 的预签名 GET URL
+
+        - force_attachment=True  → ResponseContentDisposition: attachment; filename*=UTF-8''<encoded>
+        - force_attachment=False → 不设头，浏览器按 Content-Type 自行处理（预览）
+
+        服务端会按 Content-Type 决定内联展示还是下载；签名查询串本身不影响。
+        """
+        params = {
+            "Bucket": self._bucket,
+            "Key": key,
+        }
+        if force_attachment:
+            if original_name:
+                encoded = quote(original_name, safe='')
+                params["ResponseContentDisposition"] = (
+                    f"attachment; filename*=UTF-8''{encoded}"
+                )
+            else:
+                params["ResponseContentDisposition"] = "attachment"
+        return self._client.generate_presigned_url(
+            ClientMethod="get_object",
+            Params=params,
+            ExpiresIn=expiry,
+        )
+
+    def get_presigned_upload_url(
+        self,
+        key: str,
+        content_type: str = "application/octet-stream",
+        content_length: Optional[int] = None,
+        expiry: int = 3600,
+    ) -> dict:
+        """v6.0 预留：生成 PUT 签名 URL（本期不启用，留 v7.0）
+
+        返回结构：
+            {
+                "url": <presigned PUT URL>,
+                "headers": {"Content-Type": <content_type>},
+                "expires_at": <ISO8601 string>,
+            }
+        """
+        url = self._client.generate_presigned_url(
+            ClientMethod="put_object",
+            Params={"Bucket": self._bucket, "Key": key},
+            ExpiresIn=expiry,
+        )
+        return {
+            "url": url,
+            "headers": {"Content-Type": content_type},
+            "expires_at": (
+                datetime.utcnow() + timedelta(seconds=expiry)
+            ).isoformat() + "Z",
+        }
 
     def get_public_url(self, key: str) -> str:
         return f"{self._public_url}/{self._bucket}/{key}"

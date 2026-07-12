@@ -1,9 +1,8 @@
 import io
 from typing import Annotated
-from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi import HTTPException, status
 
 from src.app.dependencies import get_file_service
 from src.app import response as R
@@ -20,12 +19,11 @@ from src.services.file_service import FileService
 router = APIRouter(prefix="/api/file", tags=["文件"])
 
 
-# ---------- 内部工具（仅与 HTTP 协议相关：流式响应 + 大小校验） ----------
+# ---------- 内部工具（仅与 HTTP 协议相关：大小校验） ----------
 
 async def _read_and_validate_size(file: UploadFile = File(...)) -> bytes:
     """读取上传文件并校验大小 → 超过限制抛 HTTP 413"""
     from src.infra.config import get_settings
-    from fastapi import HTTPException, status
 
     settings = get_settings()
     content = await file.read()
@@ -37,18 +35,7 @@ async def _read_and_validate_size(file: UploadFile = File(...)) -> bytes:
     return content
 
 
-def _streaming_response(file_data: bytes, content_type: str, original_name: str):
-    encoded_name = quote(original_name, safe='')
-    return StreamingResponse(
-        io.BytesIO(file_data),
-        media_type=content_type,
-        headers={
-            "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_name}",
-        },
-    )
-
-
-# ============ 1. 上传 ============
+# ============ 1. 上传（v6.0：中转流逻辑不变，返回 url 改为签名 URL）============
 
 @router.post("/upload", status_code=201)
 async def upload_file(
@@ -103,32 +90,49 @@ async def get_file_info(
     return R.success_resp(FileVO.from_orm_to_vo(meta).model_dump())
 
 
-# ============ 3. 预览 / 下载 ============
+# ============ 3. 预览 / 下载（v6.0 全签名模式）============
 
-@router.get("/{file_id}/preview")
+@router.get("/{file_id}/preview-url")
 async def get_preview_url(
     file_id: int,
     expiryMinutes: int = Query(
         60,
         ge=1,
         le=1440,
-        description="URL 过期分钟数（仅 POLICY/PROOF 生效；AVATAR 公开直链无过期）",
+        description="URL 过期分钟数（默认 60min，最大 24h）",
     ),
     service: FileService = Depends(get_file_service),
 ):
+    """获取文件预览 URL——v6.0：所有 fileCategory 统一走签名
 
+    返回 FileDataVO{id, originalName, contentType, url}
+    - url: 预签名 GET URL，过期默认 60min
+    - force_attachment=False：浏览器按 Content-Type 内联展示（PDF/图片）
+    """
     meta, url = await service.get_preview_data(file_id, expiryMinutes)
     return R.success_resp(FileDataVO.from_orm_to_vo(meta, url).model_dump())
 
 
-@router.get("/{file_id}/download")
-async def download_file(
+@router.get("/{file_id}/download-url")
+async def get_download_url(
     file_id: int,
+    expiryMinutes: int = Query(
+        60,
+        ge=1,
+        le=1440,
+        description="URL 过期分钟数（默认 60min，最大 24h）",
+    ),
     service: FileService = Depends(get_file_service),
 ):
-    """下载文件（流式响应）"""
-    file_data, content_type, original_name = await service.get_download_stream(file_id)
-    return _streaming_response(file_data, content_type, original_name)
+    """获取文件下载 URL——v6.0：替换旧的 /download 流式接口
+
+    返回 FileDataVO{id, originalName, contentType, url}
+    - url: 预签名 GET URL，过期默认 60min
+    - force_attachment=True：Content-Disposition: attachment 强制下载
+    - 前端拿 url 后用 window.open() 即可触发浏览器原生下载
+    """
+    meta, url = await service.get_download_data(file_id, expiryMinutes)
+    return R.success_resp(FileDataVO.from_orm_to_vo(meta, url).model_dump())
 
 
 # ============ 4. 更新 / 删除 ============

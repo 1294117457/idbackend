@@ -2,9 +2,13 @@
 
 把 key 当作相对路径写到 base_dir 下；
 get_access_url 返回 /static/{key}，需要 Nginx 代理 static_dir 到 base_dir。
+
+v6.0 新增：
+- get_download_url 返回 /static/{key}（开发环境无签名概念）
+- get_presigned_upload_url 抛 NotImplementedError（本地存储不支持签名上传）
 """
 import os
-from typing import BinaryIO
+from typing import BinaryIO, Optional
 
 from src.infra.storage.base import Storage
 
@@ -51,6 +55,28 @@ class LocalAdapter(Storage):
     def get_public_url(self, key: str) -> str:
         # 本地存储：公开读 = 同一静态 URL（无签名）
         return f"/static/{key}"
+
+    def get_download_url(
+        self,
+        key: str,
+        original_name: Optional[str] = None,
+        expiry: int = 3600,
+        force_attachment: bool = True,
+    ) -> str:
+        """v6.0：本地存储直接返回静态路径，无签名"""
+        return f"/static/{key}"
+
+    def get_presigned_upload_url(
+        self,
+        key: str,
+        content_type: str = "application/octet-stream",
+        content_length: Optional[int] = None,
+        expiry: int = 3600,
+    ) -> dict:
+        """v6.0：本地存储不支持签名上传，调用方需 catch 此异常"""
+        raise NotImplementedError(
+            "LocalAdapter 不支持签名上传；开发环境请直接走 POST /api/file/upload 中转流"
+        )
 
     def ensure_bucket(self) -> None:
         os.makedirs(self._base_dir, exist_ok=True)
