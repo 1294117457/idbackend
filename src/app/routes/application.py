@@ -82,7 +82,7 @@ class UpdateDraftRequest(BaseModel):
 
 
 class ResubmitRequest(BaseModel):
-    proof_data_list: List[ProofDataItem]
+    model_config = {"extra": "forbid"}
 
 
 class ReviewProofRequest(BaseModel):
@@ -240,7 +240,7 @@ async def resubmit_application(
     req: ResubmitRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """REJECTED → APPLYING（整体替换 proof 列表）"""
+    """DRAFT/REJECTED/REVOKED → APPLYING"""
     user_id = get_user_id()
     if not user_id:
         return R.unauthorized_resp("未登录")
@@ -252,7 +252,6 @@ async def resubmit_application(
             application_id=application_id,
             user_id=user_id,
             operator_name=operator_name,
-            proof_data_list=[p.model_dump() for p in req.proof_data_list],
         )
         return R.success_resp(format_application(application), msg="申请已重新提交")
     except (NotFoundError, ForbiddenError, ConflictError, BadRequestError) as e:

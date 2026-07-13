@@ -64,6 +64,7 @@ class Settings(BaseSettings):
 
     # 文件上传
     MAX_FILE_SIZE: int = 50 * 1024 * 1024  # 50MB
+    MAX_PREVIEW_FILE_SIZE: int = 5 * 1024 * 1024  # 5MB，仅预览用
     SYSTEM_ACCOUNTS: str = "admin"
     ALLOWED_ORIGINS: List[str] = ["*"]
 

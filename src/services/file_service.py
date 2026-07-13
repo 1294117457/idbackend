@@ -217,6 +217,26 @@ class FileService:
         )
         return meta, url
 
+    async def get_preview_bytes(self, file_id: int) -> Tuple[FileMetadata, bytes]:
+        """返回 (meta, bytes)——用于后端代理预览接口
+
+        校验文件大小不超过 MAX_PREVIEW_FILE_SIZE（默认 5MB），
+        超过则抛异常，由路由层返回 413。
+        """
+        from src.infra.config import get_settings
+
+        meta = await self.get_file(file_id)
+        data = await self._storage.download(meta.object_name)
+
+        settings = get_settings()
+        if len(data) > settings.MAX_PREVIEW_FILE_SIZE:
+            from fastapi import HTTPException, status
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"预览文件大小不能超过 {settings.MAX_PREVIEW_FILE_SIZE // (1024 * 1024)}MB",
+            )
+        return meta, data
+
     # ---- 更新 / 删除 ----
 
     async def update_file(self, req: FileUpdateRequest, file_id: int) -> FileMetadata:

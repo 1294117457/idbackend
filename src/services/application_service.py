@@ -558,7 +558,7 @@ class ApplicationService:
         return application
 
     # ------------------------------------------------------------------
-    # 4.8 resubmit（REJECTED → APPLYING）
+    # 4.8 resubmit（DRAFT/REJECTED/REVOKED → APPLYING）
     # ------------------------------------------------------------------
     @staticmethod
     async def resubmit(
@@ -566,51 +566,27 @@ class ApplicationService:
         application_id: int,
         user_id: int,
         operator_name: str,
-        proof_data_list: List[Dict[str, Any]],
     ) -> Application:
-        """重新提交（REJECTED → APPLYING）
+        """重新提交（DRAFT/REJECTED/REVOKED → APPLYING）
 
-        与 submit 完全同构：整体替换 proof 列表 + sum(proof_score)==apply_score。
-        approved_count / rejected_count 不重置（保留历史投票记录）。
+        仅改状态 + 清 reviewer_ids，不碰 proof 列表。
+        approved_count / rejected_count 保留历史记录。
         """
         application = await ApplicationService._get_for_update(db, application_id)
 
         if application.user_id != user_id:
             raise ForbiddenError("仅本人可重新提交")
-        if application.status != ApplicationStatus.REJECTED.value:
+        if application.status not in (
+            ApplicationStatus.DRAFT.value,
+            ApplicationStatus.REJECTED.value,
+            ApplicationStatus.REVOKED.value,
+        ):
             raise ConflictError(
-                f"申请当前状态 {application.status}，仅 REJECTED 可 resubmit"
+                f"申请当前状态 {application.status}，DRAFT/REJECTED/REVOKED 才可重新提交"
             )
-
-        # 校验新的 proof 集合（注意：apply_score 不变）
-        if not proof_data_list:
-            raise BadRequestError("proof_data_list 不能为空")
-        proof_sum = sum(
-            Decimal(str(p["proof_score"])) for p in proof_data_list
-        )
-        if proof_sum != application.apply_score:
-            raise BadRequestError(
-                f"proof_score 之和 {proof_sum} != apply_score {application.apply_score}"
-            )
-
-        # 整体替换 proof 集合
-        await db.execute(
-            delete(ApplicationProof).where(
-                ApplicationProof.application_id == application_id
-            )
-        )
-        for proof_data in proof_data_list:
-            proof = ApplicationProof(
-                application_id=application.id,
-                file_id=proof_data.get("file_id"),
-                proof_score=Decimal(str(proof_data["proof_score"])),
-                status=ProofStatus.PENDING.value,
-            )
-            db.add(proof)
 
         application.status = ApplicationStatus.APPLYING.value
-        application.gain_score = Decimal("0")  # 重置：所有 proof 回到 PENDING
-        application.reviewer_ids = []          # 重置：所有审核员的历史标记清空，学生可重新提交审核
+        application.reviewer_ids = []
 
         op = ApplicationOperation(
             application_id=application.id,

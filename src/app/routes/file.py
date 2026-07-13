@@ -1,8 +1,9 @@
-import io
 from typing import Annotated
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from fastapi import HTTPException, status
+from fastapi.responses import Response
 
 from src.app.dependencies import get_file_service
 from src.app import response as R
@@ -111,6 +112,31 @@ async def get_preview_url(
     """
     meta, url = await service.get_preview_data(file_id, expiryMinutes)
     return R.query_resp(FileDataVO.from_orm_to_vo(meta, url).model_dump())
+
+
+@router.get("/{file_id}/preview")
+async def get_preview(
+    file_id: int,
+    service: FileService = Depends(get_file_service),
+):
+    """后端代理预览接口——将 MinIO 文件流式透传给前端
+
+    - 前端直接请求本接口即可预览，无需 CORS 配置
+    - 文件大小限制 5MB，超过返回 HTTP 413
+    """
+    meta, data = await service.get_preview_bytes(file_id)
+    # filename* 参数用 RFC 5987/RFC 6266 规范：UTF-8'' 开头 + URL 编码
+    # latin-1 不支持中文，直接拼原名会 UnicodeEncodeError
+    encoded_name = quote(meta.original_name, safe="")
+    disposition = f"inline; filename*=UTF-8''{encoded_name}"
+    return Response(
+        content=data,
+        media_type=meta.content_type,
+        headers={
+            "Content-Disposition": disposition,
+            "Cache-Control": "private, max-age=3600",
+        },
+    )
 
 
 @router.get("/{file_id}/download-url")
