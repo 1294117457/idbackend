@@ -13,6 +13,7 @@ from typing import Optional, List
 
 from sqlalchemy import (
     String, Integer, ForeignKey, DECIMAL, Numeric, Text, Enum as SAEnum, Index,
+    JSON,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -75,6 +76,12 @@ class Application(Base, TimestampMixin):
     review_count: Mapped[int] = mapped_column(Integer, default=1)
     approved_count: Mapped[int] = mapped_column(Integer, default=0)
     rejected_count: Mapped[int] = mapped_column(Integer, default=0)
+
+    # 审核员名单（v4.3：只要审过 proof 或投过 PASS/REJECT，即进入此列表）
+    # 用于"我是否审核过"的业务判断，辅助列表互斥分流
+    reviewer_ids: Mapped[Optional[list[int]]] = mapped_column(
+        JSON, nullable=True, default=list,
+    )
 
     # 关系
     user: Mapped["User"] = relationship(back_populates="applications")

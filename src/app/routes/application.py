@@ -493,6 +493,50 @@ async def list_my_audit_history(
     })
 
 
+@router.get("/api/admin/applications/my-pending")
+async def list_my_pending(
+    pageNum: int = Query(1, ge=1),
+    pageSize: int = Query(20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+):
+    """当前审核员的待审核列表（排除 reviewer_ids 包含自己的人）"""
+    user_id = get_user_id()
+    if not user_id:
+        return R.unauthorized_resp("未登录")
+
+    applications, total = await ApplicationService.list_pending_for_me(
+        db, user_id, pageNum, pageSize,
+    )
+    return R.query_resp({
+        "list": [format_application(a, with_proofs=True) for a in applications],
+        "total": total,
+        "pageNum": pageNum,
+        "pageSize": pageSize,
+    })
+
+
+@router.get("/api/admin/applications/my-reviewed")
+async def list_my_reviewed(
+    pageNum: int = Query(1, ge=1),
+    pageSize: int = Query(20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+):
+    """当前审核员的历史审核列表（reviewer_ids 包含自己）"""
+    user_id = get_user_id()
+    if not user_id:
+        return R.unauthorized_resp("未登录")
+
+    applications, total = await ApplicationService.list_my_reviewed(
+        db, user_id, pageNum, pageSize,
+    )
+    return R.query_resp({
+        "list": [format_application(a, with_proofs=True) for a in applications],
+        "total": total,
+        "pageNum": pageNum,
+        "pageSize": pageSize,
+    })
+
+
 # ════════════════════════════════════════════════════════════════════════
 # 格式化工具
 # ════════════════════════════════════════════════════════════════════════
@@ -518,6 +562,7 @@ def format_application(a, with_proofs: bool = False) -> dict:
         "reviewCount": a.review_count or 1,
         "approvedCount": a.approved_count or 0,
         "rejectedCount": a.rejected_count or 0,
+        "reviewerIds": a.reviewer_ids or [],
         "createdAt": a.created_at.isoformat() if a.created_at else None,
         "updatedAt": a.updated_at.isoformat() if a.updated_at else None,
     }

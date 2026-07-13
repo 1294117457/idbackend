@@ -235,8 +235,16 @@ class ApplicationService:
         await db.refresh(application)
         return application
 
+    @staticmethod
+    def _ensure_reviewer_id(app: Application, reviewer_id: int) -> None:
+        """将 reviewer_id 追加到 reviewer_ids 列表（防重）"""
+        if app.reviewer_ids is None:
+            app.reviewer_ids = []
+        if reviewer_id not in app.reviewer_ids:
+            app.reviewer_ids = app.reviewer_ids + [reviewer_id]
+
     # ------------------------------------------------------------------
-    # 4.4 resubmit（REJECTED → APPLYING）
+    # 4.3 review_proof（审核员审 proof）—— v4.3 新增 reviewer_ids 写入
     # ------------------------------------------------------------------
     @staticmethod
     async def review_proof(
@@ -295,6 +303,9 @@ class ApplicationService:
                 .values(gain_score=Application.gain_score - proof.proof_score)
             )
         # PENDING→REJECTED 或 APPROVED→APPROVED：gain_score 不变
+
+        # v4.3: 追加 reviewer_id（审过 proof 即算审过此 application）
+        ApplicationService._ensure_reviewer_id(application, reviewer_id)
 
         await db.commit()
         await db.refresh(proof)
@@ -422,6 +433,10 @@ class ApplicationService:
             remark=remark,
         )
         db.add(op)
+
+        # v4.3: 追加 reviewer_id
+        ApplicationService._ensure_reviewer_id(application, reviewer_id)
+
         await db.commit()
         await db.refresh(application)
         return application
@@ -472,6 +487,10 @@ class ApplicationService:
             remark=remark.strip(),
         )
         db.add(op)
+
+        # v4.3: 追加 reviewer_id
+        ApplicationService._ensure_reviewer_id(application, reviewer_id)
+
         await db.commit()
         await db.refresh(application)
         return application
@@ -488,36 +507,52 @@ class ApplicationService:
         operator_name: str,
         remark: str,
     ) -> Application:
-        """审核员撤回已通过的申请（PASSED → REJECTED）
+        """审核员撤回申请
 
         前置条件:
-          1. application.status == 'PASSED'
-          2. remark.strip() 非空（必须填写撤回原因）
+          1. (PASSED 状态) → 撤回为 REVOKED
+          2. (APPLYING 状态 且 reviewer_ids 包含当前审核员) → 提前结束为 REJECTED
+          3. remark.strip() 非空
 
         同一事务:
-          - UPDATE application SET status='REJECTED'
-          - INSERT application_operation(REVOKE)
+          - UPDATE application SET status=?
+          - INSERT application_operation(REVOKE/REJECT)
         """
         if not remark or not remark.strip():
             raise BadRequestError("撤回原因 remark 必填")
 
         application = await ApplicationService._get_for_update(db, application_id)
 
-        if application.status != ApplicationStatus.PASSED.value:
+        if application.status == ApplicationStatus.PASSED.value:
+            application.status = ApplicationStatus.REVOKED.value
+            op = ApplicationOperation(
+                application_id=application.id,
+                operator_id=operator_id,
+                operator_name=operator_name,
+                operation=ApplicationStatus.REVOKED.value,
+                remark=remark.strip(),
+            )
+            db.add(op)
+
+        elif application.status == ApplicationStatus.APPLYING.value:
+            reviewer_ids = application.reviewer_ids or []
+            if operator_id not in reviewer_ids:
+                raise ForbiddenError("非审核参与者，无权撤回此申请")
+            application.status = ApplicationStatus.REJECTED.value
+            application.rejected_count = (application.rejected_count or 0) + 1
+            op = ApplicationOperation(
+                application_id=application.id,
+                operator_id=operator_id,
+                operator_name=operator_name,
+                operation=ApplicationStatus.REJECTED.value,
+                remark=remark.strip(),
+            )
+            db.add(op)
+        else:
             raise BadRequestError(
-                f"申请当前状态 {application.status}，仅 PASSED 可撤回"
+                f"申请当前状态 {application.status}，仅 PASSED / APPLYING 可撤回"
             )
 
-        application.status = ApplicationStatus.REVOKED.value
-
-        op = ApplicationOperation(
-            application_id=application.id,
-            operator_id=operator_id,
-            operator_name=operator_name,
-            operation=ApplicationStatus.REVOKED.value,
-            remark=remark.strip(),
-        )
-        db.add(op)
         await db.commit()
         await db.refresh(application)
         return application
@@ -575,6 +610,7 @@ class ApplicationService:
 
         application.status = ApplicationStatus.APPLYING.value
         application.gain_score = Decimal("0")  # 重置：所有 proof 回到 PENDING
+        application.reviewer_ids = []          # 重置：所有审核员的历史标记清空，学生可重新提交审核
 
         op = ApplicationOperation(
             application_id=application.id,
@@ -879,6 +915,81 @@ class ApplicationService:
             .offset((page - 1) * size)
             .limit(size)
         )
+        result = await db.execute(query)
+        return list(result.scalars().all()), total
+
+    # ------------------------------------------------------------------
+    # v4.3 新增：按审核员分流查询
+    # ------------------------------------------------------------------
+    @staticmethod
+    async def list_pending_for_me(
+        db: AsyncSession,
+        reviewer_id: int,
+        page: int = 1,
+        size: int = 20,
+    ) -> tuple[List[Application], int]:
+        """当前审核员的待审核列表
+
+        逻辑：status=APPLYING 且 reviewer_ids 不包含当前审核员
+        """
+        from sqlalchemy import literal_column
+
+        contains_me = literal_column(
+            f"reviewer_ids::jsonb @> to_jsonb({reviewer_id})::jsonb"
+        )
+        query = (
+            select(Application)
+            .where(
+                Application.status == ApplicationStatus.APPLYING.value,
+                or_(
+                    Application.reviewer_ids.is_(None),
+                    ~contains_me,
+                ),
+            )
+            .options(
+                selectinload(Application.proofs),
+                selectinload(Application.user),
+            )
+            .order_by(Application.created_at.desc())
+        )
+
+        count_q = select(func.count()).select_from(query.subquery())
+        total = (await db.execute(count_q)).scalar() or 0
+
+        query = query.offset((page - 1) * size).limit(size)
+        result = await db.execute(query)
+        return list(result.scalars().all()), total
+
+    @staticmethod
+    async def list_my_reviewed(
+        db: AsyncSession,
+        reviewer_id: int,
+        page: int = 1,
+        size: int = 20,
+    ) -> tuple[List[Application], int]:
+        """当前审核员的历史审核列表（reviewer_ids 包含自己）
+
+        包含 PASSED / REJECTED 终态记录，按 updated_at 倒序
+        """
+        from sqlalchemy import literal_column
+
+        contains_me = literal_column(
+            f"reviewer_ids::jsonb @> to_jsonb({reviewer_id})::jsonb"
+        )
+        query = (
+            select(Application)
+            .where(contains_me)
+            .options(
+                selectinload(Application.proofs),
+                selectinload(Application.user),
+            )
+            .order_by(Application.updated_at.desc())
+        )
+
+        count_q = select(func.count()).select_from(query.subquery())
+        total = (await db.execute(count_q)).scalar() or 0
+
+        query = query.offset((page - 1) * size).limit(size)
         result = await db.execute(query)
         return list(result.scalars().all()), total
 
