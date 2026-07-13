@@ -1,20 +1,39 @@
-"""加分申请服务（v4.3）
+"""加分申请服务（v4.4）
 
 ═══════════════════════════════════════════════════════════════════════
-v4.3 关键设计
+v4.4 关键设计变更（相对于 v4.3）
 ═══════════════════════════════════════════════════════════════════════
-1. application 状态机 5 态：DRAFT / APPLYING / PASSED / REJECTED / CANCELLED / REVOKED
-2. CANCELLED = 学生取消（终态），REVOKED = 老师撤回（终态），REJECTED = 老师拒绝（非终态）
-3. submit / resubmit 同构：整体替换 proof 列表 + sum(proof_score)==apply_score
-4. proof.status 是会签中间状态：任意审核员可修改（包括覆盖前审核员）
+1. submit 统一为单一接口：DRAFT/REJECTED/REVOKED → APPLYING
+   - 旧的 submit（仅 DRAFT）和 resubmit 合并为 submit
+2. update_draft 废弃：证明材料改为单 proof CRUD
+   - 新增：create_proof / delete_proof / update_proof_score / replace_proof_file
+3. proof 可编辑条件（学生端）：
+   - application.status ∈ {DRAFT, REJECTED, REVOKED}
+   - proof.status ∈ {PENDING, REJECTED, APPROVED}（APPROVED 也允许学生重传为 PENDING）
+4. touch 接口：DRAFT 状态下纯刷 updated_at（前端"保存草稿"按钮用）
 5. pass_application 前置条件：所有 proof.status=='APPROVED'
-6. pass_application 触发条件：approved_count==review_count → PASSED
-7. gain_score 随 proof 审核动态累加
-8. 同审核员对 application 只允许投一次票（PASS/REJECT 互斥）
-9. review_proof 不写 application_operation（proof 是辅助表）
-10. operation.status 直接记录操作后的 application 状态
-11. review_count 从 template 快照读取，路由层不接受客户端传值
 
+═══════════════════════════════════════════════════════════════════════
+状态机（application）
+═══════════════════════════════════════════════════════════════════════
+  DRAFT       - 草稿（学生可编辑所有 proof）
+  APPLYING    - 审核中（学生锁定）
+  PASSED      - 已通过（终态）
+  REJECTED    - 已驳回（可重提）
+  CANCELLED   - 已取消（终态，学生主动取消）
+  REVOKED     - 已撤回（终态，老师撤回）
+
+═══════════════════════════════════════════════════════════════════════
+proof 状态机
+═══════════════════════════════════════════════════════════════════════
+  PENDING     - 待审核
+  APPROVED    - 已通过（审核员投票）
+  REJECTED    - 已驳回（审核员投票）
+
+  学生可在 application ∈ {DRAFT, REJECTED, REVOKED} 时修改 proof：
+    - 替换文件 → 重置 PENDING
+    - 删除 proof → 物理删除
+    - 修改 proof_score → 不改 status
 ═══════════════════════════════════════════════════════════════════════
 事务边界（关键）
 ═══════════════════════════════════════════════════════════════════════
@@ -40,6 +59,7 @@ from src.models import (
 from src.app.schemas.errors import (
     NotFoundError, BadRequestError, ConflictError, ForbiddenError,
 )
+from src.app.schemas import ApplicationPayload, ProofPayload
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -64,96 +84,172 @@ class ApplicationService:
     """加分申请服务（v4.2）"""
 
     # ------------------------------------------------------------------
-    # 4.1 save_draft（学生创建草稿，允许同模板多次创建）
+    # 4.1 save_draft（v4.5：支持 applicationId=None=新建 / 非空=更新 DRAFT）
     # ------------------------------------------------------------------
     @staticmethod
     async def save_draft(
         db: AsyncSession,
         user_id: int,
-        template_id: int,
-        template_name: str,
-        category_id: int,
-        apply_score: Decimal,
-        proof_data_list: List[Dict[str, Any]],
+        payload: ApplicationPayload,
         review_count: int = 1,
-        remark: Optional[str] = None,
     ) -> Application:
-        """保存草稿（v4.3：同 template 可多次创建草稿，仅阻止 APPLYING/PASSED 状态）
+        """保存草稿（v4.5：applicationId 决定新建/更新）
 
         输入:
           - user_id: 学生 id
-          - template_id, template_name, category_id: 模板快照
-          - apply_score: 计算引擎给出的理论分（前端算完提交）
-          - proof_data_list: [{file_id, proof_score, remark?}, ...]，可空
+          - payload: ApplicationPayload（含 proofs 整表替换）
           - review_count: 从模板快照（路由层传入，不接受客户端直接传值）
-          - remark: 学生侧备注（可选）
 
-        行为:
-          1. 校验 user 存在
-          2. 校验该用户对此 template 没有 APPLYING 或 PASSED 的活申请
-             （有则抛 ConflictError；DRAFT 不阻塞，允许多草稿）
-          3. INSERT applications（status='DRAFT', apply_score=?, gain_score=0）
-          4. 整体替换 proof 集合（status='PENDING', file_id nullable）
-          5. 不写 application_operation
+        分支:
+          - payload.applicationId is None
+              → 新建 application（status='DRAFT'）
+              → 同 template 下若已存在 APPLYING/PASSED 申请则抛 ConflictError
+          - payload.applicationId 非空
+              → 更新现有 application（仅 DRAFT 状态可更新）
+              → 整表替换 proofs
+
+        行为（更新场景）:
+          1. 校验本人 + status == DRAFT
+          2. 更新 apply_score / template_name / category_id / remark
+          3. _replace_proofs：diff 更新（按 proofId 整表替换）
         """
         # 1. 校验 user
         user = await db.get(User, user_id)
         if not user:
             raise NotFoundError(f"用户(id={user_id})不存在")
 
-        # 2. 校验无 APPLYING/PASSED 活申请（不阻塞 DRAFT）
-        active_result = await db.execute(
-            select(Application).where(
-                and_(
-                    Application.user_id == user_id,
-                    Application.template_id == template_id,
-                    Application.status.in_([
-                        ApplicationStatus.APPLYING.value,
-                        ApplicationStatus.PASSED.value,
-                    ]),
+        application_id = payload.applicationId
+        if application_id is None:
+            # ── 新建分支 ───────────────────────────────────────────────
+            # v4.5：不再校验"同模板是否有 APPLYING/PASSED 活申请"
+            # 业务场景：一个模板可反复提交（如多次获奖）
+
+            application = Application(
+                user_id=user_id,
+                template_id=payload.templateId,
+                template_name=payload.templateName,
+                category_id=payload.categoryId,
+                apply_score=Decimal(str(payload.applyScore)),
+                gain_score=Decimal("0"),
+                status=ApplicationStatus.DRAFT.value,
+                review_count=review_count,
+                approved_count=0,
+                rejected_count=0,
+            )
+            db.add(application)
+            await db.flush()  # 拿到 application.id
+
+            # 新建场景下所有 proof 都是新建
+            for pp in payload.proofList:
+                proof = ApplicationProof(
+                    application_id=application.id,
+                    file_id=pp.fileId,
+                    proof_score=Decimal(str(pp.proofScore)),
+                    status=ProofStatus.PENDING.value,
                 )
-            )
-        )
-        active = active_result.scalars().first()
-        if active:
-            raise ConflictError(
-                f"该模板已有 {active.status} 的申请，无法重复申请"
-            )
+                db.add(proof)
 
-        # 3. 创建 application
-        application = Application(
-            user_id=user_id,
-            template_id=template_id,
-            template_name=template_name,
-            category_id=category_id,
-            apply_score=apply_score,
-            gain_score=Decimal("0"),
-            status=ApplicationStatus.DRAFT.value,
-            review_count=review_count,
-            approved_count=0,
-            rejected_count=0,
-        )
-        db.add(application)
-        await db.flush()  # 拿到 application.id
+            await db.commit()
+            await db.refresh(application)
+        else:
+            # ── 更新分支 ───────────────────────────────────────────────
+            application = await ApplicationService._get_for_update(db, application_id)
 
-        # 4. 整体替换 proof
-        for proof_data in proof_data_list:
-            proof = ApplicationProof(
+            if application.user_id != user_id:
+                raise ForbiddenError("仅本人可编辑草稿")
+            if application.status != ApplicationStatus.DRAFT.value:
+                raise ConflictError(
+                    f"申请当前状态 {application.status}，仅 DRAFT 可编辑"
+                )
+
+            # 更新 application 字段
+            application.template_id = payload.templateId
+            application.template_name = payload.templateName
+            application.category_id = payload.categoryId
+            application.apply_score = Decimal(str(payload.applyScore))
+            application.remark = payload.remark
+
+            # 整表替换 proofs
+            await ApplicationService._replace_proofs(
+                db,
                 application_id=application.id,
-                file_id=proof_data.get("file_id"),
-                proof_score=Decimal(str(proof_data["proof_score"])),
-                status=ProofStatus.PENDING.value,
+                proof_list=payload.proofList,
             )
-            db.add(proof)
 
-        await db.commit()
-        await db.refresh(application)
+            await db.commit()
+            await db.refresh(application)
+
         result = await db.execute(
             select(Application)
             .options(selectinload(Application.proofs), selectinload(Application.user))
             .where(Application.id == application.id)
         )
         return result.scalar_one()
+
+    # ------------------------------------------------------------------
+    # 整表替换 proofs（v4.5 新增；saveDraft / editSubmit 共用）
+    # ------------------------------------------------------------------
+    @staticmethod
+    async def _replace_proofs(
+        db: AsyncSession,
+        application_id: int,
+        proof_list: List[ProofPayload],
+    ) -> None:
+        """根据 payload.proofList 整表替换该 application 下的 proofs。
+
+        语义：
+          - payload 里 proofId 非空 + DB 里存在该 proof：
+                → 更新；fileId 变化则 status 重置 PENDING
+                → proofScore 总是更新为新值
+          - payload 里 proofId 非空 + DB 里不存在：
+                → 抛 BadRequestError（前端 bug 或误传）
+          - payload 里 proofId 为空：
+                → 新建（status=PENDING）
+          - DB 里 proofId 存在 + payload 里没有：
+                → 物理删除
+
+        校验：
+          - 总 proofScore 之和 == application.apply_score（仅在 _replace_proofs
+            内做"编辑后状态"级别的硬校验；submit/editSubmit 会再做一次最终校验）
+        """
+        result = await db.execute(
+            select(ApplicationProof).where(
+                ApplicationProof.application_id == application_id
+            )
+        )
+        old_proofs: Dict[int, ApplicationProof] = {p.id: p for p in result.scalars().all()}
+
+        payload_ids: set[int] = set()
+        for pp in proof_list:
+            if pp.proofId is not None:
+                payload_ids.add(pp.proofId)
+
+        # 1) 删除：旧里有 + payload 没有
+        for old_id in (set(old_proofs) - payload_ids):
+            await db.delete(old_proofs[old_id])
+
+        # 2) 更新或新建
+        for pp in proof_list:
+            new_score = Decimal(str(pp.proofScore))
+            if pp.proofId is not None:
+                old = old_proofs.get(pp.proofId)
+                if old is None:
+                    raise BadRequestError(
+                        f"proof(id={pp.proofId})不存在或不属于该申请"
+                    )
+                old.proof_score = new_score
+                if pp.fileId != old.file_id:
+                    # 文件被替换 → 重置为待审核
+                    old.file_id = pp.fileId
+                    old.status = ProofStatus.PENDING.value
+            else:
+                proof = ApplicationProof(
+                    application_id=application_id,
+                    file_id=pp.fileId,
+                    proof_score=new_score,
+                    status=ProofStatus.PENDING.value,
+                )
+                db.add(proof)
 
     # ------------------------------------------------------------------
     # 4.2 cancel（学生取消草稿/申请）
@@ -191,49 +287,173 @@ class ApplicationService:
         return application
 
     # ------------------------------------------------------------------
-    # 4.3 submit（DRAFT → APPLYING）
+    # 4.3 submit（v4.5：新建模式，仅接收 ApplicationPayload，applicationId 必须 None）
     # ------------------------------------------------------------------
     @staticmethod
     async def submit(
         db: AsyncSession,
-        application_id: int,
         user_id: int,
+        payload: ApplicationPayload,
+        operator_name: str,
+        review_count: int = 1,
+    ) -> Application:
+        """新建并提交（v4.5）
+
+        payload.applicationId 必须为 None（提交新建的申请）。
+        流程：
+          1. 校验 user
+          2. INSERT application（status='APPLYING'）
+          3. 批量 INSERT proofs（status='PENDING'）
+          4. 校验 proof 集合：len≥1 + sum==apply_score
+          5. INSERT application_operation(APPLYING)
+        """
+        if payload.applicationId is not None:
+            raise BadRequestError("submit 仅支持新建，请使用 edit-submit 编辑后提交")
+
+        # 校验 user
+        user = await db.get(User, user_id)
+        if not user:
+            raise NotFoundError(f"用户(id={user_id})不存在")
+
+        # v4.5：不再校验同模板重复提交
+
+        # proof 集合校验（前置，能 fail-fast）
+        await ApplicationService._validate_payload_proof_sum(payload)
+
+        # INSERT application
+        application = Application(
+            user_id=user_id,
+            template_id=payload.templateId,
+            template_name=payload.templateName,
+            category_id=payload.categoryId,
+            apply_score=Decimal(str(payload.applyScore)),
+            gain_score=Decimal("0"),
+            status=ApplicationStatus.APPLYING.value,
+            review_count=review_count,
+            approved_count=0,
+            rejected_count=0,
+            reviewer_ids=[],
+        )
+        db.add(application)
+        await db.flush()  # 拿 id
+
+        # INSERT proofs
+        for pp in payload.proofList:
+            proof = ApplicationProof(
+                application_id=application.id,
+                file_id=pp.fileId,
+                proof_score=Decimal(str(pp.proofScore)),
+                status=ProofStatus.PENDING.value,
+            )
+            db.add(proof)
+
+        # INSERT application_operation(APPLYING)
+        op = ApplicationOperation(
+            application_id=application.id,
+            operator_id=user_id,
+            operator_name=operator_name,
+            operation=ApplicationStatus.APPLYING.value,
+            remark=payload.remark,
+        )
+        db.add(op)
+
+        await db.commit()
+        await db.refresh(application)
+        result = await db.execute(
+            select(Application)
+            .options(selectinload(Application.proofs), selectinload(Application.user))
+            .where(Application.id == application.id)
+        )
+        return result.scalar_one()
+
+    # ------------------------------------------------------------------
+    # 4.3.1 edit_submit（v4.5 新增：编辑已有 DRAFT/REJECTED/REVOKED 后提交）
+    # ------------------------------------------------------------------
+    @staticmethod
+    async def edit_submit(
+        db: AsyncSession,
+        user_id: int,
+        payload: ApplicationPayload,
         operator_name: str,
     ) -> Application:
-        """提交草稿（DRAFT → APPLYING）
+        """编辑后提交（DRAFT/REJECTED/REVOKED → APPLYING，v4.5 新增）
 
-        前置条件:
-          1. user_id == current_user.id（仅本人）
-          2. status == 'DRAFT'
-          3. len(proofs) >= 1（草稿允许 0，submit 必须 ≥ 1）
-          4. sum(proof.proof_score) == apply_score（DECIMAL 精度对齐）
+        payload.applicationId 必须非空。
+        流程：
+          1. 锁定 application，校验本人 + status ∈ {DRAFT, REJECTED, REVOKED}
+          2. 更新 application 字段（templateName/category/applyScore/remark）
+          3. _replace_proofs：整表替换 proofs（proofId 决定新建/更新/删除）
+          4. 校验 proof 集合：len≥1 + sum==apply_score
+          5. status='APPLYING' + 重置 reviewer_ids / approved_count / rejected_count
+          6. INSERT application_operation(APPLYING)
         """
-        application = await ApplicationService._get_for_update(db, application_id)
+        if payload.applicationId is None:
+            raise BadRequestError("edit-submit 必须传 applicationId，请使用 submit 新建")
+
+        application = await ApplicationService._get_for_update(db, payload.applicationId)
 
         if application.user_id != user_id:
             raise ForbiddenError("仅本人可提交")
-        if application.status != ApplicationStatus.DRAFT.value:
+        if application.status not in (
+            ApplicationStatus.DRAFT.value,
+            ApplicationStatus.REJECTED.value,
+            ApplicationStatus.REVOKED.value,
+        ):
             raise ConflictError(
-                f"申请当前状态 {application.status}，仅 DRAFT 可 submit"
+                f"申请当前状态 {application.status}，仅 DRAFT/REJECTED/REVOKED 可编辑后提交"
             )
 
-        # 校验 proof 集合
-        await ApplicationService._validate_proof_collection(
-            db, application.id, application.apply_score,
+        # 更新 application 字段
+        application.template_id = payload.templateId
+        application.template_name = payload.templateName
+        application.category_id = payload.categoryId
+        application.apply_score = Decimal(str(payload.applyScore))
+        application.remark = payload.remark
+
+        # 整表替换 proofs
+        await ApplicationService._replace_proofs(
+            db,
+            application_id=application.id,
+            proof_list=payload.proofList,
         )
 
+        # proof 集合校验（前置 fail-fast）
+        await ApplicationService._validate_payload_proof_sum(payload)
+
+        # 状态机推进 + 计数器重置
         application.status = ApplicationStatus.APPLYING.value
+        application.reviewer_ids = []
+        application.approved_count = 0
+        application.rejected_count = 0
 
         op = ApplicationOperation(
             application_id=application.id,
             operator_id=user_id,
             operator_name=operator_name,
             operation=ApplicationStatus.APPLYING.value,
+            remark=payload.remark,
         )
         db.add(op)
+
         await db.commit()
         await db.refresh(application)
-        return application
+        result = await db.execute(
+            select(Application)
+            .options(selectinload(Application.proofs), selectinload(Application.user))
+            .where(Application.id == application.id)
+        )
+        return result.scalar_one()
+
+    @staticmethod
+    async def _validate_payload_proof_sum(payload: ApplicationPayload) -> None:
+        """校验 payload.proofList：≥ 1 条 + sum == apply_score（v4.5 新增）"""
+        if len(payload.proofList) < 1:
+            raise BadRequestError("submit 必须至少 1 条证明")
+        total = sum((Decimal(str(p.proofScore)) for p in payload.proofList), Decimal("0"))
+        if total != Decimal(str(payload.applyScore)):
+            raise BadRequestError(
+                f"proof_score 之和 {total} != apply_score {payload.applyScore}"
+            )
 
     @staticmethod
     def _ensure_reviewer_id(app: Application, reviewer_id: int) -> None:
@@ -558,105 +778,30 @@ class ApplicationService:
         return application
 
     # ------------------------------------------------------------------
-    # 4.8 resubmit（DRAFT/REJECTED/REVOKED → APPLYING）
+    # 4.8 touch（DRAFT 状态下纯刷 updated_at，供前端"保存草稿"按钮）
     # ------------------------------------------------------------------
     @staticmethod
-    async def resubmit(
+    async def touch(
         db: AsyncSession,
         application_id: int,
         user_id: int,
-        operator_name: str,
     ) -> Application:
-        """重新提交（DRAFT/REJECTED/REVOKED → APPLYING）
+        """纯刷 updated_at。仅 DRAFT 状态可触发。
 
-        仅改状态 + 清 reviewer_ids，不碰 proof 列表。
-        approved_count / rejected_count 保留历史记录。
+        不修改任何 proof、不修改 application 字段（updated_at 除外）。
+        用于前端"保存草稿"按钮的语义占位。
         """
         application = await ApplicationService._get_for_update(db, application_id)
 
         if application.user_id != user_id:
-            raise ForbiddenError("仅本人可重新提交")
-        if application.status not in (
-            ApplicationStatus.DRAFT.value,
-            ApplicationStatus.REJECTED.value,
-            ApplicationStatus.REVOKED.value,
-        ):
+            raise ForbiddenError("仅本人可操作")
+        if application.status != ApplicationStatus.DRAFT.value:
             raise ConflictError(
-                f"申请当前状态 {application.status}，DRAFT/REJECTED/REVOKED 才可重新提交"
+                f"申请当前状态 {application.status}，仅 DRAFT 可触发保存草稿"
             )
 
-        application.status = ApplicationStatus.APPLYING.value
-        application.reviewer_ids = []
-
-        op = ApplicationOperation(
-            application_id=application.id,
-            operator_id=user_id,
-            operator_name=operator_name,
-            operation=ApplicationStatus.APPLYING.value,
-        )
-        db.add(op)
-        await db.commit()
-        await db.refresh(application)
-
-        result = await db.execute(
-            select(Application)
-            .options(selectinload(Application.proofs))
-            .where(Application.id == application.id)
-        )
-        return result.scalar_one()
-
-    # ------------------------------------------------------------------
-    # 4.9 update_draft（更新草稿证明材料）
-    # ------------------------------------------------------------------
-    @staticmethod
-    async def update_draft(
-        db: AsyncSession,
-        application_id: int,
-        user_id: int,
-        proof_data_list: List[Dict[str, Any]],
-    ) -> Application:
-        """更新草稿证明材料（DRAFT/REVOKED/REJECTED → 替换 proof 列表）
-
-        不改变申请状态，不重置 approved_count / rejected_count。
-        """
-        application = await ApplicationService._get_for_update(db, application_id)
-
-        if application.user_id != user_id:
-            raise ForbiddenError("仅本人可更新草稿")
-        if application.status not in (
-            ApplicationStatus.DRAFT.value,
-            ApplicationStatus.REVOKED.value,
-            ApplicationStatus.REJECTED.value,
-        ):
-            raise ConflictError(
-                f"申请当前状态 {application.status}，DRAFT/REVOKED/REJECTED 才可更新草稿"
-            )
-
-        # 校验 proof 集合
-        if not proof_data_list:
-            raise BadRequestError("proof_data_list 不能为空")
-        proof_sum = sum(
-            Decimal(str(p["proof_score"])) for p in proof_data_list
-        )
-        if proof_sum != application.apply_score:
-            raise BadRequestError(
-                f"proof_score 之和 {proof_sum} != apply_score {application.apply_score}"
-            )
-
-        # 整体替换 proof 集合（先删后插）
-        await db.execute(
-            delete(ApplicationProof).where(
-                ApplicationProof.application_id == application_id
-            )
-        )
-        for proof_data in proof_data_list:
-            proof = ApplicationProof(
-                application_id=application.id,
-                file_id=proof_data.get("file_id"),
-                proof_score=Decimal(str(proof_data["proof_score"])),
-                status=ProofStatus.PENDING.value,
-            )
-            db.add(proof)
+        # 显式标记字段为已修改以触发 onupdate=func.now()
+        application.updated_at = func.now()
 
         await db.commit()
         await db.refresh(application)
@@ -697,29 +842,6 @@ class ApplicationService:
         if not application:
             raise NotFoundError(f"申请(id={application_id})不存在")
         return application
-
-    @staticmethod
-    async def _validate_proof_collection(
-        db: AsyncSession,
-        application_id: int,
-        apply_score: Decimal,
-    ) -> None:
-        """校验 proof 集合：≥ 1 条 + sum == apply_score"""
-        result = await db.execute(
-            select(ApplicationProof).where(
-                ApplicationProof.application_id == application_id
-            )
-        )
-        proofs = list(result.scalars().all())
-
-        if len(proofs) < 1:
-            raise BadRequestError("submit 必须至少 1 条证明")
-
-        proof_sum = sum((p.proof_score for p in proofs), Decimal("0"))
-        if proof_sum != apply_score:
-            raise BadRequestError(
-                f"proof_score 之和 {proof_sum} != apply_score {apply_score}"
-            )
 
     @staticmethod
     async def has_voted(

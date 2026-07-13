@@ -1,23 +1,36 @@
-"""申请路由（v4.3）
+"""申请路由（v4.5）
 
 ═══════════════════════════════════════════════════════════════════════
-RESTful 设计
+RESTful 设计（v4.5）
 ═══════════════════════════════════════════════════════════════════════
-学生端:
-  POST   /api/applications/draft                  save_draft
-  POST   /api/applications/{id}/cancel            cancel（取消草稿/申请）
-  POST   /api/applications/{id}/submit            submit
-  POST   /api/applications/{id}/resubmit          resubmit
+学生端（v4.5：3 个写接口 + proofs 整表替换，移除 4 个 proof CRUD）:
+  POST   /api/applications/saveDraft              保存草稿（新建/更新 DRAFT）
+  POST   /api/applications/submit                 新建并直接提交（一步到位）
+  POST   /api/applications/edit-submit            编辑后提交（DRAFT/REJECTED/REVOKED → APPLYING）
+  POST   /api/applications/{id}/cancel            取消草稿/申请
+  POST   /api/applications/{id}/touch             纯刷 updated_at（DRAFT 专用）
   GET    /api/applications                        我的申请列表（学生）
   GET    /api/applications/{id}                   详情（含 proofs + operations）
 
+[DEPRECATED v4.5：旧 proof CRUD 已合并到 ApplicationPayload]
+  POST   /api/applications/{id}/proofs            删除
+  DELETE /api/applications/{id}/proofs/{pid}      删除
+  PATCH  /api/applications/{id}/proofs/{pid}      删除
+  PUT    /api/applications/{id}/proofs/{pid}/file 删除
+  POST   /api/applications/{id}/proofs/batch      删除
+  PUT    /api/applications/{id}/draft             保留 deprecated（返回 400）
+  POST   /api/applications/{id}/resubmit          保留 deprecated（返回 400）
+
 审核员端:
-  POST   /api/applications/{id}/proofs/{pid}/review   review_proof
-  POST   /api/applications/{id}/pass                  pass_application
-  POST   /api/applications/{id}/reject                reject_application
-  POST   /api/applications/{id}/revoke               revoke_application
-  GET    /api/admin/applications                      待审核列表
-  GET    /api/admin/applications/history              审核历史
+  POST   /api/applications/{id}/proofs/{pid}/review       review_proof
+  POST   /api/applications/{id}/pass                      pass_application
+  POST   /api/applications/{id}/reject                    reject_application
+  POST   /api/admin/applications/{id}/revoke              revoke_application
+  GET    /api/admin/applications                          待审核列表
+  GET    /api/admin/applications/history                  审核历史
+  GET    /api/admin/applications/my-history               我的审核历史
+  GET    /api/admin/applications/my-pending               我的待审核
+  GET    /api/admin/applications/my-reviewed              我的已审核
 
 状态语义：
   DRAFT      - 草稿（学生可编辑）
@@ -30,11 +43,9 @@ RESTful 设计
 """
 from __future__ import annotations
 
-from typing import Optional, List
-from decimal import Decimal
+from typing import Optional
 
-from fastapi import APIRouter, Depends, Query, Path, Body
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, Query, Body
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.deps import get_db
@@ -44,7 +55,6 @@ from src.app import response as R
 from src.services import (
     ApplicationService,
     ApplicationOperationService,
-    ScoreDataService,
     TemplateService,
 )
 from src.models import (
@@ -54,38 +64,25 @@ from src.models import (
 from src.app.schemas.errors import (
     NotFoundError, BadRequestError, ConflictError, ForbiddenError,
 )
+from src.app.schemas import ApplicationPayload
 
 
 router = APIRouter(tags=["申请"])
 
 
 # ════════════════════════════════════════════════════════════════════════
-# Request / Response Models
+# Request / Response Models（路由层用，非 Pydantic 业务模型放 schemas/）
 # ════════════════════════════════════════════════════════════════════════
-class ProofDataItem(BaseModel):
-    file_id: Optional[int] = None
-    proof_score: float
+class ReviewProofRequest:
+    """仅作占位说明；实际入参通过 Body 收
+    """
+    pass
 
 
-class SaveDraftRequest(BaseModel):
-    template_id: int
-    template_name: str
-    category_id: int
-    apply_score: float
-    proof_data_list: List[ProofDataItem] = Field(default_factory=list)
-    remark: Optional[str] = None
-    # review_count 不接受客户端传值，由路由从 template 读取
+from pydantic import BaseModel  # noqa: E402
 
 
-class UpdateDraftRequest(BaseModel):
-    proof_data_list: List[ProofDataItem]
-
-
-class ResubmitRequest(BaseModel):
-    model_config = {"extra": "forbid"}
-
-
-class ReviewProofRequest(BaseModel):
+class ReviewProofBody(BaseModel):
     action: str  # APPROVED | REJECTED
     remark: Optional[str] = None
 
@@ -112,21 +109,28 @@ async def _get_user_full_name(db: AsyncSession, user_id: int) -> str:
 
 
 # ════════════════════════════════════════════════════════════════════════
-# 学生端：草稿 / 提交 / 取消 / 重提
+# 学生端 v4.5：3 个统一写接口（saveDraft / submit / edit-submit）
 # ════════════════════════════════════════════════════════════════════════
-@router.post("/api/applications/draft")
+@router.post("/api/applications/saveDraft")
 async def save_draft(
-    req: SaveDraftRequest,
+    req: ApplicationPayload,
     db: AsyncSession = Depends(get_db),
 ):
-    """保存草稿（v4.3：允许同模板多草稿，review_count 从模板读取）"""
+    """保存草稿（v4.5）
+
+    payload.applicationId：
+      - None  → 新建 DRAFT
+      - 非空  → 更新已有 DRAFT（仅本人、仅 DRAFT 状态）
+
+    proofs 整表替换：payload.proofList 决定每条的 新建/更新/删除
+    （语义见 ApplicationPayload）
+    """
     user_id = get_user_id()
     if not user_id:
         return R.unauthorized_resp("未登录")
 
     try:
-        # 从模板读取 review_count（不信任客户端）
-        template = await TemplateService.get_by_id(db, req.template_id)
+        template = await TemplateService.get_by_id(db, req.templateId)
         if not template:
             return R.not_found_resp("模板不存在")
         review_count = template.review_count or 1
@@ -134,13 +138,8 @@ async def save_draft(
         application = await ApplicationService.save_draft(
             db,
             user_id=user_id,
-            template_id=req.template_id,
-            template_name=req.template_name,
-            category_id=req.category_id,
-            apply_score=Decimal(str(req.apply_score)),
-            proof_data_list=[p.model_dump() for p in req.proof_data_list],
+            payload=req,
             review_count=review_count,
-            remark=req.remark,
         )
         return R.created_resp(format_application(application), msg="草稿保存成功")
     except ConflictError as e:
@@ -151,34 +150,72 @@ async def save_draft(
         return R.server_error_resp(f"保存草稿失败: {e}")
 
 
-@router.put("/api/applications/{application_id}/draft")
-async def update_draft(
-    application_id: int,
-    req: UpdateDraftRequest,
+@router.post("/api/applications/submit")
+async def submit(
+    req: ApplicationPayload,
     db: AsyncSession = Depends(get_db),
 ):
-    """更新草稿（DRAFT/REVOKED/REJECTED → 替换 proof 列表）"""
+    """新建并提交（v4.5）
+
+    payload.applicationId 必须为 None。
+    直接 INSERT application（status='APPLYING'）+ 整批 proofs。
+    """
     user_id = get_user_id()
     if not user_id:
         return R.unauthorized_resp("未登录")
 
     try:
-        application = await ApplicationService.update_draft(
+        template = await TemplateService.get_by_id(db, req.templateId)
+        if not template:
+            return R.not_found_resp("模板不存在")
+        review_count = template.review_count or 1
+
+        operator_name = await _get_user_full_name(db, user_id)
+        application = await ApplicationService.submit(
             db,
-            application_id=application_id,
             user_id=user_id,
-            proof_data_list=[p.model_dump() for p in req.proof_data_list],
+            payload=req,
+            operator_name=operator_name,
+            review_count=review_count,
         )
-        return R.success_resp(format_application(application), msg="草稿已更新")
-    except (NotFoundError, ForbiddenError, ConflictError, BadRequestError) as e:
-        code = e.__class__.__name__
-        if code == "ForbiddenError":
-            return R.forbidden_resp(str(e))
-        if code == "ConflictError":
-            return R.conflict_resp(str(e))
-        if code == "BadRequestError":
-            return R.bad_request_resp(str(e))
-        return R.not_found_resp(str(e))
+        return R.created_resp(format_application(application), msg="申请已提交")
+    except ConflictError as e:
+        return R.conflict_resp(str(e))
+    except (NotFoundError, BadRequestError) as e:
+        return R.bad_request_resp(str(e))
+    except Exception as e:
+        return R.server_error_resp(f"提交失败: {e}")
+
+
+@router.post("/api/applications/edit-submit")
+async def edit_submit(
+    req: ApplicationPayload,
+    db: AsyncSession = Depends(get_db),
+):
+    """编辑后提交（v4.5）
+
+    payload.applicationId 必须非空。仅 DRAFT/REJECTED/REVOKED 可编辑并提交。
+    proofs 整表替换 + status 推进到 APPLYING。
+    """
+    user_id = get_user_id()
+    if not user_id:
+        return R.unauthorized_resp("未登录")
+
+    try:
+        operator_name = await _get_user_full_name(db, user_id)
+        application = await ApplicationService.edit_submit(
+            db,
+            user_id=user_id,
+            payload=req,
+            operator_name=operator_name,
+        )
+        return R.created_resp(format_application(application), msg="申请已提交")
+    except ConflictError as e:
+        return R.conflict_resp(str(e))
+    except (NotFoundError, BadRequestError) as e:
+        return R.bad_request_resp(str(e))
+    except Exception as e:
+        return R.server_error_resp(f"编辑提交失败: {e}")
 
 
 @router.post("/api/applications/{application_id}/cancel")
@@ -206,61 +243,92 @@ async def cancel_application(
         return R.forbidden_resp(str(e))
 
 
-@router.post("/api/applications/{application_id}/submit")
-async def submit_application(
+@router.post("/api/applications/{application_id}/touch")
+async def touch_application(
     application_id: int,
     db: AsyncSession = Depends(get_db),
 ):
-    """DRAFT → APPLYING"""
+    """[v4.4 新增] DRAFT 状态下纯刷 updated_at"""
     user_id = get_user_id()
     if not user_id:
         return R.unauthorized_resp("未登录")
 
     try:
-        operator_name = await _get_user_full_name(db, user_id)
-        application = await ApplicationService.submit(
+        application = await ApplicationService.touch(
             db,
             application_id=application_id,
             user_id=user_id,
-            operator_name=operator_name,
         )
-        return R.success_resp(format_application(application), msg="申请已提交")
+        return R.success_resp(format_application(application), msg="草稿已保存")
     except (NotFoundError, ForbiddenError, ConflictError, BadRequestError) as e:
         code = e.__class__.__name__
         if code == "ForbiddenError":
             return R.forbidden_resp(str(e))
-        if code in ("NotFoundError", "ConflictError"):
-            return R.not_found_resp(str(e))
-        return R.bad_request_resp(str(e))
-
-
-@router.post("/api/applications/{application_id}/resubmit")
-async def resubmit_application(
-    application_id: int,
-    req: ResubmitRequest,
-    db: AsyncSession = Depends(get_db),
-):
-    """DRAFT/REJECTED/REVOKED → APPLYING"""
-    user_id = get_user_id()
-    if not user_id:
-        return R.unauthorized_resp("未登录")
-
-    try:
-        operator_name = await _get_user_full_name(db, user_id)
-        application = await ApplicationService.resubmit(
-            db,
-            application_id=application_id,
-            user_id=user_id,
-            operator_name=operator_name,
-        )
-        return R.success_resp(format_application(application), msg="申请已重新提交")
-    except (NotFoundError, ForbiddenError, ConflictError, BadRequestError) as e:
-        code = e.__class__.__name__
-        if code == "ForbiddenError":
-            return R.forbidden_resp(str(e))
+        if code == "ConflictError":
+            return R.conflict_resp(str(e))
         if code == "BadRequestError":
             return R.bad_request_resp(str(e))
         return R.not_found_resp(str(e))
+
+
+# ════════════════════════════════════════════════════════════════════════
+# [DEPRECATED] 旧的 5 个 proof CRUD/batch 路由 + 旧的 draft / resubmit
+# （保留 deprecated marker 兜底历史调用方，前端已不再使用）
+# ════════════════════════════════════════════════════════════════════════
+@router.post("/api/applications/{application_id}/proofs", deprecated=True)
+async def _deprecated_create_proof(application_id: int):
+    return R.bad_request_resp(
+        "新增 proof 接口已废弃（v4.5），请改用 POST /api/applications/saveDraft 或 /edit-submit 整表替换 proofs"
+    )
+
+
+@router.delete("/api/applications/{application_id}/proofs/{proof_id}", deprecated=True)
+async def _deprecated_delete_proof(application_id: int, proof_id: int):
+    return R.bad_request_resp(
+        "删除 proof 接口已废弃（v4.5），请在 payload.proofList 中省略 proofId 即视为删除"
+    )
+
+
+@router.patch("/api/applications/{application_id}/proofs/{proof_id}", deprecated=True)
+async def _deprecated_update_proof_score(application_id: int, proof_id: int):
+    return R.bad_request_resp(
+        "修改 proof 接口已废弃（v4.5），请在 payload.proofList 中携带 proofId 即可更新"
+    )
+
+
+@router.put("/api/applications/{application_id}/proofs/{proof_id}/file", deprecated=True)
+async def _deprecated_replace_proof_file(application_id: int, proof_id: int):
+    return R.bad_request_resp(
+        "重传 proof 文件接口已废弃（v4.5），请在 payload.proofList 中修改对应 proof 的 fileId 即可"
+    )
+
+
+@router.post("/api/applications/{application_id}/proofs/batch", deprecated=True)
+async def _deprecated_save_proofs(application_id: int):
+    return R.bad_request_resp(
+        "批量保存 proofs 接口已废弃（v4.5），请改用 POST /api/applications/saveDraft 或 /edit-submit"
+    )
+
+
+@router.put("/api/applications/{application_id}/draft", deprecated=True)
+async def _deprecated_update_draft(application_id: int):
+    return R.bad_request_resp(
+        "旧 update_draft 已废弃（v4.5），请改用 POST /api/applications/saveDraft"
+    )
+
+
+@router.post("/api/applications/{application_id}/resubmit", deprecated=True)
+async def _deprecated_resubmit(application_id: int):
+    return R.bad_request_resp(
+        "resubmit 已废弃（v4.5），请改用 POST /api/applications/edit-submit"
+    )
+
+
+@router.post("/api/applications/{application_id}/submit", deprecated=True)
+async def _deprecated_old_submit(application_id: int):
+    return R.bad_request_resp(
+        "旧 submit 已废弃（v4.5），请改用 POST /api/applications/edit-submit"
+    )
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -313,7 +381,7 @@ async def get_application_detail(
 async def review_proof(
     application_id: int,
     proof_id: int,
-    req: ReviewProofRequest,
+    req: ReviewProofBody,
     db: AsyncSession = Depends(get_db),
 ):
     """审核员改 proof.status（任意审核员可覆盖）"""
@@ -541,7 +609,6 @@ async def list_my_reviewed(
 # ════════════════════════════════════════════════════════════════════════
 def format_application(a, with_proofs: bool = False) -> dict:
     """格式化 application（前后端约定 camelCase）"""
-    # 尝试从 user 关联读取姓名（service 已用 selectinload 加载）
     user_name: Optional[str] = None
     if hasattr(a, 'user') and a.user:
         u = a.user

@@ -113,6 +113,13 @@ from src.app.schemas.permission import (  # noqa: E402, F401
     derive_module,
 )
 
+# ========== 申请 / 申请相关 DTO（v4.5 新增；旧 proof CRUD 接口已废弃） ==========
+
+from src.app.schemas.application import (  # noqa: E402, F401
+    ProofPayload,
+    ApplicationPayload,
+)
+
 # ========== 认证 ==========
 
 from src.app.schemas.auth import (  # noqa: E402, F401
