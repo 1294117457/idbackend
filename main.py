@@ -15,17 +15,7 @@ from src.models.base import Base
 # ============ Schema 同步（幂等） ============
 
 def _sync_schema_blocking() -> None:
-    """启动时同步 schema —— 等价于原来的 `alembic upgrade head`，但完全幂等。
-
-    SQLAlchemy 的 create_all：
-        - 表不在 → CREATE TABLE
-        - 表已存在 → 跳过
-        - 不改字段、不删列（这些需要手工 SQL 处理）
-    """
-    # 这个 import 必须写在这里：触发 src/models/__init__.py 把所有 model
-    # 注册到 Base.metadata；写模块顶层会因 import 顺序漏注册。
     import src.models  # noqa: F401  isort:skip
-
     Base.metadata.create_all(sync_engine)
     table_count = len(Base.metadata.tables)
     print(f"[idpython] schema synced via Base.metadata.create_all ({table_count} tables)")
@@ -41,8 +31,6 @@ async def lifespan(app: FastAPI):
     try:
         storage = get_storage()
         storage.ensure_bucket()
-        # avatar 目录下的对象走直链，必须设公开读策略，否则前端 GET 头像 403
-        storage.set_bucket_public_read_prefix("avatar")
         print(f"[idpython] 存储后端就绪: {type(storage).__name__}")
     except Exception as e:
         print(f"[idpython] 存储初始化失败: {e}")

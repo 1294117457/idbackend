@@ -22,19 +22,17 @@ from src.app.schemas.page import Page
 # ========== 内部工具（service 层会复用） ==========
 
 def _build_object_name(category: str, original_name: str, user_id: int) -> str:
-    """生成 S3 对象 key
+    """生成 MinIO 扁平存储的 key（不含分类/年份/用户前缀）
 
-    格式：{category}/{year}/{user_id}/{uuid}.{ext}
+    分类与时间区分由 DB 的 file_category / created_at 承担。
     """
     ext = original_name.rsplit(".", 1)[-1].lower() if "." in original_name else ""
     if ext and len(ext) > 10:
         ext = ext[:10]
     unique_id = uuid.uuid4().hex
-    year = datetime.utcnow().year
-    category_prefix = category.lower()
     if ext:
-        return f"{category_prefix}/{year}/{user_id}/{unique_id}.{ext}"
-    return f"{category_prefix}/{year}/{user_id}/{unique_id}"
+        return f"{unique_id}.{ext}"
+    return unique_id
 
 
 def _format_size(size: Optional[int]) -> str:
@@ -130,7 +128,7 @@ class FileQueryRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     fileName: Optional[str] = Field(default=None, description="文件名模糊查询")
-    fileCategory: Optional[str] = Field(default=None, description="文件分类")
+    fileCategory: Optional[str] = Field(..., description="文件分类")
     fileExtension: Optional[str] = Field(
         default=None,
         description="文件扩展名（如 '.pdf'），精确匹配；后端 SQL 过滤",
@@ -169,11 +167,10 @@ class FileQueryRequest(BaseModel):
         if self.fileName:
             conds.append(FileMetadata.original_name.ilike(f"%{self.fileName}%"))
         if self.fileExtension:
-            # 归一化：去首尾空白、确保以 '.' 开头（前端可选值已经是 '.pdf' 这种形式）
-            ext = self.fileExtension.strip()
-            if ext and not ext.startswith("."):
-                ext = "." + ext
-            conds.append(FileMetadata.file_extension == ext.lower())
+            # 统一去除前端可能传入的 '.' 前缀，DB 中 file_extension 不带点（如 'pdf'）
+            ext = self.fileExtension.strip().lower().lstrip(".")
+            if ext:
+                conds.append(FileMetadata.file_extension == ext)
         if self.fileCategory:
             try:
                 conds.append(
