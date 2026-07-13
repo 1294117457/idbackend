@@ -37,7 +37,7 @@ async def get_permission_list(
 ):
     """获取所有权限列表"""
     permissions = await RbacService.get_all_permissions(db)
-    return R.success_resp(
+    return R.query_resp(
         [PermissionVO.from_orm_to_vo(p).model_dump() for p in permissions]
     )
 
@@ -148,4 +148,4 @@ async def get_all_interfaces(request: Request):
             )
 
     interfaces.sort(key=lambda x: x["path"])
-    return R.success_resp(interfaces)
+    return R.query_resp(interfaces)

@@ -4,11 +4,11 @@
 app.add_exception_handler），不是 ASGI Middleware。但放在 middleware 目录下
 作为"横切关注点"统一管理。
 
-设计（v3）：
+设计（v4）：
 - 业务异常统一继承 BusinessError（见 src.app.schemas.errors）
 - handler 只注册基类一个：add_exception_handler(BusinessError, ...)
 - 新增业务异常子类时，**不需要修改本文件**——MRO 自动匹配
-- 兜底：未捕获异常 → 500；Pydantic 校验失败 → 400 + VALIDATION_ERROR
+- 兜底：未捕获异常 → 500；Pydantic 校验失败 → 400
 
 双 token 场景（body.code 解耦）：
 - 优先用 exc.body_code 作为 body.code（如果非 None）
@@ -20,38 +20,11 @@ app.add_exception_handler），不是 ASGI Middleware。但放在 middleware 目
 - BaseHTTPMiddleware 捕获不到路由层的异常
 - FastAPI 官方推荐用 app.add_exception_handler() 处理业务异常
 """
-from typing import Any, Dict, Optional
-
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
 
+from src.app.response import _resp
 from src.app.schemas.errors import BusinessError
-
-
-# ============== 通用工具 ==============
-
-def _to_business_response(
-    exc: BusinessError,
-    *,
-    extra_data: Optional[Dict[str, Any]] = None,
-) -> JSONResponse:
-    """业务异常 → 统一 JSON 响应（code/errorCode/msg/data 四段式）
-
-    body.code 解析规则（双 token 场景）：
-    - 如果 exc.body_code 非 None → 用 body_code 作为响应 code（http_code 仍按 exc.http_code）
-    - 否则 → 用 exc.http_code 同时作为 HTTP status 和 body.code（一对一）
-
-    extra_data 用于携带额外结构化信息（如"activeApplicationCount"等业务字段）。
-    """
-    body_code = exc.body_code if exc.body_code is not None else exc.http_code
-    payload = {
-        "code": body_code,
-        "errorCode": exc.error_code,
-        "msg": exc.message,
-        "data": extra_data,
-    }
-    return JSONResponse(status_code=exc.http_code, content=payload)
 
 
 # ============== 业务异常 handler（基类一次接住） ==============
@@ -60,40 +33,30 @@ async def business_error_handler(request: Request, exc: BusinessError):
     """一个 handler 接住所有 BusinessError 子类（NotFoundError / BadRequestError / ...）。
 
     路由无需 try/except：service 抛出任意业务异常，自动转 JSON。
+    body 结构与正常 API 完全一致（{code, msg, data}）。
     """
-    return _to_business_response(exc)
+    body_code = exc.body_code if exc.body_code is not None else exc.http_code
+    return _resp(exc.http_code, body_code, exc.message, None)
 
 
 # ============== 校验异常 handler ==============
 
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    """Pydantic 参数校验失败 → 400"""
-    first_err = exc.errors()[0] if exc.errors() else {}
+    """Pydantic 参数校验失败 → 400
+
+    友好可读：取第一条错误的 msg 字段，前缀"参数错误: "。
+    """
+    errors = exc.errors()
+    first_err = errors[0] if errors else {}
     msg = first_err.get("msg", "请求参数错误")
-    return JSONResponse(
-        status_code=400,
-        content={
-            "code": 400,
-            "errorCode": "VALIDATION_ERROR",
-            "msg": f"参数错误: {msg}",
-            "data": None,
-        },
-    )
+    return _resp(400, 400, f"参数错误: {msg}")
 
 
 # ============== 兜底 handler ==============
 
 async def global_exception_handler(request: Request, exc: Exception):
     """未捕获异常兜底 → 500（生产环境应记录 traceback 到日志）"""
-    return JSONResponse(
-        status_code=500,
-        content={
-            "code": 500,
-            "errorCode": "INTERNAL_ERROR",
-            "msg": "服务器内部错误",
-            "data": None,
-        },
-    )
+    return _resp(500, 500, "服务器内部错误")
 
 
 # ============== 注册入口 ==============

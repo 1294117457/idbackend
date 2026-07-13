@@ -24,8 +24,18 @@ def _resp(status_code: int, code: int, msg: str, data: Any = None) -> JSONRespon
 
 # ===== 2xx 成功 =====
 
+def query_resp(data: Any = None, msg: str = "") -> JSONResponse:
+    """GET 查询专用：HTTP 200，body.code=200，msg 默认空
+
+    与 success_resp 的区别：msg 默认空字符串，前端按"msg 为空不弹 toast"自动静默。
+    GET 路由（列表、详情、搜索）一律使用本工厂，避免列表刷新/分页/筛选时反复弹"操作成功"。
+    如个别 GET 业务确实需要给用户反馈（如"数据已刷新到最新版本"），可显式传 msg。
+    """
+    return _resp(200, 200, msg, data)
+
+
 def success_resp(data: Any = None, msg: str = "操作成功") -> JSONResponse:
-    """200 查询 / 更新 / 删除成功"""
+    """200 写入成功（POST/PUT/DELETE 与部分 GET 用）"""
     return _resp(200, 200, msg, data)
 
 

@@ -142,7 +142,7 @@ async def save_draft(
             review_count=review_count,
             remark=req.remark,
         )
-        return R.created_resp(format_application(application))
+        return R.created_resp(format_application(application), msg="草稿保存成功")
     except ConflictError as e:
         return R.conflict_resp(str(e))
     except (NotFoundError, BadRequestError) as e:
@@ -169,7 +169,7 @@ async def update_draft(
             user_id=user_id,
             proof_data_list=[p.model_dump() for p in req.proof_data_list],
         )
-        return R.success_resp(format_application(application))
+        return R.success_resp(format_application(application), msg="草稿已更新")
     except (NotFoundError, ForbiddenError, ConflictError, BadRequestError) as e:
         code = e.__class__.__name__
         if code == "ForbiddenError":
@@ -201,7 +201,7 @@ async def cancel_application(
             operator_name=operator_name,
             remark=req.remark,
         )
-        return R.success_resp({"id": application.id, "status": application.status})
+        return R.success_resp({"id": application.id, "status": application.status}, msg="申请已取消")
     except (NotFoundError, ForbiddenError, ConflictError) as e:
         return R.forbidden_resp(str(e))
 
@@ -224,7 +224,7 @@ async def submit_application(
             user_id=user_id,
             operator_name=operator_name,
         )
-        return R.success_resp(format_application(application))
+        return R.success_resp(format_application(application), msg="申请已提交")
     except (NotFoundError, ForbiddenError, ConflictError, BadRequestError) as e:
         code = e.__class__.__name__
         if code == "ForbiddenError":
@@ -254,7 +254,7 @@ async def resubmit_application(
             operator_name=operator_name,
             proof_data_list=[p.model_dump() for p in req.proof_data_list],
         )
-        return R.success_resp(format_application(application))
+        return R.success_resp(format_application(application), msg="申请已重新提交")
     except (NotFoundError, ForbiddenError, ConflictError, BadRequestError) as e:
         code = e.__class__.__name__
         if code == "ForbiddenError":
@@ -282,7 +282,7 @@ async def list_my_applications(
     applications, total = await ApplicationService.list_user_applications(
         db, user_id, status, pageNum, pageSize,
     )
-    return R.success_resp({
+    return R.query_resp({
         "list": [format_application(a) for a in applications],
         "total": total,
         "pageNum": pageNum,
@@ -301,7 +301,7 @@ async def get_application_detail(
         return R.not_found_resp("申请不存在")
 
     operations = await ApplicationOperationService.list_by_application(db, application_id)
-    return R.success_resp({
+    return R.query_resp({
         **format_application(application, with_proofs=True),
         "operations": [format_operation(o) for o in operations],
     })
@@ -334,7 +334,7 @@ async def review_proof(
             "id": proof.id,
             "applicationId": proof.application_id,
             "status": proof.status,
-        })
+        }, msg="审核已记录")
     except NotFoundError as e:
         return R.not_found_resp(str(e))
     except BadRequestError as e:
@@ -369,7 +369,7 @@ async def pass_application(
             "approvedCount": application.approved_count,
             "reviewCount": application.review_count,
             "gainScore": float(application.gain_score) if application.gain_score else None,
-        })
+        }, msg="审核通过")
     except (NotFoundError, ConflictError, BadRequestError) as e:
         if isinstance(e, ConflictError):
             return R.conflict_resp(str(e))
@@ -400,7 +400,7 @@ async def reject_application(
             "id": application.id,
             "status": application.status,
             "rejectedCount": application.rejected_count,
-        })
+        }, msg="已驳回")
     except (NotFoundError, ConflictError, BadRequestError) as e:
         if isinstance(e, ConflictError):
             return R.conflict_resp(str(e))
@@ -430,7 +430,7 @@ async def revoke_application(
         return R.success_resp({
             "id": application.id,
             "status": application.status,
-        })
+        }, msg="已撤回")
     except (NotFoundError, BadRequestError) as e:
         return R.bad_request_resp(str(e))
 
@@ -445,7 +445,7 @@ async def list_pending_applications(
     applications, total = await ApplicationService.list_pending_applications(
         db, pageNum, pageSize,
     )
-    return R.success_resp({
+    return R.query_resp({
         "list": [format_application(a, with_proofs=True) for a in applications],
         "total": total,
         "pageNum": pageNum,
@@ -463,7 +463,7 @@ async def list_audit_history(
     applications, total = await ApplicationService.list_audit_history(
         db, pageNum, pageSize,
     )
-    return R.success_resp({
+    return R.query_resp({
         "list": [format_application(a) for a in applications],
         "total": total,
         "pageNum": pageNum,
@@ -485,7 +485,7 @@ async def list_my_audit_history(
     applications, total = await ApplicationService.list_my_audit_history(
         db, user_id, pageNum, pageSize,
     )
-    return R.success_resp({
+    return R.query_resp({
         "list": [format_application(a) for a in applications],
         "total": total,
         "pageNum": pageNum,

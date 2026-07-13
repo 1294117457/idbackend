@@ -53,7 +53,7 @@ async def list_rules(
         page_num=pageNum,
         page_size=pageSize,
     )
-    return R.success_resp(vo.model_dump())
+    return R.query_resp(vo.model_dump())
 
 
 @router.get("/{rule_id}")
@@ -68,7 +68,7 @@ async def get_rule_detail(
         for a in sorted(rule.attributes, key=lambda a: a.sort_order)
     ]
     vo = RuleDetailVO.from_orm_to_vo(rule, attr_vos)
-    return R.success_resp(vo.model_dump())
+    return R.query_resp(vo.model_dump())
 
 
 # ============================================================

@@ -66,7 +66,7 @@ async def list_attributes(
         page_num=pageNum,
         page_size=pageSize,
     )
-    return R.success_resp(vo.model_dump())
+    return R.query_resp(vo.model_dump())
 
 
 @router.get("/{attribute_id}")
@@ -76,7 +76,7 @@ async def get_attribute_detail(
 ):
     """属性详情"""
     attribute = await AttributeService.get_by_id(db, attribute_id)
-    return R.success_resp(AttributeVO.from_orm_to_vo(attribute).model_dump())
+    return R.query_resp(AttributeVO.from_orm_to_vo(attribute).model_dump())
 
 
 # ============================================================

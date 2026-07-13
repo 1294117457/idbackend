@@ -58,7 +58,7 @@ async def list_templates(
         page_num=req.pageNum,
         page_size=req.pageSize,
     )
-    return R.success_resp(vo.model_dump())
+    return R.query_resp(vo.model_dump())
 
 
 @router.get("/by-category")
@@ -68,7 +68,7 @@ async def list_templates_by_category(
 ):
     """按分类列出模板（学生端选 template 用）"""
     templates = await TemplateService.list_by_category(db, req.categoryId)
-    return R.success_resp([TemplateVO.from_orm_to_vo(t).model_dump() for t in templates])
+    return R.query_resp([TemplateVO.from_orm_to_vo(t).model_dump() for t in templates])
 
 
 @router.get("/{template_id}")
@@ -95,7 +95,7 @@ async def get_template_detail(
     is_mixed = await TemplateService.is_mixed_type(db, template_id)
     vo = TemplateDetailVO.from_orm_to_vo(template, rule_vos, is_mixed)
 
-    return R.success_resp(vo.model_dump())
+    return R.query_resp(vo.model_dump())
 
 
 # ============================================================

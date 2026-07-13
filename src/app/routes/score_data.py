@@ -49,7 +49,7 @@ async def get_my_score(
         return R.unauthorized_resp("未登录")
 
     result = await ScoreDataService.get_summary(db, user_id)
-    return R.success_resp(result)
+    return R.query_resp(result)
 
 
 @router.post("/recalculate")
@@ -78,7 +78,7 @@ async def recalculate_by_admin(
     return R.success_resp({
         "userId": user_id,
         "score_info": result,   # flat 结构写 DB；tree 仅返回给前端
-    })
+    }, msg="成绩已重新计算")
 
 
 @router.post("/recalculate-all")
@@ -108,4 +108,4 @@ async def recalculate_all(
         "total": len(user_ids),
         "success": success,
         "errors": errors,
-    })
+    }, msg=f"已重算 {len(user_ids)} 名学生")

@@ -60,7 +60,7 @@ async def get_my_profile(
     if not profile:
         return R.error_resp("用户不存在", code=404)
 
-    return R.success_resp(profile)
+    return R.query_resp(profile)
 
 
 @users_router.put("/me")
@@ -106,7 +106,7 @@ router = APIRouter(prefix="/api/user", tags=["用户管理"])
 @router.get("/me/roles")
 async def get_my_roles():
     """获取我的角色（直接从 ContextVar 读取，无额外 DB 查询）"""
-    return R.success_resp(get_user_roles())
+    return R.query_resp(get_user_roles())
 
 
 @router.get("/{user_id}/roles")
@@ -117,7 +117,7 @@ async def get_user_roles_admin(
     """获取用户角色 (管理员)"""
     await UserService.get_user_by_id_or_raise(db, user_id)
     role_ids = await RbacService.get_user_role_ids(db, user_id)
-    return R.success_resp(role_ids)
+    return R.query_resp(role_ids)
 
 
 @router.post("/{user_id}/roles")
@@ -153,7 +153,7 @@ async def list_users(
         page_num=req.pageNum,
         page_size=req.pageSize,
     )
-    return R.success_resp(page.model_dump())
+    return R.query_resp(page.model_dump())
 
 
 @router.delete("/admin/{user_id}")
@@ -244,7 +244,10 @@ async def admin_batch_create_users(
         except Exception as e:
             failed.append({"username": username, "reason": str(e)})
 
-    return R.success_resp({"created": created, "failed": failed})
+    return R.success_resp(
+        {"created": created, "failed": failed},
+        msg=f"批量创建完成：成功 {len(created)} 个，失败 {len(failed)} 个",
+    )
 
 
 # ========== 系统级接口（无 prefix） ==========
@@ -256,7 +259,7 @@ system_router = APIRouter(tags=["用户"])
 async def get_current_user_info(db: AsyncSession = Depends(get_db)):
     """获取当前用户信息（角色 + 权限均来自 ContextVar）"""
     user = await UserService.get_user_by_id_or_raise(db, get_user_id())
-    return R.success_resp(
+    return R.query_resp(
         CurrentUserInfoVO.from_orm_to_vo(
             user,
             roles=get_user_roles(),

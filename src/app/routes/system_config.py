@@ -49,7 +49,7 @@ async def get_config(
     from src.infra.config import get_settings
     settings = get_settings()
 
-    return R.success_resp({
+    return R.query_resp({
         "agent": {
             "api_key": settings.QWEN3_API_KEY[:4] + "****" if settings.QWEN3_API_KEY else "",
             "base_url": settings.QWEN_BASE_URL,
@@ -74,7 +74,7 @@ async def get_agent_config(
     from src.infra.config import get_settings
     settings = get_settings()
 
-    return R.success_resp({
+    return R.query_resp({
         "api_key": settings.QWEN3_API_KEY[:4] + "****" if settings.QWEN3_API_KEY else "",
         "base_url": settings.QWEN_BASE_URL,
         "chat_model": settings.QWEN_CHAT_MODEL,
@@ -114,7 +114,7 @@ async def update_agent_config(
     with open(env_path, "w") as f:
         f.writelines(new_lines)
 
-    return R.success_resp({"message": "Agent 配置已更新，请重启服务生效"})
+    return R.success_resp({"message": "Agent 配置已更新，请重启服务生效"}, msg="Agent 配置已更新")
 
 
 @router.get("/smtp")
@@ -125,7 +125,7 @@ async def get_smtp_config(
     from src.infra.config import get_settings
     settings = get_settings()
 
-    return R.success_resp({
+    return R.query_resp({
         "smtp_host": settings.SMTP_HOST,
         "smtp_port": settings.SMTP_PORT,
         "smtp_username": settings.SMTP_USERNAME,
@@ -167,7 +167,7 @@ async def update_smtp_config(
     with open(env_path, "w") as f:
         f.writelines(new_lines)
 
-    return R.success_resp({"message": "SMTP 配置已更新"})
+    return R.success_resp({"message": "SMTP 配置已更新"}, msg="SMTP 配置已更新")
 
 
 @router.post("/rbac/reset")
@@ -185,4 +185,4 @@ async def reset_rbac(
     return R.success_resp({
         "message": "RBAC 已重置",
         "stats": stats,
-    })
+    }, msg="RBAC 已重置")

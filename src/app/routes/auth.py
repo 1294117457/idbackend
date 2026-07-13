@@ -61,7 +61,8 @@ async def login(
         AuthTokenPairVO(
             accessToken=access_token,
             refreshToken=refresh_token,
-        ).model_dump()
+        ).model_dump(),
+        msg="登录成功",
     )
 
 
@@ -85,7 +86,8 @@ async def admin_login(
         AuthTokenPairVO(
             accessToken=access_token,
             refreshToken=refresh_token,
-        ).model_dump()
+        ).model_dump(),
+        msg="登录成功",
     )
 
 
@@ -103,7 +105,8 @@ async def register(
 
     user = await AuthService.register(db, req)
     return R.created_resp(
-        UserCreateResultVO(userId=user.id, username=user.username).model_dump()
+        UserCreateResultVO(userId=user.id, username=user.username).model_dump(),
+        msg="注册成功",
     )
 
 
@@ -120,7 +123,8 @@ async def refresh_token(
         AuthTokenPairVO(
             accessToken=new_access,
             refreshToken=new_refresh,
-        ).model_dump()
+        ).model_dump(),
+        msg="令牌已刷新",
     )
 
 
@@ -183,7 +187,7 @@ async def get_captcha(
 ):
     """获取图形验证码"""
     captcha_id, base64_image = await Captcha.generate()
-    return R.success_resp(
+    return R.query_resp(
         CaptchaVO(
             captchaId=captcha_id,
             base64=f"data:image/png;base64,{base64_image}",
@@ -197,7 +201,7 @@ async def get_captcha(
 async def get_current_user_info(db: AsyncSession = Depends(get_db)):
     """获取当前用户信息"""
     user = await UserService.get_user_by_id_or_raise(db, get_user_id())
-    return R.success_resp(
+    return R.query_resp(
         CurrentUserInfoVO.from_orm_to_vo(
             user,
             roles=get_user_roles(),

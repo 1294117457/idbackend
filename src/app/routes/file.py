@@ -50,7 +50,7 @@ async def upload_file(
         "fileId": meta.id,
         "originalName": meta.original_name,
         "url": url,
-    })
+    }, msg="文件上传成功")
 
 
 @router.post("/avatar")
@@ -65,7 +65,7 @@ async def upload_avatar(
         contentType=file.content_type or "image/jpeg",
     )
     _, url = await service.upload_avatar(req)
-    return R.success_resp(url)
+    return R.success_resp(url, msg="头像上传成功")
 
 
 # ============ 2. 查询 ============
@@ -77,7 +77,7 @@ async def search_files(
 ):
     """文件分页搜索——DTO 自动解析（§5.3）"""
     page = await service.search_files(req)
-    return R.success_resp(page.model_dump())
+    return R.query_resp(page.model_dump())
 
 
 @router.get("/{file_id}")
@@ -87,7 +87,7 @@ async def get_file_info(
 ):
     """单个文件元信息（service 层抛异常，路由层不再判空）"""
     meta = await service.get_file(file_id)
-    return R.success_resp(FileVO.from_orm_to_vo(meta).model_dump())
+    return R.query_resp(FileVO.from_orm_to_vo(meta).model_dump())
 
 
 # ============ 3. 预览 / 下载（v6.0 全签名模式）============
@@ -110,7 +110,7 @@ async def get_preview_url(
     - force_attachment=False：浏览器按 Content-Type 内联展示（PDF/图片）
     """
     meta, url = await service.get_preview_data(file_id, expiryMinutes)
-    return R.success_resp(FileDataVO.from_orm_to_vo(meta, url).model_dump())
+    return R.query_resp(FileDataVO.from_orm_to_vo(meta, url).model_dump())
 
 
 @router.get("/{file_id}/download-url")
@@ -132,7 +132,7 @@ async def get_download_url(
     - 前端拿 url 后用 window.open() 即可触发浏览器原生下载
     """
     meta, url = await service.get_download_data(file_id, expiryMinutes)
-    return R.success_resp(FileDataVO.from_orm_to_vo(meta, url).model_dump())
+    return R.query_resp(FileDataVO.from_orm_to_vo(meta, url).model_dump())
 
 
 # ============ 4. 更新 / 删除 ============
@@ -145,7 +145,7 @@ async def update_file(
 ):
     """更新文件元信息（仅支持更新 originalName）"""
     meta = await service.update_file(req, file_id)
-    return R.success_resp(FileVO.from_orm_to_vo(meta).model_dump())
+    return R.success_resp(FileVO.from_orm_to_vo(meta).model_dump(), msg="文件信息已更新")
 
 
 @router.delete("/{file_id}")
