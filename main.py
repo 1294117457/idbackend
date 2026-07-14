@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 import uvicorn
 from fastapi import FastAPI
 
-from src.app.dependencies import get_storage
+from src.app.dependencies import get_storage, set_storage, clear_storage
 from src.app.middleware import register_exception_handlers, register_middlewares
 from src.app.routes import register_all_routes
 from src.infra.config import get_settings
@@ -25,11 +25,12 @@ def _sync_schema_blocking() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """启动 → 运行 → 关闭。schema 同步在 main() 起 uvicorn 之前已经完成。"""
     print("[idpython] 启动中...")
 
     try:
-        storage = get_storage()
+        from src.infra.storage import create_storage
+        storage = create_storage()
+        set_storage(storage)
         storage.ensure_bucket()
         print(f"[idpython] 存储后端就绪: {type(storage).__name__}")
     except Exception as e:
@@ -44,6 +45,7 @@ async def lifespan(app: FastAPI):
         get_storage().close()
     except Exception:
         pass
+    clear_storage()
     print("[idpython] 关闭完成")
 
 
