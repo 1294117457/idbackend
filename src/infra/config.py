@@ -19,6 +19,11 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql://postgres:password@localhost:5432/idproject"
     PG_VECTOR_URL: str = "postgresql://postgres:password@localhost:5432/idproject"
 
+    # DB 连接池
+    DB_POOL_SIZE: int = 30
+    DB_MAX_OVERFLOW: int = 50
+    DB_POOL_TIMEOUT: int = 30
+
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
 
@@ -29,7 +34,8 @@ class Settings(BaseSettings):
     MINIO_SECRET_KEY: str = "password"
     MINIO_BUCKET: str = "idproject"
 
-    # MinIO 客户端调优（boto3 Config）
+    # 万能验证码 (留空则不启用; 性能测试时设为固定值如 "0000")
+    CAPTCHA_BYPASS_CODE: str = ""
     MINIO_MAX_POOL_CONNECTIONS: int = 50         # 单 client 最大连接数；总并发 = workers × 该值
     MINIO_CONNECT_TIMEOUT: int = 5               # TCP 连接超时（秒）
     MINIO_READ_TIMEOUT: int = 30                 # 读超时（秒）

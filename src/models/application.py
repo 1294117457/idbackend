@@ -103,6 +103,12 @@ class Application(Base, TimestampMixin):
         Index("idx_application_user_template_status", "user_id", "template_id", "status"),
         Index("idx_application_status", "status"),
         Index("idx_application_category", "category_id"),
+        Index(
+            "idx_reviewers",
+            "reviewer_ids",
+            postgresql_using="gin",
+            postgresql_ops={"reviewer_ids": "jsonb_path_ops"},
+        ),
     )
 
 

@@ -1,7 +1,7 @@
 """
 数据库迁移脚本（幂等）
 
-添加 applications.reviewer_ids JSON 字段（v4.3）
+添加 applications.reviewer_ids JSON 字段 + GIN 索引（v4.3）
 
 使用方法（任选一种）：
   1. Python: python -m src.scripts.migrate_add_reviewer_ids
@@ -23,21 +23,27 @@ def run_migration():
         """))
         if result.fetchone():
             print("[OK] reviewer_ids 列已存在，跳过")
-            return
+        else:
+            # 添加列（PostgreSQL JSON 类型，default []）
+            db.execute(text("""
+                ALTER TABLE applications
+                ADD COLUMN reviewer_ids JSONB DEFAULT '[]'::JSONB
+                NOT NULL
+            """))
+            db.commit()
+            print("[OK] reviewer_ids 列创建成功")
 
-        # 添加列（PostgreSQL JSON 类型，default []）
+        # 确保存在 jsonb_path_ops 的 GIN 索引（适合 ? / @> 等包含查询）
+        # 先删可能存在的旧索引（用默认 jsonb_ops），再重建
         db.execute(text("""
-            ALTER TABLE applications
-            ADD COLUMN reviewer_ids JSONB DEFAULT '[]'::JSONB
-            NOT NULL
+            DROP INDEX IF EXISTS idx_applications_reviewer_ids
         """))
-        # 加索引（审核员分流查询高频）
         db.execute(text("""
-            CREATE INDEX IF NOT EXISTS idx_applications_reviewer_ids
-            ON applications USING GIN (reviewer_ids)
+            CREATE INDEX IF NOT EXISTS idx_reviewers
+            ON applications USING GIN (reviewer_ids jsonb_path_ops)
         """))
         db.commit()
-        print("[OK] reviewer_ids 列 + GIN 索引创建成功")
+        print("[OK] GIN 索引 idx_reviewers (jsonb_path_ops) 创建成功")
 
 
 if __name__ == "__main__":

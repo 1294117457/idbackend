@@ -9,6 +9,7 @@ from typing import Tuple
 from PIL import Image, ImageDraw, ImageFont
 
 from .redis import get_redis
+from .config import get_settings
 
 
 class Captcha:
@@ -120,6 +121,11 @@ class Captcha:
         """
         if not captcha_id or not code:
             return False, "验证码不能为空"
+
+        # 万能验证码 bypass
+        settings = get_settings()
+        if settings.CAPTCHA_BYPASS_CODE and code.upper() == settings.CAPTCHA_BYPASS_CODE.upper():
+            return True, ""
 
         redis = await get_redis()
         stored = await redis.get(captcha_id)

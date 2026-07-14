@@ -178,10 +178,14 @@ async def reset_rbac(
 
     仅 super_admin 可调（依赖 rbac:reset 权限码 → super_admin 角色短路放行）。
     业务侧新建的 role / permission 不会被删。
+
+    失效：调用 RbacService.invalidate_all_user_caches() 清除所有用户缓存。
     """
     from src.scripts.init_rbac_data import reset_rbac_data
 
     stats = await reset_rbac_data()
+    # 清除所有用户缓存（role/permission 结构已大变，旧缓存全部失效）
+    await RbacService.invalidate_all_user_caches()
     return R.success_resp({
         "message": "RBAC 已重置",
         "stats": stats,

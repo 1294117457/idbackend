@@ -3,11 +3,14 @@
 from sqlalchemy import select, update, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional, List, Dict, Any
+import json
 
 from src.models import User, Role, Permission, Application
 from src.models.user import UserRole, RolePermission, UserStatus
 from src.infra.jwt import hash_password
 from src.infra.database import AsyncSessionLocal
+from src.infra.redis import get_redis
+from src.services.rbac_service import RbacService
 from src.app.schemas.errors import NotFoundError, ConflictError
 
 
@@ -28,11 +31,25 @@ class UserService:
             True  → 账号正常
             False → 用户不存在 / 账号被禁用
 
-        性能：1 次 SELECT，仅查 status 字段。
+        性能：cache-aside 模式。
+        - 命中：0 SQL
+        - miss：1 次 SELECT，仅查 status 字段
+        - TTL：300s（见 RbacService.CACHE_TTL）
+        - 失效：RbacService.clear_user_status_cache(user_id)
         """
+        redis = await get_redis()
+        cache_key = f"{RbacService.USER_STATUS_KEY}{user_id}"
+        cached = await redis.get(cache_key)
+        if cached is not None:
+            return cached == "1"
+
         async with AsyncSessionLocal() as db:
             user = await db.get(User, user_id)
-            return user is not None and user.status == UserStatus.ACTIVE.value
+            is_active = user is not None and user.status == UserStatus.ACTIVE.value
+
+        # 回填缓存（无论 True/False 都缓存，避免穿透攻击时反复打 DB）
+        await redis.setex(cache_key, RbacService.CACHE_TTL, "1" if is_active else "0")
+        return is_active
 
     @staticmethod
     async def load_user_rbac(user_id: int) -> Optional[Dict[str, Any]]:
@@ -42,10 +59,18 @@ class UserService:
             None  → 用户不存在（账号状态由 AuthMiddleware 保证，这里不重复检查）
             dict  → {user_id, username, roles, permissions}
 
-        与原 load_user_auth_info 的区别：
-        - 不再返回 None 表示"账号禁用"（那个职责下沉到 AuthMiddleware）
-        - 用户不存在时返回 None（PermissionMiddleware 防御性兜底）
+        性能：cache-aside 模式。
+        - 命中：0 SQL
+        - miss：1 次 SELECT user + 1 次 JOIN roles/permissions（与原实现一致）
+        - TTL：300s
+        - 失效：RbacService.clear_user_cache(user_id)（已含 status key）
         """
+        redis = await get_redis()
+        cache_key = f"rbac:user:full:{user_id}"
+        cached = await redis.get(cache_key)
+        if cached:
+            return json.loads(cached)
+
         async with AsyncSessionLocal() as db:
             user = await db.get(User, user_id)
             if not user:
@@ -71,13 +96,16 @@ class UserService:
                 role_map[role_id] = {"roleCode": role_code, "roleName": role_name}
                 perm_set.add(perm_code)
 
-            return {
+            payload = {
                 "user_id": user.id,
                 "username": user.username,
                 "is_admin": False,
                 "roles": list(role_map.values()),
                 "permissions": sorted(perm_set),
             }
+
+        await redis.setex(cache_key, RbacService.CACHE_TTL, json.dumps(payload, ensure_ascii=False))
+        return payload
 
     @staticmethod
     async def load_user_auth_info(user_id: int) -> Optional[Dict[str, Any]]:
@@ -264,4 +292,5 @@ class UserService:
             return False
         await db.delete(user)
         await db.commit()
+        await RbacService.clear_user_cache(user_id)
         return True

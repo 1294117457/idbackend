@@ -180,6 +180,7 @@ async def update_user_status_admin(
     user.status = req.status
     await db.commit()
     await db.refresh(user)
+    await RbacService.clear_user_status_cache(user_id)
     return R.success_resp(msg="状态更新成功")
 
 
