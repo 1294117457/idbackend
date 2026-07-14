@@ -90,8 +90,7 @@ export function authHeaders(token) {
  */
 export function login(account, loginEndpoint = '/api/authserver/login') {
   if (SKIP_CAPTCHA) {
-    // 使用 CAPTCHA_BYPASS_CODE (0000), 后端直接 bypass
-    // captchaId 可以用任意字符串, 不需要先调用 generate 接口
+    // 万能验证码 '0000' 直接通过, captchaId 可以用任意字符串
     const res = http.post(`${BASE_URL}${loginEndpoint}`, JSON.stringify({
       username: account.username,
       password: account.password,

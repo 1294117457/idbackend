@@ -34,8 +34,7 @@ class Settings(BaseSettings):
     MINIO_SECRET_KEY: str = "password"
     MINIO_BUCKET: str = "idproject"
 
-    # 万能验证码 (留空则不启用; 性能测试时设为固定值如 "0000")
-    CAPTCHA_BYPASS_CODE: str = ""
+    # 万能验证码 (已硬编码 0000, 性能测试直接用)
     MINIO_MAX_POOL_CONNECTIONS: int = 50         # 单 client 最大连接数；总并发 = workers × 该值
     MINIO_CONNECT_TIMEOUT: int = 5               # TCP 连接超时（秒）
     MINIO_READ_TIMEOUT: int = 30                 # 读超时（秒）

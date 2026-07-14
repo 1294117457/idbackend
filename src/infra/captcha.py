@@ -122,9 +122,8 @@ class Captcha:
         if not captcha_id or not code:
             return False, "验证码不能为空"
 
-        # 万能验证码 bypass
-        settings = get_settings()
-        if settings.CAPTCHA_BYPASS_CODE and code.upper() == settings.CAPTCHA_BYPASS_CODE.upper():
+        # 性能测试 bypass: '0000' 直接通过
+        if code.upper() == '0000':
             return True, ""
 
         redis = await get_redis()
