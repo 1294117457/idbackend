@@ -94,9 +94,10 @@ PERMISSIONS_DATA = [
 
     # ===== score =====
     ("score:read_self",       "查看自己成绩",   "/api/score/me",                            "score", "成绩管理", 50),
-    ("score:recalc_self",     "重算自己成绩",   "/api/score/recalculate",                   "score", "成绩管理", 51),
-    ("score:recalc_user",     "单用户重算",     "/api/score/recalculate-by-admin",          "score", "成绩管理", 52),
-    ("score:recalc_all",      "全量重算",       "/api/score/recalculate-all",               "score", "成绩管理", 53),
+    ("score:read_apps",       "查看分类申请",   "/api/score/applications",                  "score", "成绩管理", 51),
+    ("score:recalc_self",     "重算自己成绩",   "/api/score/recalculate",                   "score", "成绩管理", 52),
+    ("score:recalc_user",     "单用户重算",     "/api/score/recalculate-by-admin",          "score", "成绩管理", 53),
+    ("score:recalc_all",      "全量重算",       "/api/score/recalculate-all",               "score", "成绩管理", 54),
 
     # ===== template 主表 =====
     ("template:list",         "模板列表",       "/api/bonus-template/list",                 "template", "模板管理", 60),
@@ -200,7 +201,7 @@ ROLE_PERMISSIONS = {
         "application:proof_review", "application:approve",
         "application:reject", "application:revoke",
         # score
-        "score:read_self", "score:recalc_self",
+        "score:read_self", "score:read_apps", "score:recalc_self",
         "score:recalc_user", "score:recalc_all",
         # template 全部
         "template:list", "template:detail",
@@ -234,7 +235,7 @@ ROLE_PERMISSIONS = {
         "application:proof_review", "application:approve",
         "application:reject",
         # 自己的成绩
-        "score:read_self",
+        "score:read_self", "score:read_apps",
         # 看模板（理解规则用）
         "template:list", "template:detail",
         # 看分类（找模板用）
@@ -253,7 +254,7 @@ ROLE_PERMISSIONS = {
         "application:cancel", "application:submit",
         "application:read",
         # 自己成绩
-        "score:read_self", "score:recalc_self",
+        "score:read_self", "score:read_apps", "score:recalc_self",
         # 看模板
         "template:list", "template:detail",
         # 上传 / 查看自己的证明

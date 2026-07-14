@@ -154,17 +154,45 @@ class UserService:
         db: AsyncSession,
         user_id: int,
     ) -> dict:
-        """获取用户积分（从 score_info 读取）
+        """获取用户积分（从 score_info 读取，v4.6 适配）
+
+        v4.6 适配：score_info 持久化字段从 categories 字典改为 scores 字典
+          - 旧结构: { categories: { cat_id: { name, score, max } }, total, calculated_at }
+          - 新结构: { scores: { cat_id: { score, raw } }, total, calculated_at }
+          - 此方法返回的 categories 改为从 scores 现算（含 name 从 template_category 拼）
 
         如果 score_info 为空，返回空结构。
         """
         user = await UserService.get_user_by_id(db, user_id)
         if not user or not user.score_info:
-            return {"categories": {}, "total": 0.0}
+            return {"categories": {}, "total": 0.0, "calculated_at": None}
+
+        score_info = user.score_info or {}
+        scores_dict = score_info.get("scores") or {}
+
+        # 从 template_category 取 name
+        categories: Dict[str, Dict[str, Any]] = {}
+        if scores_dict:
+            from src.models.template_category import TemplateCategory
+            result = await db.execute(
+                select(TemplateCategory).where(
+                    TemplateCategory.id.in_([int(cid) for cid in scores_dict.keys()])
+                )
+            )
+            for row in result.scalars().all():
+                cat_id_str = str(row.id)
+                if cat_id_str in scores_dict:
+                    s = scores_dict[cat_id_str]
+                    categories[cat_id_str] = {
+                        "name": row.name,
+                        "score": s.get("score", 0.0),
+                        "max": float(row.max_score) if row.max_score is not None else None,
+                    }
+
         return {
-            "categories": user.score_info.get("categories", {}),
-            "total": user.score_info.get("total", 0.0),
-            "calculated_at": user.score_info.get("calculated_at"),
+            "categories": categories,
+            "total": score_info.get("total", 0.0),
+            "calculated_at": score_info.get("calculated_at"),
         }
 
     @staticmethod

@@ -18,6 +18,10 @@ class UserProfileService:
         - 从 users 表读取基本信息
         - student_id 从 username 提取
         - extra_info_field_defs：已启用字段定义（用于前端动态渲染）
+        - score_info：v4.6 起精简为 { calculated_at, total, scores }
+          * 为了让 profile 页面直接渲染分数树（不再调 /api/score/me），
+            本方法在返回时把 tree 字段作为派生数据附加到 score_info 里
+          * tree 不写 DB，仅用于接口返回（对齐 /api/score/me 的展示形态）
         """
         user = await db.get(User, user_id)
         if not user:
@@ -37,6 +41,19 @@ class UserProfileService:
             for f in field_defs
         ]
 
+        # v4.6：score_info 拆分为持久化字段（scores/total/calculated_at） + 派生字段（tree）
+        score_info = dict(user.score_info or {})
+        if score_info.get("scores"):
+            from src.services.score_data_service import ScoreDataService
+            roots = await ScoreDataService._load_category_roots(db)
+            score_info["tree"] = ScoreDataService._build_tree(
+                roots,
+                score_info["scores"],
+                include_applications=False,
+            )
+        else:
+            score_info.setdefault("tree", [])
+
         return {
             "id": user.id,
             "student_id": User.extract_student_id(user.username),
@@ -49,7 +66,7 @@ class UserProfileService:
             "graduation_year": user.graduation_year,
             "major": user.major,
             "extra_info": user.extra_info or {},
-            "score_info": user.score_info or {},
+            "score_info": score_info,
             "extra_info_field_defs": extra_info_field_defs,
         }
 
