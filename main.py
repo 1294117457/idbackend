@@ -82,8 +82,9 @@ def main() -> None:
         app,
         host=settings.HOST,
         port=settings.PORT,
+        workers=settings.WORKERS,
         reload=settings.DEBUG,
-        access_log=True,
+        access_log=settings.ACCESS_LOG,
         log_level="info",
     )
 

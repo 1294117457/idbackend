@@ -268,12 +268,18 @@ export function adminPendingList(token, pageNum = 1, pageSize = 20) {
   return res;
 }
 
+function toQueryString(params) {
+  return Object.entries({ pageNum: 1, pageSize: 20, ...params })
+    .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+    .join('&');
+}
+
 /**
  * 审核员 - 我的待审核 (含过滤)
  */
 export function adminMyPending(token, filters = {}) {
-  const params = new URLSearchParams({ pageNum: 1, pageSize: 20, ...filters }).toString();
-  const res = http.get(`${BASE_URL}/api/admin/applications/my-pending?${params}`, {
+  const query = toQueryString(filters);
+  const res = http.get(`${BASE_URL}/api/admin/applications/my-pending?${query}`, {
     headers: authHeaders(token),
   });
   const ok = check(res, {

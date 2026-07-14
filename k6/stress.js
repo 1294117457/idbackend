@@ -33,8 +33,8 @@ export function setup() {
   console.log(`目标服务: ${api.BASE_URL}`);
   console.log(`SKIP_CAPTCHA: ${api.SKIP_CAPTCHA}`);
 
-  const studentToken = api.login(api.TEST_ACCOUNTS.student);
-  const adminToken = api.login(api.TEST_ACCOUNTS.admin, '/api/authserver/admin/login');
+  const studentToken = api.login(api.TEST_ACCOUNTS.student)?.accessToken;
+  const adminToken = api.login(api.TEST_ACCOUNTS.admin, '/api/authserver/admin/login')?.accessToken;
 
   if (!studentToken) console.error('setup: 学生登录失败');
   if (!adminToken) console.error('setup: 管理员登录失败');

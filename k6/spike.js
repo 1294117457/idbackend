@@ -9,7 +9,6 @@ import * as api from './common.js';
 
 export const options = {
   vus: 300,
-  duration: '2m',
 
   stages: [
     { duration: '10s', target: 20  },   // 预热
@@ -31,8 +30,8 @@ export const options = {
 };
 
 export function setup() {
-  const studentToken = api.login(api.TEST_ACCOUNTS.student);
-  const adminToken = api.login(api.TEST_ACCOUNTS.admin, '/api/authserver/admin/login');
+  const studentToken = api.login(api.TEST_ACCOUNTS.student)?.accessToken;
+  const adminToken = api.login(api.TEST_ACCOUNTS.admin, '/api/authserver/admin/login')?.accessToken;
   return { studentToken, adminToken };
 }
 

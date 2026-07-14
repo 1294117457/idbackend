@@ -15,7 +15,6 @@ import * as api from './common.js';
 
 export const options = {
   vus: 50,
-  duration: '2m',
 
   stages: [
     { duration: '20s', target: 50 },   // 0→50 VUs
@@ -40,8 +39,8 @@ export function setup() {
   console.log(`目标服务: ${api.BASE_URL}`);
   console.log(`SKIP_CAPTCHA: ${api.SKIP_CAPTCHA}`);
 
-  const studentToken = api.login(api.TEST_ACCOUNTS.student);
-  const adminToken = api.login(api.TEST_ACCOUNTS.admin, '/api/authserver/admin/login');
+  const studentToken = api.login(api.TEST_ACCOUNTS.student)?.accessToken;
+  const adminToken = api.login(api.TEST_ACCOUNTS.admin, '/api/authserver/admin/login')?.accessToken;
 
   if (!studentToken) console.error('setup: 学生登录失败');
   if (!adminToken) console.error('setup: 管理员登录失败');
@@ -94,8 +93,10 @@ export default function(data) {
     if (res && res.status === 200) {
       try {
         const list = JSON.parse(res.body).data?.list || [];
-        if (list.length > 0) {
-          const app = list[0];
+        // 过滤出仍有 APPLYING 状态的申请,避免重复操作已终态的申请
+        const applying = list.filter(app => app.status === 'APPLYING');
+        if (applying.length > 0) {
+          const app = applying[Math.floor(Math.random() * applying.length)];
           if (app.proofs && app.proofs.length > 0) {
             api.adminReviewProof(data.adminToken, app.id, app.proofs[0].id, 'APPROVED');
             sleep(0.5);

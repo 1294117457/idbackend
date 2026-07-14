@@ -27,8 +27,8 @@ export function setup() {
   console.log(`目标服务: ${api.BASE_URL}`);
   console.log(`SKIP_CAPTCHA: ${api.SKIP_CAPTCHA}`);
 
-  const studentToken = api.login(api.TEST_ACCOUNTS.student);
-  const adminToken = api.login(api.TEST_ACCOUNTS.admin, '/api/authserver/admin/login');
+  const studentToken = api.login(api.TEST_ACCOUNTS.student)?.accessToken;
+  const adminToken = api.login(api.TEST_ACCOUNTS.admin, '/api/authserver/admin/login')?.accessToken;
 
   if (!studentToken || !adminToken) {
     console.error('setup: 登录失败, 测试无法继续');
