@@ -79,12 +79,13 @@ def main() -> None:
     # 1. Schema 同步（幂等，可重复跑）
     _sync_schema_blocking()
 
-    # 2. 起 web server
+    # 2. 起 web server（workers>1 时关闭 reload 避免冲突）
     uvicorn.run(
         "main:app",
         host=settings.HOST,
         port=settings.PORT,
-        reload=settings.DEBUG,
+        reload=False,
+        workers=2,
         log_level="info",
     )
 

@@ -11,12 +11,12 @@ export const options = {
   vus: 300,
 
   stages: [
-    { duration: '10s', target: 20  },   // 预热
-    { duration: '10s', target: 100 },   // 爬升
-    { duration: '30s', target: 100 },   // 稳住
-    { duration: '5s',  target: 300 },   // 尖峰: 20→300 (关键!)
-    { duration: '30s', target: 300 },   // 高位持续
-    { duration: '5s',  target: 20  },   // 骤降
+    { duration: '10s', target: 5   },   // 预热
+    { duration: '10s', target: 30  },   // 爬升
+    { duration: '30s', target: 30  },   // 稳住
+    { duration: '5s',  target: 50  },   // 尖峰: 模拟截止日峰值
+    { duration: '30s', target: 50  },   // 高位持续
+    { duration: '5s',  target: 5   },   // 骤降
     { duration: '10s', target: 0   },   // 清场
   ],
 

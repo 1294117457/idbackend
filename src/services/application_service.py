@@ -1040,7 +1040,7 @@ class ApplicationService:
         from sqlalchemy import literal_column
 
         contains_me = literal_column(
-            f"reviewer_ids::jsonb @> to_jsonb({reviewer_id})::jsonb"
+            f"reviewer_ids @> to_jsonb(ARRAY[{reviewer_id}])"
         )
         conditions = [
             Application.status == ApplicationStatus.APPLYING.value,
@@ -1078,7 +1078,9 @@ class ApplicationService:
             .order_by(Application.created_at.desc())
         )
 
-        count_q = select(func.count()).select_from(query.subquery())
+        # count 时直接对 Application 表 count，避免子查询 + selectinload 的性能问题
+        base_filter = select(Application.id).where(*conditions).subquery()
+        count_q = select(func.count()).select_from(base_filter)
         total = (await db.execute(count_q)).scalar() or 0
 
         query = query.offset((page - 1) * size).limit(size)
@@ -1106,7 +1108,7 @@ class ApplicationService:
         from sqlalchemy import literal_column
 
         contains_me = literal_column(
-            f"reviewer_ids::jsonb @> to_jsonb({reviewer_id})::jsonb"
+            f"reviewer_ids @> to_jsonb(ARRAY[{reviewer_id}])"
         )
 
         from sqlalchemy.orm import aliased
@@ -1138,7 +1140,8 @@ class ApplicationService:
             .order_by(Application.updated_at.desc())
         )
 
-        count_q = select(func.count()).select_from(query.subquery())
+        base_filter = select(Application.id).where(*conditions).subquery()
+        count_q = select(func.count()).select_from(base_filter)
         total = (await db.execute(count_q)).scalar() or 0
 
         query = query.offset((page - 1) * size).limit(size)
