@@ -564,6 +564,11 @@ async def list_my_audit_history(
 async def list_my_pending(
     pageNum: int = Query(1, ge=1),
     pageSize: int = Query(20, ge=1, le=100),
+    fullName: Optional[str] = Query(None, description="学生姓名模糊"),
+    studentId: Optional[str] = Query(None, description="学号前缀模糊（从 username 前缀匹配）"),
+    templateName: Optional[str] = Query(None, description="模板名模糊"),
+    startTime: Optional[str] = Query(None, description="创建时间起，ISO 字符串"),
+    endTime: Optional[str] = Query(None, description="创建时间止，ISO 字符串"),
     db: AsyncSession = Depends(get_db),
 ):
     """当前审核员的待审核列表（排除 reviewer_ids 包含自己的人）"""
@@ -573,6 +578,11 @@ async def list_my_pending(
 
     applications, total = await ApplicationService.list_pending_for_me(
         db, user_id, pageNum, pageSize,
+        full_name=fullName,
+        student_id=studentId,
+        template_name=templateName,
+        start_time=startTime,
+        end_time=endTime,
     )
     return R.query_resp({
         "list": [format_application(a, with_proofs=True) for a in applications],
@@ -586,6 +596,12 @@ async def list_my_pending(
 async def list_my_reviewed(
     pageNum: int = Query(1, ge=1),
     pageSize: int = Query(20, ge=1, le=100),
+    fullName: Optional[str] = Query(None, description="学生姓名模糊"),
+    studentId: Optional[str] = Query(None, description="学号前缀模糊"),
+    templateName: Optional[str] = Query(None, description="模板名模糊"),
+    status: Optional[str] = Query(None, description="终态过滤 PASSED/REJECTED/CANCELLED/REVOKED"),
+    startTime: Optional[str] = Query(None, description="updated_at 起，ISO 字符串"),
+    endTime: Optional[str] = Query(None, description="updated_at 止，ISO 字符串"),
     db: AsyncSession = Depends(get_db),
 ):
     """当前审核员的历史审核列表（reviewer_ids 包含自己）"""
@@ -595,6 +611,12 @@ async def list_my_reviewed(
 
     applications, total = await ApplicationService.list_my_reviewed(
         db, user_id, pageNum, pageSize,
+        full_name=fullName,
+        student_id=studentId,
+        template_name=templateName,
+        status=status,
+        start_time=startTime,
+        end_time=endTime,
     )
     return R.query_resp({
         "list": [format_application(a, with_proofs=True) for a in applications],
@@ -638,6 +660,12 @@ def format_application(a, with_proofs: bool = False) -> dict:
                 "id": p.id,
                 "applicationId": p.application_id,
                 "fileId": p.file_id,
+                # 文件名 / MIME / 大小：LEFT JOIN file_metadata 注入
+                # （models 中 ApplicationProof.file = relationship(..., lazy="joined")，
+                #   proofs 加载时 file 自动一起拉回来；file_id 为空时 file 为 None）
+                "fileName": p.file.original_name if p.file else None,
+                "contentType": p.file.content_type if p.file else None,
+                "fileSize": p.file.file_size if p.file else None,
                 "proofScore": float(p.proof_score) if p.proof_score else 0,
                 "status": p.status,
                 "statusText": get_proof_status_text(p.status),

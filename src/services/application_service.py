@@ -1025,25 +1025,52 @@ class ApplicationService:
         reviewer_id: int,
         page: int = 1,
         size: int = 20,
+        full_name: Optional[str] = None,
+        student_id: Optional[str] = None,
+        template_name: Optional[str] = None,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
     ) -> tuple[List[Application], int]:
         """当前审核员的待审核列表
 
         逻辑：status=APPLYING 且 reviewer_ids 不包含当前审核员
+        支持高级搜索：full_name(姓名模糊)、student_id(从 username 前缀模糊)、template_name、
+                      start_time/end_time(创建时间范围，ISO 字符串)
         """
         from sqlalchemy import literal_column
 
         contains_me = literal_column(
             f"reviewer_ids::jsonb @> to_jsonb({reviewer_id})::jsonb"
         )
+        conditions = [
+            Application.status == ApplicationStatus.APPLYING.value,
+            or_(
+                Application.reviewer_ids.is_(None),
+                ~contains_me,
+            ),
+        ]
+
+        # —— 高级搜索：必须 join user 才能用 full_name / student_id ——
+        from sqlalchemy.orm import aliased
+        from src.models.user import User
+        user_alias = aliased(User)
+
+        if full_name:
+            conditions.append(user_alias.full_name.ilike(f"%{full_name}%"))
+        if student_id:
+            # username 形如 "33120...@stu.xmu.edu.cn"，用 username 前缀模糊匹配
+            conditions.append(user_alias.username.ilike(f"{student_id}%"))
+        if template_name:
+            conditions.append(Application.template_name.ilike(f"%{template_name}%"))
+        if start_time:
+            conditions.append(Application.created_at >= start_time)
+        if end_time:
+            conditions.append(Application.created_at <= end_time)
+
         query = (
             select(Application)
-            .where(
-                Application.status == ApplicationStatus.APPLYING.value,
-                or_(
-                    Application.reviewer_ids.is_(None),
-                    ~contains_me,
-                ),
-            )
+            .join(user_alias, Application.user_id == user_alias.id)
+            .where(*conditions)
             .options(
                 selectinload(Application.proofs),
                 selectinload(Application.user),
@@ -1064,19 +1091,46 @@ class ApplicationService:
         reviewer_id: int,
         page: int = 1,
         size: int = 20,
+        full_name: Optional[str] = None,
+        student_id: Optional[str] = None,
+        template_name: Optional[str] = None,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+        status: Optional[str] = None,
     ) -> tuple[List[Application], int]:
         """当前审核员的历史审核列表（reviewer_ids 包含自己）
 
-        包含 PASSED / REJECTED 终态记录，按 updated_at 倒序
+        包含 PASSED / REJECTED 终态记录，按 updated_at 倒序。
+        支持高级搜索：full_name / student_id / template_name / 时间范围 / status。
         """
         from sqlalchemy import literal_column
 
         contains_me = literal_column(
             f"reviewer_ids::jsonb @> to_jsonb({reviewer_id})::jsonb"
         )
+
+        from sqlalchemy.orm import aliased
+        from src.models.user import User
+        user_alias = aliased(User)
+
+        conditions = [contains_me]
+        if full_name:
+            conditions.append(user_alias.full_name.ilike(f"%{full_name}%"))
+        if student_id:
+            conditions.append(user_alias.username.ilike(f"{student_id}%"))
+        if template_name:
+            conditions.append(Application.template_name.ilike(f"%{template_name}%"))
+        if status:
+            conditions.append(Application.status == status)
+        if start_time:
+            conditions.append(Application.updated_at >= start_time)
+        if end_time:
+            conditions.append(Application.updated_at <= end_time)
+
         query = (
             select(Application)
-            .where(contains_me)
+            .join(user_alias, Application.user_id == user_alias.id)
+            .where(*conditions)
             .options(
                 selectinload(Application.proofs),
                 selectinload(Application.user),

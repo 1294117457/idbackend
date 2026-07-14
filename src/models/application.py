@@ -133,8 +133,13 @@ class ApplicationProof(Base, TimestampMixin):
     )
 
     # 关系
+    # file 用 lazy="joined"：保证从 application 加载 proofs 后 file 也一次 JOIN 进来，
+    # 避免在 async 路由层访问 proof.file 触发 lazy load（MissingGreenlet）。
+    # 现有的 selectinload(Application.proofs) 会与 joined 兼容，不重复发 SQL。
     application: Mapped["Application"] = relationship(back_populates="proofs")
-    file: Mapped[Optional["FileMetadata"]] = relationship("FileMetadata")
+    file: Mapped[Optional["FileMetadata"]] = relationship(
+        "FileMetadata", lazy="joined",
+    )
 
     __table_args__ = (
         Index("idx_proofs_application", "application_id"),

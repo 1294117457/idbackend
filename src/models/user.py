@@ -112,6 +112,7 @@ class User(Base, TimestampMixin):
     last_login_at: Mapped[Optional[str]] = mapped_column(String(50))
 
     # 学生信息
+    # 学号不冗余成列，按需用 User.extract_student_id(username) 从 username 前缀实时解析。
     full_name: Mapped[Optional[str]] = mapped_column(String(100))
     grade: Mapped[Optional[int]] = mapped_column(Integer)
     graduation_year: Mapped[Optional[int]] = mapped_column(Integer)
