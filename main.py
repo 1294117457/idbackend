@@ -79,12 +79,10 @@ def main() -> None:
 
     # 2. 起 web server
     uvicorn.run(
-        app,
+        "main:app",
         host=settings.HOST,
         port=settings.PORT,
-        workers=settings.WORKERS,
         reload=settings.DEBUG,
-        access_log=settings.ACCESS_LOG,
         log_level="info",
     )
 

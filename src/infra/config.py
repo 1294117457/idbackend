@@ -14,8 +14,6 @@ class Settings(BaseSettings):
     PORT: int = 8000
     HOST: str = "0.0.0.0"
     DEBUG: bool = False
-    WORKERS: int = 1
-    ACCESS_LOG: bool = True
 
     # PostgreSQL
     DATABASE_URL: str = "postgresql://postgres:password@localhost:5432/idproject"
