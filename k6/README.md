@@ -18,63 +18,84 @@ brew install k6
 # https://github.com/grafana/k6/releases
 ```
 
-## 准备测试账号
+## 前置条件
 
-在部署的服务里创建两个测试账号:
+### 1. 服务已部署并运行
 
-```sql
--- 学生账号 (普通用户角色)
-INSERT INTO users (username, password_hash, role, full_name, created_at, updated_at)
-VALUES ('test_student', 'HASH_OF_Test123456', 'user', '测试学生', now(), now())
-ON CONFLICT (username) DO NOTHING;
+确保后端服务已启动,默认地址 `http://223.109.49.63:8000`。
 
--- 审核员账号 (管理员角色)
-INSERT INTO users (username, password_hash, role, full_name, created_at, updated_at)
-VALUES ('test_admin', 'HASH_OF_Admin123456', 'admin', '测试管理员', now(), now())
-ON CONFLICT (username) DO NOTHING;
-```
+### 2. 测试账号存在
 
-> 如果你的密码是 bcrypt 哈希的,可以这样生成:
-> `python3 -c "import bcrypt; print(bcrypt.hashpw(b'Test123456', bcrypt.gensalt()).decode())"`
+当前脚本使用以下账号(确保存在):
+
+| 角色 | 用户名 | 密码 |
+|------|--------|------|
+| 学生 | `33120202201909@stu.xmu.edu.cn` | `zchzch22` |
+| 管理员 | `33120202201909@stu.xmu.edu.cn` | `zchzch22` |
+
+> 两个角色用同一个账号,登录时用不同端点即可:
+> - 学生端: `POST /api/authserver/login`
+> - 管理员端: `POST /api/authserver/admin/login`
+
+### 3. 万能验证码 (可选)
+
+后端 `.env` 中配置了 `CAPTCHA_BYPASS_CODE=0000`,开启后可用万能码绕过图形验证码。
 
 ## 运行测试
 
-### 0. 修改服务地址
+### 1. 冒烟测试 (1 VU, 30s)
 
-如果服务不在 `223.109.49.63:8000`,运行时覆盖:
+验证所有核心接口在低并发下可正常工作:
 
 ```bash
-export K6_BASE_URL=http://YOUR_SERVER:8000
+k6 run k6/smoke.js -e SKIP_CAPTCHA=1
 ```
 
-### 1. 冒烟测试 (验证接口可用)
+### 2. 负载测试 (50 VUs, 2 分钟)
+
+模拟正常业务峰值,验证 DB pool 扩容后性能:
 
 ```bash
-k6 run k6/smoke.js
+k6 run k6/load.js -e SKIP_CAPTCHA=1
 ```
 
-### 2. 负载测试 (50 VUs, 2 分钟, 验证 pool=30/overflow=50)
+### 3. 压力测试 (50→200 VUs, 3 分钟)
+
+逐步加压,找出系统瓶颈点:
 
 ```bash
-k6 run k6/load.js --out json=load_result.json
+k6 run k6/stress.js -e SKIP_CAPTCHA=1
 ```
 
-### 3. 压力测试 (逐步加压到 200 VUs)
+### 4. 峰值测试 (阶梯加压)
 
 ```bash
-k6 run k6/stress.js --out json=stress_result.json
+k6 run k6/spike.js -e SKIP_CAPTCHA=1
 ```
 
-### 4. 峰值测试 (瞬时 300 VUs 冲击)
+### 5. 浸泡测试 (10 VUs, 10 分钟)
+
+长时间稳定性/内存泄漏检测:
 
 ```bash
-k6 run k6/spike.js --out json=spike_result.json
+k6 run k6/soak.js -e SKIP_CAPTCHA=1
 ```
 
-### 5. 浸泡测试 (10 分钟稳定性)
+## 环境变量
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `K6_BASE_URL` | `http://223.109.49.63:8000` | 服务地址 |
+| `SKIP_CAPTCHA` | `0` (关闭) | 设为 `1` 启用万能验证码 bypass |
+
+示例:
 
 ```bash
-k6 run k6/soak.js --out json=soak_result.json
+# 指定服务地址 + 跳过验证码
+k6 run k6/smoke.js -e SKIP_CAPTCHA=1 -e K6_BASE_URL=http://localhost:8000
+
+# 输出 JSON 结果用于后续分析
+k6 run k6/load.js -e SKIP_CAPTCHA=1 --out json=load_result.json
 ```
 
 ## 输出解读
@@ -82,19 +103,20 @@ k6 run k6/soak.js --out json=soak_result.json
 ### 关键指标
 
 | 指标 | 含义 | 合格线 |
-|---|---|---|
+|------|------|--------|
 | `http_req_duration` P95 | 95% 请求耗时 | < 1s |
 | `http_req_duration` P99 | 99% 请求耗时 | < 3s |
 | `http_req_failed` rate | 请求失败率 | < 1% |
 | `errors` rate | 业务错误率 | < 1% |
-| `login_duration` P95 | 登录(含验证码)耗时 | < 2s |
+| `login_duration` P95 | 登录耗时 | < 2s |
 | `list_applications_duration` P95 | 列表查询耗时 | < 500ms |
+| `detail_application_duration` P95 | 详情查询耗时 | < 300ms |
 | `review_proof_duration` P95 | 审核操作耗时 | < 800ms |
+| `pass_application_duration` P95 | 通过操作耗时 | < 800ms |
 
 ### JSON 结果后处理
 
 ```bash
-# 安装 k6 和 jq
 # 分析负载测试关键指标
 cat load_result.json | jq '
   .metrics | to_entries[] |
@@ -112,9 +134,22 @@ cat load_result.json | jq -r '
 ## 测试场景说明
 
 | 脚本 | VUs | 时长 | 目标 |
-|---|---|---|---|
+|------|-----|------|------|
 | `smoke.js` | 1 | 30s | 接口可用性验证 |
-| `load.js` | 50 | 2min | 正常业务峰值,验证 pool 扩容 |
+| `load.js` | 50 | 2min | 正常业务峰值, 验证 pool 扩容 |
 | `stress.js` | 50→200 | 3min | 逐步加压找瓶颈 |
 | `spike.js` | 20→300 | 2min | 突发流量冲击 |
 | `soak.js` | 10 | 10min | 长时间稳定性/泄漏检测 |
+
+## k6 Studio 使用
+
+1. 打开 k6 Studio, 点击 **Import Test** 或 **New Test**
+2. 选择脚本文件 (`smoke.js` 等)
+3. 在 Environment 设置中添加:
+
+   ```
+   SKIP_CAPTCHA=1
+   K6_BASE_URL=http://223.109.49.63:8000
+   ```
+
+4. 点击 **Run** 开始测试
