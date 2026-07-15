@@ -9,11 +9,17 @@ REST 接口约定：
 权限码（seed_permissions.py 中注册）：
   template:list   - GET /list
   template:detail - GET /{id}
-  template:create - POST
-  template:update - PUT
-  template:delete - DELETE
+  template:create - POST /save  （v5：原 /api/bonus-template POST 路径保留兼容）
+  template:update - POST /update（v5：原 /api/bonus-template/{id} PUT 路径保留兼容）
+  template:delete - POST /delete（v5：原 /api/bonus-template/{id} DELETE 路径保留兼容）
   template:bind_rule - POST /{id}/rules
   template:unbind_rule - DELETE /{id}/rules/{rule_id}
+
+v5 增量（action-style 统一接口）：
+- POST /save    新建 template + 一次性绑 rule（templateId 不在 body 内）
+- POST /update  编辑 template + 重置 rule 绑定（templateId 在 body 内）
+- POST /delete  删除 template（templateId 在 body 内）
+- 三个接口都用 POST，便于前端统一通过"复合请求体"完成动作
 """
 from typing import Annotated
 
@@ -32,6 +38,10 @@ from src.app.schemas.template import (
     TemplateListVO,
     TemplateBindRuleRequest,
     TemplateBindRuleResultVO,
+    TemplateSaveRequest,
+    TemplateSaveUpdateRequest,
+    TemplateDeleteRequest,
+    TemplateSaveResponse,
     RuleDetailVO,
     AttributeVO,
 )
@@ -170,3 +180,54 @@ async def unbind_rule(
     """解绑 rule"""
     await TemplateService.unbind_rule(db, template_id, rule_id)
     return R.success_resp(msg="解绑成功")
+
+
+# ============================================================
+# v5 action-style 统一接口
+# ============================================================
+
+@router.post("/save")
+async def save_template_with_rules(
+    req: TemplateSaveRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """v5：新建 template + 一次性绑 rule（POST 单入口）
+
+    请求体不含 templateId（新建场景下不存在）。
+    整个操作在 service 内一个事务里完成（template 落盘 + rule 全量替换）。
+    """
+    result = await TemplateService.save_template(db, req)
+    return R.success_resp(
+        result.model_dump(),
+        msg="保存成功",
+    )
+
+
+@router.post("/update")
+async def update_template_with_rules(
+    req: TemplateSaveUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """v5：编辑 template + 重置 rule 绑定（POST 单入口）
+
+    请求体含 templateId（必填），service 校验存在性。
+    ruleIds 为全量，DIFF 语义生效（删除不在列表里的、新增列表里没有的）。
+    """
+    result = await TemplateService.update_template(db, req)
+    return R.success_resp(
+        result.model_dump(),
+        msg="更新成功",
+    )
+
+
+@router.post("/delete")
+async def delete_template_by_id(
+    req: TemplateDeleteRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """v5：删除 template（POST 单入口）
+
+    请求体含 templateId（必填），service 校验未关闭的 application 数量。
+    """
+    await TemplateService.delete_template_by_id(db, req)
+    return R.success_resp(msg="删除成功")

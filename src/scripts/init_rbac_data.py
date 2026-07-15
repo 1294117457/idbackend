@@ -99,13 +99,13 @@ PERMISSIONS_DATA = [
     ("score:recalc_user",     "单用户重算",     "/api/score/recalculate-by-admin",          "score", "成绩管理", 53),
     ("score:recalc_all",      "全量重算",       "/api/score/recalculate-all",               "score", "成绩管理", 54),
 
-    # ===== template 主表 =====
+    # ===== template 主表（v5：action-style 路径，详见 routes/template.py） =====
     ("template:list",         "模板列表",       "/api/bonus-template/list",                 "template", "模板管理", 60),
     ("template:list",         "按分类列模板",   "/api/bonus-template/by-category",          "template", "模板管理", 61),
     ("template:detail",       "模板详情",       "/api/bonus-template/{id}",                 "template", "模板管理", 62),
-    ("template:create",       "创建模板",       "/api/bonus-template",                      "template", "模板管理", 63),
-    ("template:update",       "修改模板",       "/api/bonus-template/{id}",                 "template", "模板管理", 64),
-    ("template:delete",       "删除模板",       "/api/bonus-template/{id}",                 "template", "模板管理", 65),
+    ("template:create",       "新建模板+绑规则","/api/bonus-template/save",                 "template", "模板管理", 63),
+    ("template:update",       "编辑模板+重置绑","/api/bonus-template/update",               "template", "模板管理", 64),
+    ("template:delete",       "删除模板",       "/api/bonus-template/delete",               "template", "模板管理", 65),
     ("template:bind_rule",    "绑定规则",       "/api/bonus-template/{id}/rules",           "template", "模板管理", 66),
     ("template:unbind_rule",  "解绑规则",       "/api/bonus-template/{id}/rules/{rule_id}", "template", "模板管理", 67),
 

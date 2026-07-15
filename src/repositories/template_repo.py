@@ -12,7 +12,7 @@
 from decimal import Decimal
 from typing import List, Optional, Iterable
 
-from sqlalchemy import select, update, delete, func, and_, or_
+from sqlalchemy import select, update, delete, insert, func, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -232,6 +232,41 @@ class TemplateRepository:
         )
         result = await db.execute(stmt)
         return int(result.rowcount or 0)
+
+    @staticmethod
+    async def replace_bound_rules(
+        db: AsyncSession,
+        template_id: int,
+        new_rule_ids: List[int],
+    ) -> None:
+        """全量替换 template 已绑 rule（DIFF 语义，依赖外层事务）
+
+        流程：
+        1. 清旧：delete from template_rule where template_id = ?
+        2. 插新：insert 一批 (template_id, rule_id)（去重 + 过滤 None）
+        3. 不返回 rowcount；调用方决定何时 commit
+
+        设计决策：
+        - 不用 DIFF（计算差集 + 局部 INSERT/DELETE）的原因：单条 SQL 容易理解，
+          一删一插在事务里原子完成，PG 上 N≤几十条 rule 的删除/插入开销可忽略
+        - 去重由 UNIQUE 约束兜底；为减少冲突仍预先去重
+        - 过滤 None：防止前端误传 null 进列表
+        """
+        # 1. 清旧
+        await db.execute(
+            delete(TemplateRule).where(TemplateRule.template_id == template_id)
+        )
+
+        # 2. 插新（去重 + 过滤 None）
+        deduped_ids = list({rid for rid in new_rule_ids if rid is not None})
+        if deduped_ids:
+            await db.execute(
+                insert(TemplateRule),
+                [
+                    {"template_id": template_id, "rule_id": rid}
+                    for rid in deduped_ids
+                ],
+            )
 
     @staticmethod
     async def get_bound_rule_ids(

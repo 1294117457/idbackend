@@ -12,6 +12,12 @@
   - CONDITION: value=""（分数下沉到 rule.score）
   - TRANSFORM: value=公式（含 input 变量）
 - template 不带 type 字段（业务允许混用 CONDITION + TRANSFORM rule）
+
+v5（action-style 统一接口）：
+- POST /api/bonus-template/save    新建：template + ruleIds（全量替换绑定的 rule）
+- POST /api/bonus-template/update  编辑：template + ruleIds（全量 DIFF 重置 rule 绑定）
+- POST /api/bonus-template/delete  删除：仅 templateId
+- 旧的 REST 路由（POST "" / PUT / DELETE /{id}/rules 等）保留兼容旧调用方
 """
 from decimal import Decimal
 from typing import Optional, List, Dict, Any
@@ -486,6 +492,129 @@ class RuleBindAttributeRequest(BaseModel):
     attributeId: int = Field(..., ge=1, description="attribute ID")
 
 
+# ============================================================
+# v5 action-style 统一接口 DTO
+# ============================================================
+#
+# 设计目的：
+# - 新建/编辑 template 时，前端把"template 字段 + 最终绑定的 ruleIds 列表"打包成一个请求
+# - 后端在一个事务里完成 template upsert + rule 全量替换（DIFF 语义）
+# - 避免前端"先创建 template 再循环 bind rule"的多事务脏窗口
+#
+# 旧 REST 接口（POST "" / PUT / DELETE /{id}/rules 等）保留兼容旧调用方
+
+
+class TemplatePayload(BaseModel):
+    """template 字段子结构（被 Save / Update 共用）
+
+    设计决策：把 template 字段做成独立子结构 + nested，方便前端组装 payload
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    name: str = Field(..., min_length=1, max_length=100, description="模板名")
+    categoryId: int = Field(..., ge=1, description="绑定的分类 ID（叶子节点）")
+    maxScore: condecimal(gt=0, max_digits=5, decimal_places=2) = Field(
+        ..., description="本模板单次申请上限（>0）",
+    )
+    reviewCount: int = Field(1, ge=1, description="审核员人数")
+    sortOrder: int = Field(0, ge=0, description="展示顺序")
+    description: Optional[str] = Field(None, description="备注")
+    isActive: bool = Field(True, description="是否启用（仅 Update 实际生效；Save 时强制为 True）")
+
+    def to_orm(self) -> "Template":
+        """构造 ORM 对象（service 校验通过后落库）"""
+        from src.models.template import Template
+
+        return Template(
+            name=self.name,
+            category_id=self.categoryId,
+            max_score=self.maxScore,
+            review_count=self.reviewCount,
+            sort_order=self.sortOrder,
+            description=self.description,
+            is_active=True,  # 新建场景强制启用
+        )
+
+    def apply_to(self, template) -> bool:
+        """把字段写回 ORM（覆盖式；返回是否有字段被实际修改）"""
+        modified = False
+        if template.name != self.name:
+            template.name = self.name
+            modified = True
+        if template.category_id != self.categoryId:
+            template.category_id = self.categoryId
+            modified = True
+        if template.max_score != self.maxScore:
+            template.max_score = self.maxScore
+            modified = True
+        if template.review_count != self.reviewCount:
+            template.review_count = self.reviewCount
+            modified = True
+        if template.sort_order != self.sortOrder:
+            template.sort_order = self.sortOrder
+            modified = True
+        if (template.description or None) != (self.description or None):
+            template.description = self.description
+            modified = True
+        if template.is_active != self.isActive:
+            template.is_active = self.isActive
+            modified = True
+        return modified
+
+
+class TemplateSaveRequest(BaseModel):
+    """新建 template + 一次性绑 rule（POST /save）
+
+    - ruleIds 为空数组 → 创建后无任何绑 rule
+    - ruleIds 全量生效（DIFF 语义：旧绑定全清，新绑定按此列表）
+    """
+
+    template: TemplatePayload
+    ruleIds: List[int] = Field(default_factory=list, description="绑定的 rule id 列表（全量替换）")
+
+
+class TemplateDeleteRequest(BaseModel):
+    """删除 template（POST /delete）
+
+    - 仅需 templateId
+    - service 校验：是否存在未关闭的 application → ConflictError
+    """
+
+    templateId: int = Field(..., ge=1, description="被删除的 template ID")
+
+
+class TemplateSaveUpdateRequest(BaseModel):
+    """编辑 template + 重置 rule 绑定（POST /update）
+
+    - templateId 必填；service 校验存在性
+    - ruleIds 为空数组 → 解绑全部 rule
+    - ruleIds 全量生效（DIFF 语义）
+
+    命名说明：避免与旧的 PUT 路由用的 TemplateUpdateRequest 同名冲突，
+    故加 Save 前缀表示"复合保存（template 字段 + rule 全量）"。
+    """
+
+    templateId: int = Field(..., ge=1, description="被编辑的 template ID")
+    template: TemplatePayload
+    ruleIds: List[int] = Field(default_factory=list, description="最终绑定的 rule id 列表（全量替换）")
+
+
+class TemplateSaveResponse(BaseModel):
+    """save / update 统一返回
+
+    包含：
+    - 新建/编辑后的 template 完整 VO（含 rules）
+    - 当前绑定的 rule_id 列表（按 rule.sort_order 排序）
+    - isMixedType 软提示（业务合法）
+    """
+
+    templateId: int
+    template: TemplateDetailVO
+    boundRuleIds: List[int]
+    isMixedType: bool
+
+
 __all__ = [
     # Rule
     "RuleCreateRequest",
@@ -509,4 +638,10 @@ __all__ = [
     "TemplateBindRuleRequest",
     "TemplateBindRuleResultVO",
     "RuleBindAttributeRequest",
+    # v5 action-style
+    "TemplatePayload",
+    "TemplateSaveRequest",
+    "TemplateSaveUpdateRequest",
+    "TemplateDeleteRequest",
+    "TemplateSaveResponse",
 ]
