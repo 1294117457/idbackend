@@ -24,6 +24,7 @@ from src.app.schemas.errors import (
     RefreshTokenExpiredError,
     InvalidTokenError,
 )
+from src.app.schemas.auth import UserCreateResultVO
 from src.services.rbac_service import RbacService
 
 
@@ -34,12 +35,21 @@ class AuthService:
     async def register(
         db: AsyncSession,
         req,
-    ) -> User:
+        email_code: str,
+    ) -> UserCreateResultVO:
         """注册用户（自动分配 user 角色）
 
+        - 邮箱验证码校验
         - 用户名冲突 → ConflictError
         - ORM 构造由 req.to_create_orm() 完成
+        - 返回 UserCreateResultVO
         """
+        from src.infra.email import EmailCode
+
+        ok, err = await EmailCode.verify(req.username, "register", email_code)
+        if not ok:
+            raise BadRequestError(err)
+
         result = await db.execute(
             select(User).where(User.username == req.username)
         )
@@ -61,18 +71,28 @@ class AuthService:
 
         await db.commit()
         await db.refresh(user)
-        return user
+        return UserCreateResultVO.from_user(user)
 
     @staticmethod
     async def login(
         db: AsyncSession,
         username: str,
         password: str,
+        captcha_id: str | None = None,
+        verify_code: str | None = None,
     ) -> tuple[User, str, str]:
         """登录，返回 (用户, access_token, refresh_token)
 
-        权限/角色不再写入 token，由 PermissionMiddleware + Redis 实时判定。
+        - 支持可选的图形验证码校验
+        - 权限/角色不再写入 token，由 PermissionMiddleware + Redis 实时判定
         """
+        from src.infra.captcha import Captcha
+
+        if captcha_id and verify_code:
+            is_valid, err = await Captcha.verify(captcha_id, verify_code)
+            if not is_valid:
+                raise BadRequestError(err)
+
         result = await db.execute(
             select(User).where(User.username == username)
         )
@@ -100,12 +120,22 @@ class AuthService:
         db: AsyncSession,
         username: str,
         password: str,
+        captcha_id: str | None = None,
+        verify_code: str | None = None,
     ) -> tuple[User, str, str]:
         """管理员登录，返回 (用户, access_token, refresh_token)
 
-        中间件未持有 token 鉴权，因此登录资格判定放在服务层：
-        - 密码正确 + 是白名单用户 / 拥有 super_admin / admin / reviewer 角色 → 放行
+        - 支持可选的图形验证码校验
+        - 中间件未持有 token 鉴权，因此登录资格判定放在服务层：
+          密码正确 + 是白名单用户 / 拥有 super_admin / admin / reviewer 角色 → 放行
         """
+        from src.infra.captcha import Captcha
+
+        if captcha_id and verify_code:
+            is_valid, err = await Captcha.verify(captcha_id, verify_code)
+            if not is_valid:
+                raise BadRequestError(err)
+
         result = await db.execute(
             select(User).where(User.username == username)
         )
@@ -211,6 +241,29 @@ class AuthService:
         await cache.revoke_refresh_token(jti)
 
     @staticmethod
+    async def send_email_code(
+        email: str,
+        email_type: str,
+        captcha_id: str | None = None,
+        captcha_code: str | None = None,
+    ) -> bool:
+        """发送邮箱验证码
+
+        - 可选的图形验证码校验
+        - 返回 True 表示发送成功，False 表示频率限制
+        """
+        from src.infra.captcha import Captcha
+
+        if captcha_id and captcha_code:
+            is_valid, err = await Captcha.verify(captcha_id, captcha_code)
+            if not is_valid:
+                raise BadRequestError(err)
+
+        from src.infra.email import EmailCode
+        ok, _ = await EmailCode.send(email, email_type)
+        return ok
+
+    @staticmethod
     async def revoke_all_user_tokens(user_id: int) -> int:
         """撤销用户所有 refresh tokens（密码修改/账户禁用时调用）"""
         redis = await get_redis()
@@ -223,6 +276,12 @@ class AuthService:
         req,
     ) -> bool:
         """重置密码（req: ForgotPasswordRequest —— apply_to 内部 hash + 写回）"""
+        from src.infra.email import EmailCode
+
+        ok, err = await EmailCode.verify(req.username, "reset", req.code)
+        if not ok:
+            raise BadRequestError(err)
+
         result = await db.execute(
             select(User).where(User.username == req.username)
         )

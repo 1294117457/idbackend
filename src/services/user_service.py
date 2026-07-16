@@ -355,7 +355,7 @@ class UserService:
         返回 ORM 实体，由 schema 层的 UserProfileVO.from_orm_to_vo() 转换。
         额外数据（extra_info_field_defs, score_tree）通过参数传入转换方法。
         """
-        return db.get(User, user_id)
+        return await db.get(User, user_id)
 
     @staticmethod
     async def get_profile_full(db: AsyncSession, user_id: int) -> "UserProfileVO":
