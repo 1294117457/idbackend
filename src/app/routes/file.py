@@ -86,9 +86,9 @@ async def get_file_info(
     file_id: int,
     service: FileService = Depends(get_file_service),
 ):
-    """单个文件元信息（service 层抛异常，路由层不再判空）"""
-    meta = await service.get_file(file_id)
-    return R.query_resp(FileVO.from_orm_to_vo(meta).model_dump())
+    """单个文件元信息"""
+    vo = await service.get_file(file_id)
+    return R.query_resp(vo.model_dump())
 
 
 # ============ 3. 预览 / 下载（v6.0 全签名模式）============
@@ -104,9 +104,8 @@ async def get_preview_url(
     ),
     service: FileService = Depends(get_file_service),
 ):
-
-    meta, url = await service.get_preview_data(file_id, expiryMinutes)
-    return R.query_resp(FileDataVO.from_orm_to_vo(meta, url).model_dump())
+    vo = await service.get_preview_data(file_id, expiryMinutes)
+    return R.query_resp(vo.model_dump())
 
 
 @router.get("/{file_id}/preview")
@@ -143,8 +142,8 @@ async def get_download_url(
     ),
     service: FileService = Depends(get_file_service),
 ):
-    meta, url = await service.get_download_data(file_id, expiryMinutes)
-    return R.query_resp(FileDataVO.from_orm_to_vo(meta, url).model_dump())
+    vo = await service.get_download_data(file_id, expiryMinutes)
+    return R.query_resp(vo.model_dump())
 
 
 # ============ 4. 更新 / 删除 ============
@@ -156,8 +155,8 @@ async def update_file(
     service: FileService = Depends(get_file_service),
 ):
     """更新文件元信息（仅支持更新 originalName）"""
-    meta = await service.update_file(req, file_id)
-    return R.success_resp(FileVO.from_orm_to_vo(meta).model_dump(), msg="文件信息已更新")
+    vo = await service.update_file(req, file_id)
+    return R.success_resp(vo.model_dump(), msg="文件信息已更新")
 
 
 @router.delete("/{file_id}")

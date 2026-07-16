@@ -134,8 +134,8 @@ class FileService:
 
     # ---- 查询 ----
 
-    async def get_file(self, file_id: int) -> FileMetadata:
-
+    async def get_file(self, file_id: int) -> FileVO:
+        """获取文件元信息 VO"""
         result = await self._db.execute(
             select(FileMetadata).where(
                 FileMetadata.id == file_id,
@@ -145,7 +145,7 @@ class FileService:
         meta = result.scalar_one_or_none()
         if not meta:
             raise NotFoundError(f"文件不存在：file_id={file_id}")
-        return meta
+        return FileVO.from_orm_to_vo(meta)
 
     async def search_files(self, req: FileQueryRequest) -> FileListVO:
 
@@ -168,7 +168,6 @@ class FileService:
         result = await self._db.execute(query)
         files = list(result.scalars().all())
 
-        # ORM → VO + 分页封装，全在 service 层完成
         return FileListVO.from_list_to_page(
             items=[FileVO.from_orm_to_vo(f) for f in files],
             total=total,
@@ -182,50 +181,77 @@ class FileService:
         self,
         file_id: int,
         expiry_minutes: int = 60,
-    ) -> Tuple[FileMetadata, str]:
-        """返回 (meta, url)——v6.0 统一签名 URL，移除 AVATAR 公开直链特例
+    ) -> FileDataVO:
+        """返回 FileDataVO——v6.0 统一签名 URL，移除 AVATAR 公开直链特例
 
         所有 fileCategory 一律走 presigned URL，过期时间由 expiry_minutes 控制。
         preview 场景 force_attachment=False：浏览器按 Content-Type 内联展示。
         """
-        meta = await self.get_file(file_id)
+        result = await self._db.execute(
+            select(FileMetadata).where(
+                FileMetadata.id == file_id,
+                FileMetadata.is_deleted == False,
+            )
+        )
+        meta = result.scalar_one_or_none()
+        if not meta:
+            raise NotFoundError(f"文件不存在：file_id={file_id}")
+
         url = self._storage.get_download_url(
             meta.object_name,
             original_name=meta.original_name,
             expiry=expiry_minutes * 60,
             force_attachment=False,
         )
-        return meta, url
+        return FileDataVO.from_orm_to_vo(meta, url)
 
     async def get_download_data(
         self,
         file_id: int,
         expiry_minutes: int = 60,
-    ) -> Tuple[FileMetadata, str]:
-        """v6.0：返回 (meta, url)——预签名下载 URL，后端不再中转字节
+    ) -> FileDataVO:
+        """返回 FileDataVO——预签名下载 URL，后端不再中转字节
 
         - 后端零带宽（MinIO 直发前端）
         - URL 带 Content-Disposition: attachment（浏览器强制下载）
         - 默认 60min 过期，前端可在 query 调整 expiryMinutes（1~1440）
         """
-        meta = await self.get_file(file_id)
+        result = await self._db.execute(
+            select(FileMetadata).where(
+                FileMetadata.id == file_id,
+                FileMetadata.is_deleted == False,
+            )
+        )
+        meta = result.scalar_one_or_none()
+        if not meta:
+            raise NotFoundError(f"文件不存在：file_id={file_id}")
+
         url = self._storage.get_download_url(
             meta.object_name,
             original_name=meta.original_name,
             expiry=expiry_minutes * 60,
             force_attachment=True,
         )
-        return meta, url
+        return FileDataVO.from_orm_to_vo(meta, url)
 
-    async def get_preview_bytes(self, file_id: int) -> Tuple[FileMetadata, bytes]:
-        """返回 (meta, bytes)——用于后端代理预览接口
+    async def get_preview_bytes(self, file_id: int) -> Tuple[FileVO, bytes]:
+        """返回 (FileVO, bytes)——用于后端代理预览接口
 
         校验文件大小不超过 MAX_PREVIEW_FILE_SIZE（默认 5MB），
         超过则抛异常，由路由层返回 413。
         """
         from src.infra.config import get_settings
 
-        meta = await self.get_file(file_id)
+        result = await self._db.execute(
+            select(FileMetadata).where(
+                FileMetadata.id == file_id,
+                FileMetadata.is_deleted == False,
+            )
+        )
+        meta = result.scalar_one_or_none()
+        if not meta:
+            raise NotFoundError(f"文件不存在：file_id={file_id}")
+
         data = await self._storage.download(meta.object_name)
 
         settings = get_settings()
@@ -235,18 +261,27 @@ class FileService:
                 status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                 detail=f"预览文件大小不能超过 {settings.MAX_PREVIEW_FILE_SIZE // (1024 * 1024)}MB",
             )
-        return meta, data
+        return FileVO.from_orm_to_vo(meta), data
 
     # ---- 更新 / 删除 ----
 
-    async def update_file(self, req: FileUpdateRequest, file_id: int) -> FileMetadata:
+    async def update_file(self, req: FileUpdateRequest, file_id: int) -> FileVO:
 
-        meta = await self.get_file(file_id)
+        result = await self._db.execute(
+            select(FileMetadata).where(
+                FileMetadata.id == file_id,
+                FileMetadata.is_deleted == False,
+            )
+        )
+        meta = result.scalar_one_or_none()
+        if not meta:
+            raise NotFoundError(f"文件不存在：file_id={file_id}")
+
         if not req.apply_to(meta):
-            return meta  # 无字段被修改，不触发 commit
+            return FileVO.from_orm_to_vo(meta)
         await self._db.commit()
         await self._db.refresh(meta)
-        return meta
+        return FileVO.from_orm_to_vo(meta)
 
     async def delete_file(self, file_id: int) -> None:
         meta = await self.get_file(file_id)
