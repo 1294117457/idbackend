@@ -85,7 +85,7 @@ def main() -> None:
         host=settings.HOST,
         port=settings.PORT,
         reload=False,
-        workers=2,
+        workers=1,
         log_level="info",
     )
 

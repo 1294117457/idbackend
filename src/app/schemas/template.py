@@ -14,10 +14,15 @@
 - template 不带 type 字段（业务允许混用 CONDITION + TRANSFORM rule）
 
 v5（action-style 统一接口）：
-- POST /api/bonus-template/save    新建：template + ruleIds（全量替换绑定的 rule）
-- POST /api/bonus-template/update  编辑：template + ruleIds（全量 DIFF 重置 rule 绑定）
-- POST /api/bonus-template/delete  删除：仅 templateId
-- 旧的 REST 路由（POST "" / PUT / DELETE /{id}/rules 等）保留兼容旧调用方
+- Template：
+  - POST /api/bonus-template/save    新建：template + ruleIds（全量替换绑定的 rule）
+  - POST /api/bonus-template/update  编辑：template + ruleIds（全量 DIFF 重置 rule 绑定）
+  - POST /api/bonus-template/delete  删除：仅 templateId
+- Rule：
+  - POST /api/rule/save    新建：rule + attributeIds（全量替换绑定的 attribute）
+  - POST /api/rule/update  编辑：rule + attributeIds（全量 DIFF 重置 attribute 绑定）
+  - POST /api/rule/delete  删除：仅 ruleId（拒绝被 template 绑定）
+- 旧的 REST 路由（POST "" / PUT / DELETE /{id}/attributes 等）已被废弃，不再保留
 """
 from decimal import Decimal
 from typing import Optional, List, Dict, Any
@@ -54,7 +59,11 @@ def _format_decimal(v: Optional[Decimal]) -> Optional[str]:
 # ============================================================
 
 class RuleCreateRequest(BaseModel):
-    """创建规则请求"""
+    """创建规则请求（v5 已废弃，保留旧 DTO 仅供 type-score 校验复用）
+
+    实际业务改用 RuleSaveRequest（rule + attributeIds 复合提交）。
+    本类只用于 Service.validate() 内部做 type-score 一致性检查。
+    """
 
     type: str = Field(
         default=AttributeType.CONDITION.value,
@@ -72,22 +81,13 @@ class RuleCreateRequest(BaseModel):
     def validate_type(cls, v: str) -> str:
         return _normalize_type(v)  # type: ignore[return-value]
 
-    def to_orm(self) -> "Rule":
-        """构造 ORM 对象（service 接 request 直接落库）"""
-        from src.models.template import Rule
-
-        return Rule(
-            type=self.type,
-            score=self.score,
-            name=self.name,
-            sort_order=self.sortOrder,
-            description=self.description,
-            is_active=True,
-        )
-
 
 class RuleUpdateRequest(BaseModel):
-    """修改规则请求（所有字段可选）"""
+    """修改规则请求（v5 已废弃，保留旧 DTO 仅供 type-score 校验复用）
+
+    实际业务改用 RuleSaveUpdateRequest。
+    本类只用于 Service.validate() 内部做 type-score 一致性检查。
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -95,38 +95,11 @@ class RuleUpdateRequest(BaseModel):
     score: Optional[condecimal(ge=0, max_digits=5, decimal_places=2)] = Field(
         None, description="新分数",
     )
-    name: Optional[str] = Field(None, min_length=1, max_length=100)
-    sortOrder: Optional[int] = Field(None, ge=0)
-    description: Optional[str] = Field(None)
-    isActive: Optional[bool] = Field(None)
 
     @field_validator("type")
     @classmethod
     def validate_type(cls, v: Optional[str]) -> Optional[str]:
         return _normalize_type(v)
-
-    def apply_to(self, rule) -> bool:
-        """把非空字段写回 ORM。返回是否有字段被实际修改。"""
-        modified = False
-        if self.type is not None:
-            rule.type = self.type
-            modified = True
-        if self.score is not None:
-            rule.score = self.score
-            modified = True
-        if self.name is not None:
-            rule.name = self.name
-            modified = True
-        if self.sortOrder is not None:
-            rule.sort_order = self.sortOrder
-            modified = True
-        if self.description is not None:
-            rule.description = self.description
-            modified = True
-        if self.isActive is not None:
-            rule.is_active = self.isActive
-            modified = True
-        return modified
 
 
 class RuleVO(BaseModel):
@@ -615,6 +588,101 @@ class TemplateSaveResponse(BaseModel):
     isMixedType: bool
 
 
+# ============================================================
+# v5 rule action-style DTO
+# ============================================================
+
+class RulePayload(BaseModel):
+    """rule 字段子结构（save / update 共用，与 TemplatePayload 对称）"""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    type: str = Field(..., description="CONDITION / TRANSFORM")
+    score: Optional[condecimal(ge=0, max_digits=5, decimal_places=2)] = Field(
+        None, description="CONDITION 必填；TRANSFORM 必须 None",
+    )
+    name: str = Field(..., min_length=1, max_length=100)
+    sortOrder: int = Field(0, ge=0)
+    description: Optional[str] = Field(None)
+    isActive: bool = Field(True, description="新建强制 True；编辑时实际生效")
+
+    @field_validator("type")
+    @classmethod
+    def validate_type(cls, v: str) -> str:
+        return _normalize_type(v)  # type: ignore[return-value]
+
+    def to_orm(self) -> "Rule":
+        """构造 ORM 对象（新建用）"""
+        from src.models.template import Rule
+
+        return Rule(
+            type=self.type,
+            score=self.score,
+            name=self.name,
+            sort_order=self.sortOrder,
+            description=self.description,
+            is_active=True,  # 新建强制启用
+        )
+
+    def apply_to(self, rule) -> bool:
+        """覆盖式写回 ORM；返回是否有字段被实际修改。"""
+        modified = False
+        if rule.type != self.type:
+            rule.type = self.type
+            modified = True
+        if (rule.score or None) != (self.score or None):
+            rule.score = self.score
+            modified = True
+        if rule.name != self.name:
+            rule.name = self.name
+            modified = True
+        if rule.sort_order != self.sortOrder:
+            rule.sort_order = self.sortOrder
+            modified = True
+        if (rule.description or None) != (self.description or None):
+            rule.description = self.description
+            modified = True
+        if rule.is_active != self.isActive:
+            rule.is_active = self.isActive
+            modified = True
+        return modified
+
+
+class RuleSaveRequest(BaseModel):
+    """新建 rule + 一次性绑 attribute（POST /api/rule/save）"""
+
+    rule: RulePayload
+    attributeIds: List[int] = Field(
+        default_factory=list,
+        description="绑定的 attribute id 列表（全量替换）",
+    )
+
+
+class RuleSaveUpdateRequest(BaseModel):
+    """编辑 rule + 重置 attribute 绑定（POST /api/rule/update）"""
+
+    ruleId: int = Field(..., ge=1, description="被编辑的 rule ID")
+    rule: RulePayload
+    attributeIds: List[int] = Field(
+        default_factory=list,
+        description="最终绑定的 attribute id 列表（全量替换）",
+    )
+
+
+class RuleDeleteRequest(BaseModel):
+    """删除 rule（POST /api/rule/delete）"""
+
+    ruleId: int = Field(..., ge=1, description="被删除的 rule ID")
+
+
+class RuleSaveResponse(BaseModel):
+    """save / update 统一返回（与 TemplateSaveResponse 对称）"""
+
+    ruleId: int
+    rule: RuleDetailVO
+    boundAttributeIds: List[int]
+
+
 __all__ = [
     # Rule
     "RuleCreateRequest",
@@ -634,14 +702,20 @@ __all__ = [
     "TemplateListQueryRequest",
     "TemplateListVO",
     "TemplateCategoryListQueryRequest",
-    # 关联操作
+    # 关联操作（废弃：保留仅供类型提示）
     "TemplateBindRuleRequest",
     "TemplateBindRuleResultVO",
     "RuleBindAttributeRequest",
-    # v5 action-style
+    # v5 action-style - Template
     "TemplatePayload",
     "TemplateSaveRequest",
     "TemplateSaveUpdateRequest",
     "TemplateDeleteRequest",
     "TemplateSaveResponse",
+    # v5 action-style - Rule
+    "RulePayload",
+    "RuleSaveRequest",
+    "RuleSaveUpdateRequest",
+    "RuleDeleteRequest",
+    "RuleSaveResponse",
 ]
