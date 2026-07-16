@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 from typing import Optional
 
-from src.app.deps import get_db
+from src.app.dependencies import get_db
 from src.app import response as R
 
 router = APIRouter(prefix="/api/system/config", tags=["系统配置"])

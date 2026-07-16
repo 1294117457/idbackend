@@ -22,7 +22,7 @@ from fastapi import APIRouter, Depends, Query, Path
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.app.deps import get_db
+from src.app.dependencies import get_db
 from src.app.context import get_user_id
 from src.app import response as R
 

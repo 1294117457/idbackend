@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, Path, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, Field
 
-from src.app.deps import get_db
+from src.app.dependencies import get_db
 from src.app import response as R
 from src.app.schemas.template import (
     AttributeCreateRequest,

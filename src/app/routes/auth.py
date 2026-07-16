@@ -15,7 +15,7 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.app.deps import get_db, ip_rate_limit
+from src.app.dependencies import get_db, ip_rate_limit
 from src.app.context import get_user_id, get_user_roles
 from src.app import response as R
 from src.app.schemas.auth import (

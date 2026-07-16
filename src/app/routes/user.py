@@ -19,7 +19,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.app.deps import get_db
+from src.app.dependencies import get_db
 from src.app.context import get_user_id, get_user_roles, get_user_permissions
 from src.app import response as R
 from src.services import UserProfileService, UserService

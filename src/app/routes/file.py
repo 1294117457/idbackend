@@ -104,12 +104,7 @@ async def get_preview_url(
     ),
     service: FileService = Depends(get_file_service),
 ):
-    """获取文件预览 URL——v6.0：所有 fileCategory 统一走签名
 
-    返回 FileDataVO{id, originalName, contentType, url}
-    - url: 预签名 GET URL，过期默认 60min
-    - force_attachment=False：浏览器按 Content-Type 内联展示（PDF/图片）
-    """
     meta, url = await service.get_preview_data(file_id, expiryMinutes)
     return R.query_resp(FileDataVO.from_orm_to_vo(meta, url).model_dump())
 
@@ -119,14 +114,12 @@ async def get_preview(
     file_id: int,
     service: FileService = Depends(get_file_service),
 ):
-    """后端代理预览接口——将 MinIO 文件流式透传给前端
+    """直接预览图片/文件——从 MinIO 拉取流经网关返回
 
-    - 前端直接请求本接口即可预览，无需 CORS 配置
-    - 文件大小限制 5MB，超过返回 HTTP 413
+    - 前端直接请求，无需签名，降低前端复杂度
+    - 响应 5MB 以上大文件可能导致网关超时，建议前端改用预览签名 URL
     """
     meta, data = await service.get_preview_bytes(file_id)
-    # filename* 参数用 RFC 5987/RFC 6266 规范：UTF-8'' 开头 + URL 编码
-    # latin-1 不支持中文，直接拼原名会 UnicodeEncodeError
     encoded_name = quote(meta.original_name, safe="")
     disposition = f"inline; filename*=UTF-8''{encoded_name}"
     return Response(
@@ -150,13 +143,6 @@ async def get_download_url(
     ),
     service: FileService = Depends(get_file_service),
 ):
-    """获取文件下载 URL——v6.0：替换旧的 /download 流式接口
-
-    返回 FileDataVO{id, originalName, contentType, url}
-    - url: 预签名 GET URL，过期默认 60min
-    - force_attachment=True：Content-Disposition: attachment 强制下载
-    - 前端拿 url 后用 window.open() 即可触发浏览器原生下载
-    """
     meta, url = await service.get_download_data(file_id, expiryMinutes)
     return R.query_resp(FileDataVO.from_orm_to_vo(meta, url).model_dump())
 

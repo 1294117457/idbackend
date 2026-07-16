@@ -29,7 +29,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
-from src.app.deps import get_db
+from src.app.dependencies import get_db
 from src.app.context import get_user_id
 from src.app import response as R
 
