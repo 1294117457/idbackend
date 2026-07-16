@@ -1,7 +1,6 @@
 """Services 层"""
 from src.services.auth_service import AuthService
 from src.services.user_service import UserService
-from src.services.user_profile_service import UserProfileService
 from src.services.application_service import ApplicationService
 from src.services.score_data_service import ScoreDataService
 from src.services.template_service import TemplateService
@@ -13,11 +12,11 @@ from src.services.file_service import FileService
 from src.services.rbac_service import RbacService
 
 # ProofService、ApplicationOperationService 已废弃（已合并到 ApplicationService）
+# UserProfileService 已合并到 UserService
 
 __all__ = [
     "AuthService",
     "UserService",
-    "UserProfileService",
     "ApplicationService",
     "ScoreDataService",
     "TemplateService",
