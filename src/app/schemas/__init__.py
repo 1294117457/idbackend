@@ -118,6 +118,15 @@ from src.app.schemas.permission import (  # noqa: E402, F401
 from src.app.schemas.application import (  # noqa: E402, F401
     ProofPayload,
     ApplicationPayload,
+    ApplicationQueryRequest,
+    ApplicationVO,
+    ApplicationDetailVO,
+    ApplicationListVO,
+    ProofVO,
+    ApplicationOperationVO,
+    PassResultVO,
+    RejectResultVO,
+    CancelResultVO,
 )
 
 # ========== 认证 ==========
