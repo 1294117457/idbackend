@@ -15,8 +15,7 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.app.deps import get_db, ip_rate_limit
-from src.app.context import get_user_id, get_user_roles
+from src.app.dependencies import get_db, ip_rate_limit
 from src.app import response as R
 from src.app.schemas.auth import (
     LoginRequest,
@@ -26,15 +25,11 @@ from src.app.schemas.auth import (
     LogoutRequest,
     ForgotPasswordRequest,
     AuthTokenPairVO,
-    UserCreateResultVO,
     CaptchaVO,
 )
 from src.app.schemas.user import CurrentUserInfoVO
-from src.app.schemas.errors import BadRequestError
 from src.services import AuthService, UserService
-from src.infra.jwt import JWTError
 from src.infra.captcha import Captcha
-from src.infra.email import EmailCode
 
 
 router = APIRouter(prefix="/api/authserver", tags=["认证"])
@@ -49,20 +44,15 @@ async def login(
     _: None = Depends(ip_rate_limit("login", max_count=10, window_seconds=60)),
 ):
     """用户登录"""
-    if not req.captchaId or not req.verifyCode:
-        raise BadRequestError("请完成图形验证码")
-    is_valid, err = await Captcha.verify(req.captchaId, req.verifyCode)
-    if not is_valid:
-        raise BadRequestError(err)
-
     user, access_token, refresh_token = await AuthService.login(
-        db, req.username, req.password
+        db, req.username, req.password, req.captchaId, req.verifyCode
     )
     return R.success_resp(
         AuthTokenPairVO(
             accessToken=access_token,
             refreshToken=refresh_token,
-        ).model_dump()
+        ).model_dump(),
+        msg="登录成功",
     )
 
 
@@ -73,20 +63,15 @@ async def admin_login(
     _: None = Depends(ip_rate_limit("admin_login", max_count=10, window_seconds=60)),
 ):
     """管理员登录"""
-    if not req.captchaId or not req.verifyCode:
-        raise BadRequestError("请完成图形验证码")
-    is_valid, err = await Captcha.verify(req.captchaId, req.verifyCode)
-    if not is_valid:
-        raise BadRequestError(err)
-
     user, access_token, refresh_token = await AuthService.admin_login(
-        db, req.username, req.password
+        db, req.username, req.password, req.captchaId, req.verifyCode
     )
     return R.success_resp(
         AuthTokenPairVO(
             accessToken=access_token,
             refreshToken=refresh_token,
-        ).model_dump()
+        ).model_dump(),
+        msg="登录成功",
     )
 
 
@@ -98,14 +83,8 @@ async def register(
     db: AsyncSession = Depends(get_db),
 ):
     """用户注册"""
-    ok, err = await EmailCode.verify(req.username, "register", req.code)
-    if not ok:
-        raise BadRequestError(err)
-
-    user = await AuthService.register(db, req)
-    return R.created_resp(
-        UserCreateResultVO(userId=user.id, username=user.username).model_dump()
-    )
+    vo = await AuthService.register(db, req, req.code)
+    return R.created_resp(vo.model_dump(), msg="注册成功")
 
 
 # ========== Token 刷新/登出 ==========
@@ -121,7 +100,8 @@ async def refresh_token(
         AuthTokenPairVO(
             accessToken=new_access,
             refreshToken=new_refresh,
-        ).model_dump()
+        ).model_dump(),
+        msg="令牌已刷新",
     )
 
 
@@ -140,13 +120,11 @@ async def send_email_code(
     _: None = Depends(ip_rate_limit("send_email_code", max_count=5, window_seconds=60)),
 ):
     """发送邮箱验证码（注册用）"""
-    if req.captchaId and req.captchaCode:
-        is_valid, err = await Captcha.verify(req.captchaId, req.captchaCode)
-        if not is_valid:
-            raise BadRequestError(err)
-    ok, err = await EmailCode.send(req.email, req.type)
+    ok = await AuthService.send_email_code(
+        req.email, req.type, req.captchaId, req.captchaCode
+    )
     if not ok:
-        return R.too_many_requests_resp(err)
+        return R.too_many_requests_resp("发送频率受限，请稍后再试")
     return R.success_resp(msg="验证码已发送")
 
 
@@ -156,9 +134,9 @@ async def send_reset_code(
     _: None = Depends(ip_rate_limit("send_reset_code", max_count=5, window_seconds=60)),
 ):
     """发送重置密码验证码"""
-    ok, err = await EmailCode.send(req.email, "reset")
+    ok = await AuthService.send_email_code(req.email, "reset")
     if not ok:
-        return R.too_many_requests_resp(err)
+        return R.too_many_requests_resp("发送频率受限，请稍后再试")
     return R.success_resp(msg="验证码已发送")
 
 
@@ -168,10 +146,6 @@ async def reset_password(
     db: AsyncSession = Depends(get_db),
 ):
     """重置密码（schema 内部已经校验两次密码一致）"""
-    ok, err = await EmailCode.verify(req.username, "reset", req.code)
-    if not ok:
-        raise BadRequestError(err)
-
     await AuthService.reset_password(db, req)
     return R.success_resp(msg="密码重置成功")
 
@@ -184,7 +158,7 @@ async def get_captcha(
 ):
     """获取图形验证码"""
     captcha_id, base64_image = await Captcha.generate()
-    return R.success_resp(
+    return R.query_resp(
         CaptchaVO(
             captchaId=captcha_id,
             base64=f"data:image/png;base64,{base64_image}",
@@ -197,10 +171,5 @@ async def get_captcha(
 @router.get("/me")
 async def get_current_user_info(db: AsyncSession = Depends(get_db)):
     """获取当前用户信息"""
-    user = await UserService.get_user_by_id_or_raise(db, get_user_id())
-    return R.success_resp(
-        CurrentUserInfoVO.from_orm_to_vo(
-            user,
-            roles=get_user_roles(),
-        ).model_dump()
-    )
+    vo = await UserService.get_current_user_full_info(db)
+    return R.query_resp(vo.model_dump())

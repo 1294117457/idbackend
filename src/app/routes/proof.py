@@ -22,7 +22,7 @@ from fastapi import APIRouter, Depends, Query, Path
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.app.deps import get_db
+from src.app.dependencies import get_db
 from src.app.context import get_user_id
 from src.app import response as R
 
@@ -61,7 +61,7 @@ async def list_proofs(
         # 审核员也可以看，这里简化只允许本人查看
         return R.forbidden_resp("无权访问")
 
-    return R.success_resp({
+    return R.query_resp({
         "proofs": [
             {
                 "id": p.id,
@@ -96,7 +96,7 @@ async def approve_legacy(
             action=ProofStatus.APPROVED.value,
             remark=remark,
         )
-        return R.success_resp({"id": proof.id, "status": proof.status})
+        return R.success_resp({"id": proof.id, "status": proof.status}, msg="证明已通过")
     except NotFoundError as e:
         return R.not_found_resp(str(e))
     except ConflictError as e:
@@ -122,7 +122,7 @@ async def reject_legacy(
             action=ProofStatus.REJECTED.value,
             remark=remark,
         )
-        return R.success_resp({"id": proof.id, "status": proof.status})
+        return R.success_resp({"id": proof.id, "status": proof.status}, msg="证明已驳回")
     except NotFoundError as e:
         return R.not_found_resp(str(e))
     except ConflictError as e:
@@ -150,7 +150,7 @@ async def override_legacy(
             action=action,
             remark=remark,
         )
-        return R.success_resp({"id": proof.id, "status": proof.status})
+        return R.success_resp({"id": proof.id, "status": proof.status}, msg="证明状态已覆盖")
     except (NotFoundError, ConflictError) as e:
         return R._resp(409 if isinstance(e, ConflictError) else 404, str(e))
 

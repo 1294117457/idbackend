@@ -1,32 +1,40 @@
-"""Rule 管理路由（v4 设计）
+"""Rule 管理路由（v5 设计 - action-style 风格）
 
-REST 接口约定（与 file.py 一致）：
+接口约定（与 template 一致）：
 - 前缀：/api/rule
-- 路由层只做三件事：接 DTO → 调 service → 包 R 响应
-- **零 try/except**：业务异常由全局 exception_handlers 自动翻译
+- 复合写操作走 /save /update /delete
+- 单读操作保留 REST 风格（GET /list / GET /{id}）
+- 零 try/except：业务异常由全局 exception_handlers 自动翻译
+
+已废弃的旧接口（不再路由）：
+- POST ""        → 用 POST /save
+- PUT /{id}      → 用 POST /update
+- DELETE /{id}   → 用 POST /delete
+- POST /{id}/attributes   → 用 POST /update（内含 attributeIds）
+- DELETE /{id}/attributes/{aid} → 同上
 """
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Path, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.app.deps import get_db
+from src.app.dependencies import get_db
 from src.app import response as R
 from src.app.schemas.template import (
-    RuleCreateRequest,
-    RuleUpdateRequest,
     RuleVO,
     RuleDetailVO,
     AttributeVO,
-    RuleBindAttributeRequest,
+    RuleSaveRequest,
+    RuleSaveUpdateRequest,
+    RuleDeleteRequest,
 )
-from src.services import RuleService, AttributeService
+from src.services import RuleService
 
 router = APIRouter(prefix="/api/rule", tags=["规则"])
 
 
 # ============================================================
-# 读接口
+# 读接口（保留 REST）
 # ============================================================
 
 @router.get("/list")
@@ -53,7 +61,7 @@ async def list_rules(
         page_num=pageNum,
         page_size=pageSize,
     )
-    return R.success_resp(vo.model_dump())
+    return R.query_resp(vo.model_dump())
 
 
 @router.get("/{rule_id}")
@@ -68,74 +76,44 @@ async def get_rule_detail(
         for a in sorted(rule.attributes, key=lambda a: a.sort_order)
     ]
     vo = RuleDetailVO.from_orm_to_vo(rule, attr_vos)
-    return R.success_resp(vo.model_dump())
+    return R.query_resp(vo.model_dump())
 
 
 # ============================================================
-# 写接口
+# v5 action-style 写接口
 # ============================================================
 
-@router.post("", status_code=201)
-async def create_rule(
-    req: RuleCreateRequest,
+@router.post("/save", status_code=201)
+async def save_rule(
+    req: RuleSaveRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """创建规则（service 校验 type-score 一致性）"""
-    rule = await RuleService.create(db, req)
+    """新建 rule + 一次性绑 attribute（单事务）"""
+    resp = await RuleService.save_rule(db, req)
     return R.created_resp(
-        RuleVO.from_orm_to_vo(rule).model_dump(),
+        resp.model_dump(),
         msg="规则创建成功",
     )
 
 
-@router.put("/{rule_id}")
-async def update_rule(
-    rule_id: int = Path(..., ge=1),
-    req: RuleUpdateRequest = ...,
+@router.post("/update")
+async def update_rule_with_attrs(
+    req: RuleSaveUpdateRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """修改规则（service 校验 type-score 一致性）"""
-    rule = await RuleService.update(db, rule_id, req)
+    """编辑 rule + 重置 attribute 绑定（DIFF，单事务）"""
+    resp = await RuleService.update_rule(db, req)
     return R.success_resp(
-        RuleVO.from_orm_to_vo(rule).model_dump(),
+        resp.model_dump(),
         msg="更新成功",
     )
 
 
-@router.delete("/{rule_id}")
-async def delete_rule(
-    rule_id: int = Path(..., ge=1),
+@router.post("/delete")
+async def delete_rule_by_id(
+    req: RuleDeleteRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """删除规则（FK CASCADE 自动清理 template_rule / rule_attribute 行）"""
-    await RuleService.delete(db, rule_id)
+    """删除 rule（带被 template 引用检查）"""
+    await RuleService.delete_rule_by_id(db, req)
     return R.success_resp(msg="删除成功")
-
-
-# ============================================================
-# 关联操作
-# ============================================================
-
-@router.post("/{rule_id}/attributes", status_code=200)
-async def bind_attribute(
-    rule_id: int = Path(..., ge=1),
-    req: RuleBindAttributeRequest = ...,
-    db: AsyncSession = Depends(get_db),
-):
-    """rule 绑 attribute（v4 唯一硬校验：rule.type == attribute.type）
-
-    失败抛 BadRequestError，错误信息明确指出 type 不一致。
-    """
-    await RuleService.bind_attribute(db, rule_id, req.attributeId)
-    return R.success_resp(msg="绑定成功")
-
-
-@router.delete("/{rule_id}/attributes/{attribute_id}")
-async def unbind_attribute(
-    rule_id: int = Path(..., ge=1),
-    attribute_id: int = Path(..., ge=1),
-    db: AsyncSession = Depends(get_db),
-):
-    """rule 解绑 attribute"""
-    await RuleService.unbind_attribute(db, rule_id, attribute_id)
-    return R.success_resp(msg="解绑成功")

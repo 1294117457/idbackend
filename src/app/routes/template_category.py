@@ -18,7 +18,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Path, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.app.deps import get_db
+from src.app.dependencies import get_db
 from src.app import response as R
 from src.app.schemas.template_category import (
     TemplateCategoryCreateRequest,
@@ -47,7 +47,7 @@ async def list_categories(
     前端拿到 resp.data.list 后按 parentId 自组树，无后端嵌套。
     """
     page = await TemplateCategoryService.page(db, req)
-    return R.success_resp(page.model_dump())
+    return R.query_resp(page.model_dump())
 
 
 @router.get("/leaf")
@@ -59,7 +59,7 @@ async def get_leaf_categories(
     leaves = await TemplateCategoryService.get_leaf_categories(
         db, include_inactive=req.includeInactive
     )
-    return R.success_resp(
+    return R.query_resp(
         [TemplateCategoryVO.from_orm_to_vo(c).model_dump() for c in leaves]
     )
 
@@ -73,7 +73,7 @@ async def get_category_detail(
     category = await TemplateCategoryService.get_by_id(db, category_id)
     path = await TemplateCategoryService.get_category_path(db, category_id)
     vo = TemplateCategoryDetailVO.from_orm_to_vo(category, path)
-    return R.success_resp(vo.model_dump())
+    return R.query_resp(vo.model_dump())
 
 
 @router.get("/{category_id}/delete-preview")
@@ -84,7 +84,7 @@ async def get_delete_preview(
     """删除预览（强提醒对话窗数据源）。"""
     payload = await TemplateCategoryService.get_delete_preview(db, category_id)
     vo = TemplateCategoryDeletePreviewVO.from_service_payload(payload)
-    return R.success_resp(vo.model_dump())
+    return R.query_resp(vo.model_dump())
 
 
 # ============ 写接口 ============

@@ -116,6 +116,11 @@ class UserCreateResultVO(BaseModel):
     userId: int
     username: str
 
+    @classmethod
+    def from_user(cls, user) -> "UserCreateResultVO":
+        """从 ORM User 实体转换"""
+        return cls(userId=user.id, username=user.username)
+
 
 class CaptchaVO(BaseModel):
     """图形验证码返回值"""

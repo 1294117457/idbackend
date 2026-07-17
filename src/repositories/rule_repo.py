@@ -158,6 +158,46 @@ class RuleRepository:
         result = await db.execute(stmt)
         return int(result.rowcount or 0)
 
+    # ---------- v5 复合操作 ----------
+
+    @staticmethod
+    async def replace_bound_attributes(
+        db: AsyncSession,
+        rule_id: int,
+        attribute_ids: List[int],
+    ) -> None:
+        """全量替换 rule 绑定的 attribute（DIFF 语义）
+
+        - 先 DELETE 清空旧绑定
+        - 再批量 INSERT 新绑定
+        - rule_attribute 表只有 (rule_id, attribute_id)，排序由 attribute.sort_order 决定
+        """
+        # 清空旧绑定
+        await db.execute(
+            delete(RuleAttribute).where(RuleAttribute.rule_id == rule_id)
+        )
+        # 批量插入（去重 + 过滤 None）
+        deduped = list({aid for aid in attribute_ids if aid is not None})
+        if deduped:
+            from sqlalchemy import insert
+            await db.execute(
+                insert(RuleAttribute),
+                [{"rule_id": rule_id, "attribute_id": aid} for aid in deduped],
+            )
+
+    @staticmethod
+    async def count_bound_templates(
+        db: AsyncSession,
+        rule_id: int,
+    ) -> int:
+        """统计该 rule 被多少 template 绑定（用于删除前预检）"""
+        from src.models.template import TemplateRule
+        result = await db.execute(
+            select(func.count(TemplateRule.id))
+            .where(TemplateRule.rule_id == rule_id)
+        )
+        return int(result.scalar_one_or_none() or 0)
+
     # ---------- 事务辅助 ----------
 
     @staticmethod

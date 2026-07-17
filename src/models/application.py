@@ -13,6 +13,7 @@ from typing import Optional, List
 
 from sqlalchemy import (
     String, Integer, ForeignKey, DECIMAL, Numeric, Text, Enum as SAEnum, Index,
+    JSON,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -50,7 +51,10 @@ class Application(Base, TimestampMixin):
         ForeignKey("users.id", ondelete="CASCADE"),
         index=True,
     )
-    template_id: Mapped[int] = mapped_column(ForeignKey("template.id"))
+    # 历史引用字段：application 主体不需要与 template 表存在外键关系
+    # - 删除 template 时 application 不应被任何方式改动（UPDATE / CASCADE）
+    # - 真正的展示数据由 template_name / category_id / apply_score 快照字段承担
+    template_id: Mapped[int] = mapped_column(Integer, index=True)
     template_name: Mapped[str] = mapped_column(String(100))   # 快照，防改名
     category_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("template_category.id"), nullable=True,    # 迁移期允许 NULL
@@ -76,6 +80,12 @@ class Application(Base, TimestampMixin):
     approved_count: Mapped[int] = mapped_column(Integer, default=0)
     rejected_count: Mapped[int] = mapped_column(Integer, default=0)
 
+    # 审核员名单（v4.3：只要审过 proof 或投过 PASS/REJECT，即进入此列表）
+    # 用于"我是否审核过"的业务判断，辅助列表互斥分流
+    reviewer_ids: Mapped[Optional[list[int]]] = mapped_column(
+        JSON, nullable=True, default=list,
+    )
+
     # 关系
     user: Mapped["User"] = relationship(back_populates="applications")
     proofs: Mapped[List["ApplicationProof"]] = relationship(
@@ -93,9 +103,14 @@ class Application(Base, TimestampMixin):
     )
 
     __table_args__ = (
-        Index("idx_application_user_template_status", "user_id", "template_id", "status"),
         Index("idx_application_status", "status"),
         Index("idx_application_category", "category_id"),
+        Index(
+            "idx_reviewers",
+            "reviewer_ids",
+            postgresql_using="gin",
+            postgresql_ops={"reviewer_ids": "jsonb_path_ops"},
+        ),
     )
 
 
@@ -126,8 +141,13 @@ class ApplicationProof(Base, TimestampMixin):
     )
 
     # 关系
+    # file 用 lazy="joined"：保证从 application 加载 proofs 后 file 也一次 JOIN 进来，
+    # 避免在 async 路由层访问 proof.file 触发 lazy load（MissingGreenlet）。
+    # 现有的 selectinload(Application.proofs) 会与 joined 兼容，不重复发 SQL。
     application: Mapped["Application"] = relationship(back_populates="proofs")
-    file: Mapped[Optional["FileMetadata"]] = relationship("FileMetadata")
+    file: Mapped[Optional["FileMetadata"]] = relationship(
+        "FileMetadata", lazy="joined",
+    )
 
     __table_args__ = (
         Index("idx_proofs_application", "application_id"),

@@ -21,9 +21,10 @@ from src.app.schemas.errors import BadRequestError, NotFoundError, ConflictError
 
 class RbacService:
     """RBAC 核心服务"""
-    CACHE_TTL = 30
+    CACHE_TTL = 300  # 5 分钟（统一缓存策略：所有 user 级 rbac/status 缓存都用这个 TTL）
     USER_ROLES_KEY = 'rbac:user:roles:'
     USER_PERMS_KEY = 'rbac:user:perms:'
+    USER_STATUS_KEY = 'status:user:'  # account active flag: "1" / "0"
     API_PERM_KEY_PREFIX = 'rbac:api:'
 
     @staticmethod
@@ -44,7 +45,7 @@ class RbacService:
             return json.loads(cached)
         result = await db.execute(select(Role.role_code).join(UserRole, Role.id == UserRole.role_id).where(UserRole.user_id == user_id))
         roles = list(result.scalars().all())
-        await redis.setex(cache_key, RbacService.CACHE_TTL * 60, json.dumps(roles))
+        await redis.setex(cache_key, RbacService.CACHE_TTL, json.dumps(roles))
         return roles
 
     @staticmethod
@@ -87,7 +88,7 @@ class RbacService:
 
     @staticmethod
     async def clear_user_cache(user_id: int):
-        """清除用户缓存
+        """清除用户缓存（rbac + status）
 
         Args:
             user_id: 用户ID
@@ -95,6 +96,34 @@ class RbacService:
         redis = await get_redis()
         await redis.delete(f'{RbacService.USER_ROLES_KEY}{user_id}')
         await redis.delete(f'{RbacService.USER_PERMS_KEY}{user_id}')
+        await redis.delete(f'{RbacService.USER_STATUS_KEY}{user_id}')
+
+    @staticmethod
+    async def clear_user_status_cache(user_id: int):
+        """仅清除用户状态缓存（账号 active flag）。
+
+        适用于：仅修改了账号 status 字段（如禁用/启用），没有改 rbac。
+        """
+        redis = await get_redis()
+        await redis.delete(f'{RbacService.USER_STATUS_KEY}{user_id}')
+
+    @staticmethod
+    async def invalidate_all_user_caches():
+        """清除所有 rbac:user:* 和 status:user:* 缓存。
+
+        用于：RBAC 硬重置（清空所有 role/permission）后。
+        ⚠️ 使用 SCAN 遍历避免 KEYS 阻塞生产 Redis。
+        """
+        redis = await get_redis()
+        patterns = ["rbac:user:*", "status:user:*"]
+        for pattern in patterns:
+            cursor = 0
+            while True:
+                cursor, keys = await redis.scan(cursor=cursor, match=pattern, count=200)
+                if keys:
+                    await redis.delete(*keys)
+                if cursor == 0:
+                    break
 
     @staticmethod
     async def clear_api_cache(api_path: str):

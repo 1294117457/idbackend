@@ -9,18 +9,24 @@ REST 接口约定：
 权限码（seed_permissions.py 中注册）：
   template:list   - GET /list
   template:detail - GET /{id}
-  template:create - POST
-  template:update - PUT
-  template:delete - DELETE
+  template:create - POST /save  （v5：原 /api/bonus-template POST 路径保留兼容）
+  template:update - POST /update（v5：原 /api/bonus-template/{id} PUT 路径保留兼容）
+  template:delete - POST /delete（v5：原 /api/bonus-template/{id} DELETE 路径保留兼容）
   template:bind_rule - POST /{id}/rules
   template:unbind_rule - DELETE /{id}/rules/{rule_id}
+
+v5 增量（action-style 统一接口）：
+- POST /save    新建 template + 一次性绑 rule（templateId 不在 body 内）
+- POST /update  编辑 template + 重置 rule 绑定（templateId 在 body 内）
+- POST /delete  删除 template（templateId 在 body 内）
+- 三个接口都用 POST，便于前端统一通过"复合请求体"完成动作
 """
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Path, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.app.deps import get_db
+from src.app.dependencies import get_db
 from src.app import response as R
 from src.app.schemas.template import (
     TemplateCreateRequest,
@@ -32,6 +38,10 @@ from src.app.schemas.template import (
     TemplateListVO,
     TemplateBindRuleRequest,
     TemplateBindRuleResultVO,
+    TemplateSaveRequest,
+    TemplateSaveUpdateRequest,
+    TemplateDeleteRequest,
+    TemplateSaveResponse,
     RuleDetailVO,
     AttributeVO,
 )
@@ -58,7 +68,7 @@ async def list_templates(
         page_num=req.pageNum,
         page_size=req.pageSize,
     )
-    return R.success_resp(vo.model_dump())
+    return R.query_resp(vo.model_dump())
 
 
 @router.get("/by-category")
@@ -68,7 +78,7 @@ async def list_templates_by_category(
 ):
     """按分类列出模板（学生端选 template 用）"""
     templates = await TemplateService.list_by_category(db, req.categoryId)
-    return R.success_resp([TemplateVO.from_orm_to_vo(t).model_dump() for t in templates])
+    return R.query_resp([TemplateVO.from_orm_to_vo(t).model_dump() for t in templates])
 
 
 @router.get("/{template_id}")
@@ -95,7 +105,7 @@ async def get_template_detail(
     is_mixed = await TemplateService.is_mixed_type(db, template_id)
     vo = TemplateDetailVO.from_orm_to_vo(template, rule_vos, is_mixed)
 
-    return R.success_resp(vo.model_dump())
+    return R.query_resp(vo.model_dump())
 
 
 # ============================================================
@@ -170,3 +180,54 @@ async def unbind_rule(
     """解绑 rule"""
     await TemplateService.unbind_rule(db, template_id, rule_id)
     return R.success_resp(msg="解绑成功")
+
+
+# ============================================================
+# v5 action-style 统一接口
+# ============================================================
+
+@router.post("/save")
+async def save_template_with_rules(
+    req: TemplateSaveRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """v5：新建 template + 一次性绑 rule（POST 单入口）
+
+    请求体不含 templateId（新建场景下不存在）。
+    整个操作在 service 内一个事务里完成（template 落盘 + rule 全量替换）。
+    """
+    result = await TemplateService.save_template(db, req)
+    return R.success_resp(
+        result.model_dump(),
+        msg="保存成功",
+    )
+
+
+@router.post("/update")
+async def update_template_with_rules(
+    req: TemplateSaveUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """v5：编辑 template + 重置 rule 绑定（POST 单入口）
+
+    请求体含 templateId（必填），service 校验存在性。
+    ruleIds 为全量，DIFF 语义生效（删除不在列表里的、新增列表里没有的）。
+    """
+    result = await TemplateService.update_template(db, req)
+    return R.success_resp(
+        result.model_dump(),
+        msg="更新成功",
+    )
+
+
+@router.post("/delete")
+async def delete_template_by_id(
+    req: TemplateDeleteRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """v5：删除 template（POST 单入口）
+
+    请求体含 templateId（必填），不再校验 application 数量（允许删除有申请的模板）。
+    """
+    await TemplateService.delete_template_by_id(db, req)
+    return R.success_resp(msg="删除成功")

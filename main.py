@@ -1,32 +1,37 @@
 from contextlib import asynccontextmanager
 
+import uvicorn
 from fastapi import FastAPI
 
-from src.infra.config import get_settings
-from src.infra.database import init_db, close_db
-from src.infra.redis import close_redis
-from src.app.dependencies import get_storage
-from src.app.middleware import register_middlewares, register_exception_handlers
+from src.app.dependencies import get_storage, set_storage, clear_storage
+from src.app.middleware import register_exception_handlers, register_middlewares
 from src.app.routes import register_all_routes
+from src.infra.config import get_settings
+from src.infra.database import close_db, sync_engine
+from src.infra.redis import close_redis
+from src.models.base import Base
+
+
+# ============ Schema 同步（幂等） ============
+
+def _sync_schema_blocking() -> None:
+    import src.models  # noqa: F401  isort:skip
+    Base.metadata.create_all(sync_engine)
+    table_count = len(Base.metadata.tables)
+    print(f"[idpython] schema synced via Base.metadata.create_all ({table_count} tables)")
 
 
 # ============ Lifespan（应用生命周期） ============
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """启动 → 运行 → 关闭"""
     print("[idpython] 启动中...")
-    try:
-        await init_db()
-        print("[idpython] 数据库初始化完成")
-    except Exception as e:
-        print(f"[idpython] 数据库初始化失败: {e}")
 
     try:
-        storage = get_storage()
+        from src.infra.storage import create_storage
+        storage = create_storage()
+        set_storage(storage)
         storage.ensure_bucket()
-        # avatar 目录下的对象走直链，必须设公开读策略，否则前端 GET 头像 403
-        storage.set_bucket_public_read_prefix("avatar")
         print(f"[idpython] 存储后端就绪: {type(storage).__name__}")
     except Exception as e:
         print(f"[idpython] 存储初始化失败: {e}")
@@ -40,10 +45,11 @@ async def lifespan(app: FastAPI):
         get_storage().close()
     except Exception:
         pass
+    clear_storage()
     print("[idpython] 关闭完成")
 
 
-# ============ App 构造 ============
+# ============ App 构造（保持 module-level，方便 `uvicorn main:app` 启动） ============
 
 app = FastAPI(
     title="ID-AIDemo API",
@@ -55,7 +61,7 @@ app = FastAPI(
 
 # ============ 横切关注点（ASGI Middleware + Exception Handler） ============
 
-register_middlewares(app)            # CORS + Logging + Permission + Auth
+register_middlewares(app)             # CORS + Logging + Permission + Auth
 register_exception_handlers(app)      # 业务异常 + 校验异常 + 兜底
 
 
@@ -64,17 +70,25 @@ register_exception_handlers(app)      # 业务异常 + 校验异常 + 兜底
 register_all_routes(app)
 
 
-# ============ 启动 ============
+# ============ 启动入口 ============
 
-if __name__ == "__main__":
-    import uvicorn
+def main() -> None:
 
     settings = get_settings()
+
+    # 1. Schema 同步（幂等，可重复跑）
+    _sync_schema_blocking()
+
+    # 2. 起 web server（workers>1 时关闭 reload 避免冲突）
     uvicorn.run(
         "main:app",
         host=settings.HOST,
         port=settings.PORT,
-        reload=settings.DEBUG,
-        access_log=True,
+        reload=False,
+        workers=1,
         log_level="info",
     )
+
+
+if __name__ == "__main__":
+    main()

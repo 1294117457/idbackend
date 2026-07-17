@@ -1,0 +1,83 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [dev, main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Aliyun ACR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.ALIYUN_REGISTRY }}
+          username: ${{ secrets.ALIYUN_REGISTRY_USERNAME }}
+          password: ${{ secrets.ALIYUN_REGISTRY_PASSWORD }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ALIYUN_NAMESPACE }}/idbackend:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+
+  deploy-dev:
+    needs: build
+    if: github.ref_name == 'dev'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to dev server
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DEV_SERVER_HOST }}
+          username: ${{ secrets.DEV_SERVER_USER }}
+          key: ${{ secrets.DEV_SSH_KEY }}
+          script: |
+            set -e
+            TARGET_DIR=/home/project/idbackend
+            mkdir -p "$TARGET_DIR"
+            printf 'services:\n  backend:\n    image: %s\n    container_name: idbackend\n    restart: unless-stopped\n    ports:\n      - "8000:8000"\n    networks:\n      - idnetwork\n    env_file:\n      - .env\n\nnetworks:\n  idnetwork:\n    external: true\n' "${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ALIYUN_NAMESPACE }}/idbackend:latest" > "$TARGET_DIR/docker-compose.yml"
+            if [ ! -f "$TARGET_DIR/.env" ]; then
+              echo "WARNING: $TARGET_DIR/.env not found, please upload it manually"
+            fi
+            docker login ${{ secrets.ALIYUN_REGISTRY }} -u "${{ secrets.ALIYUN_REGISTRY_USERNAME }}" -p "${{ secrets.ALIYUN_REGISTRY_PASSWORD }}"
+            cd "$TARGET_DIR"
+            docker compose pull
+            docker compose up -d
+
+  deploy-prod:
+    needs: build
+    if: github.ref_name == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to prod server
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.PROD_SERVER_HOST }}
+          username: ${{ secrets.PROD_SERVER_USER }}
+          key: ${{ secrets.PROD_SSH_KEY }}
+          script: |
+            set -e
+            TARGET_DIR=/home/project/idbackend
+            mkdir -p "$TARGET_DIR"
+            printf 'services:\n  backend:\n    image: %s\n    container_name: idbackend\n    restart: unless-stopped\n    ports:\n      - "8000:8000"\n    networks:\n      - idnetwork\n    env_file:\n      - .env\n\nnetworks:\n  idnetwork:\n    external: true\n' "${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ALIYUN_NAMESPACE }}/idbackend:latest" > "$TARGET_DIR/docker-compose.yml"
+            if [ ! -f "$TARGET_DIR/.env" ]; then
+              echo "WARNING: $TARGET_DIR/.env not found, please upload it manually"
+            fi
+            docker login ${{ secrets.ALIYUN_REGISTRY }} -u "${{ secrets.ALIYUN_REGISTRY_USERNAME }}" -p "${{ secrets.ALIYUN_REGISTRY_PASSWORD }}"
+            cd "$TARGET_DIR"
+            docker compose pull
+            docker compose up -d

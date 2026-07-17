@@ -8,7 +8,7 @@
 from fastapi import APIRouter, Depends, Path
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.app.deps import get_db
+from src.app.dependencies import get_db
 from src.app import response as R
 from src.app.schemas.role import (
     RoleCreateRequest,
@@ -29,7 +29,7 @@ router = APIRouter(prefix="/api/system/role", tags=["角色管理"])
 async def get_role_list(db: AsyncSession = Depends(get_db)):
     """获取所有角色列表"""
     roles = await RbacService.get_all_roles(db)
-    return R.success_resp(
+    return R.query_resp(
         [RoleVO.from_orm_to_vo(r).model_dump() for r in roles]
     )
 
@@ -44,7 +44,7 @@ async def get_role_detail(
     if not role:
         raise NotFoundError(f"角色不存在: id={role_id}")
     permissions = await RbacService.get_role_permissions(db, role_id)
-    return R.success_resp(RoleDetailVO.from_orm_to_vo(role, permissions).model_dump())
+    return R.query_resp(RoleDetailVO.from_orm_to_vo(role, permissions).model_dump())
 
 
 @router.post("/create", status_code=201)
@@ -93,7 +93,7 @@ async def get_role_permissions(
     from src.app.schemas.permission import PermissionVO
 
     permissions = await RbacService.get_role_permissions(db, role_id)
-    return R.success_resp(
+    return R.query_resp(
         [PermissionInRoleVO.from_orm_to_vo(p).model_dump() for p in permissions]
     )
 

@@ -1,32 +1,42 @@
-"""Rule 服务（v4 设计）
+"""Rule 服务（v5 设计 - action-style 复合接口）
 
 设计原则：
 - 业务规则全部在此；DB 通过 RuleRepository 间接访问
 - 抛通用业务异常（NotFoundError / BadRequestError / ConflictError）
 - 事务边界在 service
+- 旧 REST 写接口（create/update/bind_attribute/unbind_attribute）已废弃，
+  统一用 save_rule / update_rule / delete_rule_by_id
 
 业务规则（v4）：
 - type 必须是 CONDITION / TRANSFORM
 - type 与 score 一致：CONDITION 必填 score；TRANSFORM 必须 None
-- bind_attribute 时硬校验 rule.type == attribute.type（v4 唯一硬校验）
+- rule 内 attribute 必须 type 一致（全量替换前硬校验）
 """
 from decimal import Decimal
 from typing import Optional, List
 
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
-from src.models.template import Rule, AttributeType
+from src.models.template import Rule, Attribute, AttributeType
 from src.app.schemas.template import (
     RuleCreateRequest,
     RuleUpdateRequest,
+    RulePayload,
+    RuleSaveRequest,
+    RuleSaveUpdateRequest,
+    RuleDeleteRequest,
+    RuleSaveResponse,
+    RuleDetailVO,
+    AttributeVO,
 )
 from src.app.schemas.errors import (
     NotFoundError,
     BadRequestError,
+    ConflictError,
 )
 from src.repositories.rule_repo import RuleRepository
 from src.repositories.attribute_repo import AttributeRepository
-from src.services.attribute_service import AttributeService
 
 
 # ============================================================
@@ -50,7 +60,7 @@ def _validate_type_score(type: str, score: Optional[Decimal]) -> None:
 # ============================================================
 
 class RuleService:
-    """Rule 服务（v4）"""
+    """Rule 服务（v5）"""
 
     @staticmethod
     def validate(req: RuleCreateRequest) -> None:
@@ -101,112 +111,149 @@ class RuleService:
             raise NotFoundError(f"规则(id={rule_id})不存在")
         return rule
 
-    # ---------- 写 ----------
+    # ---------- v5 写 ----------
 
     @staticmethod
-    async def create(
+    async def save_rule(
         db: AsyncSession,
-        req: RuleCreateRequest,
-    ) -> Rule:
-        """创建 rule。"""
-        RuleService.validate(req)  # type-score 一致性
+        req: RuleSaveRequest,
+    ) -> RuleSaveResponse:
+        """POST /rule/save：新建 rule + 一次性绑 attribute（单事务）
 
-        rule = req.to_orm()
+        事务边界：
+        1. type-score 校验
+        2. attributeIds 全部存在 + type 一致
+        3. insert rule
+        4. commit（拿到 rule.id）
+        5. replace_bound_attributes
+        6. commit
+        7. 组装 RuleSaveResponse
+        """
+        _validate_type_score(req.rule.type, req.rule.score)
+        await RuleService._validate_attribute_type_consistency(
+            db, req.rule.type, req.attributeIds,
+        )
+
+        rule = req.rule.to_orm()
         db.add(rule)
         await RuleRepository.commit(db)
         await RuleRepository.refresh(db, rule)
-        return rule
 
-    @staticmethod
-    async def update(
-        db: AsyncSession,
-        rule_id: int,
-        req: RuleUpdateRequest,
-    ) -> Rule:
-        """修改 rule。"""
-        rule = await RuleService.get_by_id(db, rule_id)
-
-        # 修改 type 或 score 时，校验 type-score 一致性
-        if req.type is not None or req.score is not None:
-            new_type = req.type if req.type is not None else rule.type
-            new_score = req.score if req.score is not None else rule.score
-            _validate_type_score(new_type, new_score)
-
-        modified = req.apply_to(rule)
-        if modified:
+        rule_id = rule.id
+        if req.attributeIds:
+            await RuleRepository.replace_bound_attributes(db, rule_id, req.attributeIds)
             await RuleRepository.commit(db)
-            await RuleRepository.refresh(db, rule)
-        return rule
+
+        return await RuleService._build_save_response(db, rule_id)
 
     @staticmethod
-    async def delete(
+    async def update_rule(
         db: AsyncSession,
-        rule_id: int,
-    ) -> None:
-        """删除 rule。
+        req: RuleSaveUpdateRequest,
+    ) -> RuleSaveResponse:
+        """POST /rule/update：编辑 rule + 重置 attribute 绑定（DIFF，单事务）
 
-        - FK CASCADE 自动清理 template_rule / rule_attribute 行
-        - 不影响已有 application（application 不直接引用 rule）
+        事务边界：
+        1. 校验 rule 存在
+        2. type-score 校验
+        3. attributeIds 全部存在 + type 一致
+        4. apply_to 覆盖字段
+        5. replace_bound_attributes
+        6. commit
+        7. 组装 RuleSaveResponse
         """
-        await RuleService.get_by_id(db, rule_id)  # 校验存在
-        await RuleRepository.delete(db, rule_id)
+        rule = await RuleService.get_by_id(db, req.ruleId)
+
+        _validate_type_score(req.rule.type, req.rule.score)
+        await RuleService._validate_attribute_type_consistency(
+            db, req.rule.type, req.attributeIds,
+        )
+
+        req.rule.apply_to(rule)
+        await RuleRepository.replace_bound_attributes(db, req.ruleId, req.attributeIds)
         await RuleRepository.commit(db)
 
-    # ---------- 关联操作 ----------
+        return await RuleService._build_save_response(db, req.ruleId)
 
     @staticmethod
-    async def bind_attribute(
+    async def delete_rule_by_id(
         db: AsyncSession,
-        rule_id: int,
-        attribute_id: int,
+        req: RuleDeleteRequest,
     ) -> None:
-        """rule 绑 attribute（v4 唯一硬校验：rule.type == attribute.type）。
+        """POST /rule/delete：删除 rule（带引用检查）
 
-        由这条校验自然保证"同一 rule 内 attribute 不可混用"。
+        - 预检：是否被 template 绑定 → ConflictError
+        - FK CASCADE 自动清理 rule_attribute 行
         """
-        rule = await RuleService.get_by_id(db, rule_id)
-        attribute = await AttributeRepository.get_by_id(db, attribute_id)
-        if attribute is None:
-            raise NotFoundError(f"属性(id={attribute_id})不存在")
+        rule = await RuleService.get_by_id(db, req.ruleId)
 
-        if rule.type != attribute.type:
-            raise BadRequestError(
-                f"rule.type 与 attribute.type 不一致："
-                f"rule(id={rule_id}).type={rule.type}, "
-                f"attribute(id={attribute_id}).type={attribute.type}。"
-                f"v4 唯一硬校验：rule 与其绑定的 attribute 必须 type 一致。"
+        bound_count = await RuleRepository.count_bound_templates(db, req.ruleId)
+        if bound_count > 0:
+            raise ConflictError(
+                f"该 rule 被 {bound_count} 个 template 绑定，无法删除。请先解绑。"
             )
 
-        link = await RuleRepository.bind_attribute(db, rule_id, attribute_id)
-        if link is not None:
-            await RuleRepository.commit(db)
+        await RuleRepository.delete(db, req.ruleId)
+        await RuleRepository.commit(db)
+
+    # ---------- 内部辅助 ----------
 
     @staticmethod
-    async def unbind_attribute(
+    async def _validate_attribute_type_consistency(
+        db: AsyncSession,
+        rule_type: str,
+        attribute_ids: List[int],
+    ) -> None:
+        """硬校验：所有 attributeIds 必须存在 + type == rule_type
+
+        v4 唯一硬校验：rule.type == attribute.type
+        单事务内、DIFF 替换前必须保证一致性。
+        """
+        deduped = list({aid for aid in attribute_ids if aid is not None})
+        if not deduped:
+            return
+
+        rows = (await db.execute(
+            select(Attribute).where(Attribute.id.in_(deduped))
+        )).scalars().all()
+
+        existing_map = {a.id: a for a in rows}
+
+        # 1. 不存在
+        missing = [aid for aid in deduped if aid not in existing_map]
+        if missing:
+            raise NotFoundError(f"attribute 不存在：id={missing}")
+
+        # 2. type 不一致
+        mismatched = [
+            f"id={a.id}.type={a.type}" for a in rows
+            if a.type != rule_type
+        ]
+        if mismatched:
+            raise BadRequestError(
+                f"rule.type={rule_type} 与以下 attribute.type 不一致：{mismatched}。"
+                f"硬校验：rule 内 attribute 必须 type 相同。"
+            )
+
+    @staticmethod
+    async def _build_save_response(
         db: AsyncSession,
         rule_id: int,
-        attribute_id: int,
-    ) -> None:
-        """解绑 attribute。"""
-        await RuleRepository.unbind_attribute(db, rule_id, attribute_id)
-        await RuleRepository.commit(db)
+    ) -> RuleSaveResponse:
+        """组装 RuleSaveResponse（与 TemplateService._build_save_response 对称）"""
+        rule = await RuleService.get_with_attributes(db, rule_id)
+
+        attr_vos = [
+            AttributeVO.from_orm_to_vo(a)
+            for a in sorted(rule.attributes, key=lambda a: a.sort_order)
+        ]
+        rule_detail_vo = RuleDetailVO.from_orm_to_vo(rule, attr_vos)
+
+        return RuleSaveResponse(
+            ruleId=rule_id,
+            rule=rule_detail_vo,
+            boundAttributeIds=[a.id for a in attr_vos],
+        )
 
 
 __all__ = ["RuleService"]
-
-
-# ============================================================
-# 模块加载即 patch：给 AttributeService 注入 or_none 版本
-# ============================================================
-# 设计动机：避免 RuleService.bind_attribute 出现循环依赖
-# （rule_service 引用 attribute_service 但同时 attribute_service 也可以反向引用 rule_service）
-
-async def _attribute_get_by_id_or_none(db: AsyncSession, attribute_id: int):
-    """AttributeService.get_by_id_or_none —— 找不到返回 None 而不是抛异常"""
-    try:
-        return await AttributeService.get_by_id(db, attribute_id)
-    except NotFoundError:
-        return None
-
-
-AttributeService.get_by_id_or_none = staticmethod(_attribute_get_by_id_or_none)  # type: ignore[attr-defined]  # noqa: E402

@@ -7,6 +7,7 @@
 - PUT /api/system/config/agent - 更新 Agent 配置
 - GET /api/system/config/smtp - 获取 SMTP 配置
 - PUT /api/system/config/smtp - 更新 SMTP 配置
+- POST /api/system/config/rbac/reset - 重置 RBAC（清空 + 重新 seed）
 """
 import os
 from fastapi import APIRouter, Depends
@@ -14,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 from typing import Optional
 
-from src.app.deps import get_db
+from src.app.dependencies import get_db
 from src.app import response as R
 
 router = APIRouter(prefix="/api/system/config", tags=["系统配置"])
@@ -48,7 +49,7 @@ async def get_config(
     from src.infra.config import get_settings
     settings = get_settings()
 
-    return R.success_resp({
+    return R.query_resp({
         "agent": {
             "api_key": settings.QWEN3_API_KEY[:4] + "****" if settings.QWEN3_API_KEY else "",
             "base_url": settings.QWEN_BASE_URL,
@@ -73,7 +74,7 @@ async def get_agent_config(
     from src.infra.config import get_settings
     settings = get_settings()
 
-    return R.success_resp({
+    return R.query_resp({
         "api_key": settings.QWEN3_API_KEY[:4] + "****" if settings.QWEN3_API_KEY else "",
         "base_url": settings.QWEN_BASE_URL,
         "chat_model": settings.QWEN_CHAT_MODEL,
@@ -113,7 +114,7 @@ async def update_agent_config(
     with open(env_path, "w") as f:
         f.writelines(new_lines)
 
-    return R.success_resp({"message": "Agent 配置已更新，请重启服务生效"})
+    return R.success_resp({"message": "Agent 配置已更新，请重启服务生效"}, msg="Agent 配置已更新")
 
 
 @router.get("/smtp")
@@ -124,7 +125,7 @@ async def get_smtp_config(
     from src.infra.config import get_settings
     settings = get_settings()
 
-    return R.success_resp({
+    return R.query_resp({
         "smtp_host": settings.SMTP_HOST,
         "smtp_port": settings.SMTP_PORT,
         "smtp_username": settings.SMTP_USERNAME,
@@ -166,4 +167,26 @@ async def update_smtp_config(
     with open(env_path, "w") as f:
         f.writelines(new_lines)
 
-    return R.success_resp({"message": "SMTP 配置已更新"})
+    return R.success_resp({"message": "SMTP 配置已更新"}, msg="SMTP 配置已更新")
+
+
+@router.post("/rbac/reset")
+async def reset_rbac(
+    db: AsyncSession = Depends(get_db),
+):
+    """硬重置 RBAC：清空 role_permission / user_role + 删除 seed 维护的 role / permission → 重新 seed。
+
+    仅 super_admin 可调（依赖 rbac:reset 权限码 → super_admin 角色短路放行）。
+    业务侧新建的 role / permission 不会被删。
+
+    失效：调用 RbacService.invalidate_all_user_caches() 清除所有用户缓存。
+    """
+    from src.scripts.init_rbac_data import reset_rbac_data
+
+    stats = await reset_rbac_data()
+    # 清除所有用户缓存（role/permission 结构已大变，旧缓存全部失效）
+    await RbacService.invalidate_all_user_caches()
+    return R.success_resp({
+        "message": "RBAC 已重置",
+        "stats": stats,
+    }, msg="RBAC 已重置")

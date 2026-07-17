@@ -17,7 +17,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Path, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.app.deps import get_db
+from src.app.dependencies import get_db
 from src.app import response as R
 from src.app.schemas.extra_info_field import (
     ExtraInfoFieldCreateRequest,
@@ -40,7 +40,7 @@ async def list_fields(
 ):
     """分页列表（Page[ExtraInfoFieldVO]）"""
     page = await ExtraInfoFieldService.page(db, req)
-    return R.success_resp(page.model_dump())
+    return R.query_resp(page.model_dump())
 
 
 @router.get("/active")
@@ -49,7 +49,7 @@ async def get_active_fields(
 ):
     """获取所有已启用的字段（供学生端展示/编辑使用）"""
     fields = await ExtraInfoFieldService.list_all(db, include_inactive=False)
-    return R.success_resp([
+    return R.query_resp([
         ExtraInfoFieldVO.from_orm_to_vo(f).model_dump() for f in fields
     ])
 
@@ -61,7 +61,7 @@ async def get_field_detail(
 ):
     """字段详情"""
     field = await ExtraInfoFieldService.get_by_id(db, field_id)
-    return R.success_resp(ExtraInfoFieldVO.from_orm_to_vo(field).model_dump())
+    return R.query_resp(ExtraInfoFieldVO.from_orm_to_vo(field).model_dump())
 
 
 # ============ 写接口 ============

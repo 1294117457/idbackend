@@ -63,6 +63,11 @@ class UpdateUserExtraInfoRequest(BaseModel):
     extra_info: dict = Field(..., description="扩展信息字典")
 
 
+class AssignUserRolesRequest(BaseModel):
+    """分配用户角色（POST /api/user/{user_id}/roles）"""
+    roleIds: List[int] = Field(default_factory=list, description="角色 ID 列表")
+
+
 # ========== 响应 VO ==========
 
 class CurrentUserInfoVO(BaseModel):
@@ -134,6 +139,54 @@ class UserAdminListVO(Page[UserAdminListItemVO]):
     pass
 
 
+class UserProfileVO(BaseModel):
+    """用户账户信息 VO（GET /api/users/me）"""
+    id: int
+    studentId: Optional[str]
+    username: str
+    fullName: Optional[str]
+    phone: Optional[str]
+    avatar: Optional[str]
+    grade: Optional[int]
+    enrollmentYear: Optional[int]
+    graduationYear: Optional[int]
+    major: Optional[str]
+    extraInfo: Optional[dict] = Field(default_factory=dict)
+    scoreInfo: Optional[dict] = Field(default_factory=dict)
+    extraInfoFieldDefs: Optional[List[dict]] = Field(default_factory=list, description="扩展信息字段定义")
+
+    @classmethod
+    def from_orm_to_vo(
+        cls,
+        obj,
+        *,
+        extra_info_field_defs: Optional[List[dict]] = None,
+        score_tree: Optional[List[dict]] = None,
+    ) -> "UserProfileVO":
+        """从 ORM 实体转换，额外数据由 service 层传入"""
+        score_info = dict(obj.score_info or {}) if obj.score_info else {}
+        if score_tree is not None:
+            score_info["tree"] = score_tree
+        elif "scores" not in score_info:
+            score_info["tree"] = []
+
+        return cls(
+            id=obj.id,
+            studentId=obj.extract_student_id(obj.username),
+            username=obj.username,
+            fullName=obj.full_name,
+            phone=obj.phone,
+            avatar=obj.avatar,
+            grade=obj.grade,
+            enrollmentYear=obj.enrollment_year,
+            graduationYear=obj.graduation_year,
+            major=obj.major,
+            extraInfo=obj.extra_info or {},
+            scoreInfo=score_info,
+            extraInfoFieldDefs=extra_info_field_defs or [],
+        )
+
+
 __all__ = [
     "UpdateUserStatusRequest",
     "CreateUserRequest",
@@ -141,7 +194,9 @@ __all__ = [
     "UserQueryRequest",
     "UpdateUserMeRequest",
     "UpdateUserExtraInfoRequest",
+    "AssignUserRolesRequest",
     "CurrentUserInfoVO",
     "UserAdminListItemVO",
     "UserAdminListVO",
+    "UserProfileVO",
 ]

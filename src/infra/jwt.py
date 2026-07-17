@@ -1,7 +1,6 @@
-"""JWT 工具"""
 from datetime import datetime, timedelta
 from typing import Optional, List
-from jose import jwt, JWTError
+from jose import jwt
 import hashlib
 
 from .config import get_settings
@@ -16,6 +15,8 @@ try:
 except ImportError:
     pass
 
+
+# ============== 密码 ==============
 
 def hash_password(password: str) -> str:
     """密码哈希"""
@@ -37,6 +38,8 @@ def verify_password(plain: str, hashed: str) -> bool:
     return hashlib.sha256(plain.encode()).hexdigest() == hashed
 
 
+# ============== Token 签发 ==============
+
 def create_token(
     user_id: int,
     username: str,
@@ -45,17 +48,6 @@ def create_token(
     permissions: List[str] = None,
     expires_hours: Optional[int] = None,
 ) -> str:
-    """创建 access token (短期)
-
-    最小化 payload：仅含身份信息 + 过期。
-    权限/角色不在 token 内携带，由 PermissionMiddleware + Redis 实时判定。
-
-    Args:
-        user_id: 用户ID
-        username: 用户名
-        role/roles/permissions: 已废弃，保留仅为兼容旧调用方，不再写入 payload
-        expires_hours: 过期时间（小时）
-    """
     expire = datetime.utcnow() + timedelta(
         hours=expires_hours or settings.JWT_EXPIRE_HOURS
     )
@@ -74,14 +66,6 @@ def create_refresh_token(
     role: str = "user",
     expires_days: Optional[int] = None,
 ) -> str:
-    """创建 refresh token (长期)，包含 jti 便于撤销
-
-    Args:
-        user_id: 用户ID
-        username: 用户名
-        role: 已废弃，仅保留兼容
-        expires_days: 过期时间（天）
-    """
     import uuid
     jti = str(uuid.uuid4())
     expire = datetime.utcnow() + timedelta(
@@ -97,15 +81,11 @@ def create_refresh_token(
     return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
 
 
-def verify_token(token: str) -> Optional[dict]:
-    """验证并返回 payload"""
-    try:
-        return jwt.decode(
-            token,
-            settings.JWT_SECRET,
-            algorithms=[settings.JWT_ALGORITHM],
-        )
-    except jwt.ExpiredSignatureError:
-        raise JWTError("Token 已过期", 401)
-    except JWTError as e:
-        raise JWTError(f"Token 验证失败: {e}", 401)
+# ============== Token 校验 ==============
+
+def verify_token(token: str, expected_type: str = "access") -> dict:
+    return jwt.decode(
+        token,
+        settings.JWT_SECRET,
+        algorithms=[settings.JWT_ALGORITHM],
+    )

@@ -1,9 +1,9 @@
-import io
 from typing import Annotated
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi import HTTPException, status
+from fastapi.responses import Response
 
 from src.app.dependencies import get_file_service
 from src.app import response as R
@@ -20,12 +20,11 @@ from src.services.file_service import FileService
 router = APIRouter(prefix="/api/file", tags=["文件"])
 
 
-# ---------- 内部工具（仅与 HTTP 协议相关：流式响应 + 大小校验） ----------
+# ---------- 内部工具（仅与 HTTP 协议相关：大小校验） ----------
 
 async def _read_and_validate_size(file: UploadFile = File(...)) -> bytes:
     """读取上传文件并校验大小 → 超过限制抛 HTTP 413"""
     from src.infra.config import get_settings
-    from fastapi import HTTPException, status
 
     settings = get_settings()
     content = await file.read()
@@ -37,18 +36,7 @@ async def _read_and_validate_size(file: UploadFile = File(...)) -> bytes:
     return content
 
 
-def _streaming_response(file_data: bytes, content_type: str, original_name: str):
-    encoded_name = quote(original_name, safe='')
-    return StreamingResponse(
-        io.BytesIO(file_data),
-        media_type=content_type,
-        headers={
-            "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_name}",
-        },
-    )
-
-
-# ============ 1. 上传 ============
+# ============ 1. 上传（v6.0：中转流逻辑不变，返回 url 改为签名 URL）============
 
 @router.post("/upload", status_code=201)
 async def upload_file(
@@ -63,7 +51,7 @@ async def upload_file(
         "fileId": meta.id,
         "originalName": meta.original_name,
         "url": url,
-    })
+    }, msg="文件上传成功")
 
 
 @router.post("/avatar")
@@ -78,7 +66,7 @@ async def upload_avatar(
         contentType=file.content_type or "image/jpeg",
     )
     _, url = await service.upload_avatar(req)
-    return R.success_resp(url)
+    return R.success_resp(url, msg="头像上传成功")
 
 
 # ============ 2. 查询 ============
@@ -90,7 +78,7 @@ async def search_files(
 ):
     """文件分页搜索——DTO 自动解析（§5.3）"""
     page = await service.search_files(req)
-    return R.success_resp(page.model_dump())
+    return R.query_resp(page.model_dump())
 
 
 @router.get("/{file_id}")
@@ -98,37 +86,64 @@ async def get_file_info(
     file_id: int,
     service: FileService = Depends(get_file_service),
 ):
-    """单个文件元信息（service 层抛异常，路由层不再判空）"""
-    meta = await service.get_file(file_id)
-    return R.success_resp(FileVO.from_orm_to_vo(meta).model_dump())
+    """单个文件元信息"""
+    vo = await service.get_file(file_id)
+    return R.query_resp(vo.model_dump())
 
 
-# ============ 3. 预览 / 下载 ============
+# ============ 3. 预览 / 下载（v6.0 全签名模式）============
 
-@router.get("/{file_id}/preview")
+@router.get("/{file_id}/preview-url")
 async def get_preview_url(
     file_id: int,
     expiryMinutes: int = Query(
         60,
         ge=1,
         le=1440,
-        description="URL 过期分钟数（仅 POLICY/PROOF 生效；AVATAR 公开直链无过期）",
+        description="URL 过期分钟数（默认 60min，最大 24h）",
     ),
     service: FileService = Depends(get_file_service),
 ):
+    vo = await service.get_preview_data(file_id, expiryMinutes)
+    return R.query_resp(vo.model_dump())
 
-    meta, url = await service.get_preview_data(file_id, expiryMinutes)
-    return R.success_resp(FileDataVO.from_orm_to_vo(meta, url).model_dump())
 
-
-@router.get("/{file_id}/download")
-async def download_file(
+@router.get("/{file_id}/preview")
+async def get_preview(
     file_id: int,
     service: FileService = Depends(get_file_service),
 ):
-    """下载文件（流式响应）"""
-    file_data, content_type, original_name = await service.get_download_stream(file_id)
-    return _streaming_response(file_data, content_type, original_name)
+    """直接预览图片/文件——从 MinIO 拉取流经网关返回
+
+    - 前端直接请求，无需签名，降低前端复杂度
+    - 响应 5MB 以上大文件可能导致网关超时，建议前端改用预览签名 URL
+    """
+    meta, data = await service.get_preview_bytes(file_id)
+    encoded_name = quote(meta.original_name, safe="")
+    disposition = f"inline; filename*=UTF-8''{encoded_name}"
+    return Response(
+        content=data,
+        media_type=meta.content_type,
+        headers={
+            "Content-Disposition": disposition,
+            "Cache-Control": "private, max-age=3600",
+        },
+    )
+
+
+@router.get("/{file_id}/download-url")
+async def get_download_url(
+    file_id: int,
+    expiryMinutes: int = Query(
+        60,
+        ge=1,
+        le=1440,
+        description="URL 过期分钟数（默认 60min，最大 24h）",
+    ),
+    service: FileService = Depends(get_file_service),
+):
+    vo = await service.get_download_data(file_id, expiryMinutes)
+    return R.query_resp(vo.model_dump())
 
 
 # ============ 4. 更新 / 删除 ============
@@ -140,8 +155,8 @@ async def update_file(
     service: FileService = Depends(get_file_service),
 ):
     """更新文件元信息（仅支持更新 originalName）"""
-    meta = await service.update_file(req, file_id)
-    return R.success_resp(FileVO.from_orm_to_vo(meta).model_dump())
+    vo = await service.update_file(req, file_id)
+    return R.success_resp(vo.model_dump(), msg="文件信息已更新")
 
 
 @router.delete("/{file_id}")

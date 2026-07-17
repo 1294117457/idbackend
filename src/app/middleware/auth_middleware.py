@@ -1,24 +1,50 @@
-"""认证中间件 - 解析 JWT，设置用户上下文
+"""认证中间件 - 解析 JWT，校验账号状态
 
-职责：
+职责（v4）：
 1. 检查白名单路径，直接放行
 2. 解析 Authorization Header 获取 JWT Token
-3. 验证 Token 并设置用户上下文到 ContextVar
-4. 没有 token 或 token 无效 → 返回 401（未认证）
+3. 校验 token 签名 + 过期（签名错/篡改 → 10003，access 过期 → 10001）
+4. 校验 token payload 中的 type 字段（必须是 access；类型错 → 10003）
+5. 校验账号状态（DB 一次 SELECT）→ 账号禁用返回 body.code=10003
+6. 设置用户上下文到 ContextVar（仅身份信息，不含 RBAC）
+7. 失败响应统一从 response.py 工厂 return，不在中间件内构造 JSONResponse
+
+业务 body_code 路由职责：本中间件自己负责 access/refresh 过期的细分映射
+（refresh 在本中间件几乎不会触发，但防御性兜底）。
+底层 jwt.py 直接透传 jose 原生异常（ExpiredSignatureError / JWTError），
+由本中间件按上下文捕获并映射到对应 body_code。
 
 注意：权限校验由 PermissionMiddleware 负责
 """
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
+from jose import jwt as jose_jwt, JWTError
 
 from src.app.context import set_user, clear_user
-from src.app.response import unauthorized_resp
-from src.infra.jwt import verify_token, JWTError
+from src.app.response import (
+    unauthorized_resp,            # HTTP 401 + body.code=401
+    access_token_expired_resp,    # HTTP 401 + body.code=10001
+    refresh_token_expired_resp,   # HTTP 401 + body.code=10002（防御性兜底）
+    invalid_token_resp,           # HTTP 401 + body.code=10003（token 篡改/签错）
+    account_disabled_resp,        # HTTP 401 + body.code=10003（账号被禁用，msg 区分）
+)
+from src.infra.jwt import verify_token
+from src.services.user_service import UserService
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
-    """请求认证中间件 - 只负责验证身份，不负责权限校验"""
+    """请求认证中间件 - 解析 JWT + 校验账号状态
+
+    细分场景（HTTP 状态码 + body.code 双轨）：
+    - 无 Authorization 头 / Bearer 格式错 → 401 + body.code=401
+    - access_token 过期                  → 401 + body.code=10001
+    - refresh_token 过期（防御性兜底）    → 401 + body.code=10002
+    - token 篡改 / 签错 / 类型错          → 401 + body.code=10003
+    - 账号被禁用                         → 401 + body.code=10003（msg 区分）
+
+    设计：jwt.py 已不区分 access/refresh 业务异常，本中间件按 context 自行映射。
+    """
 
     # 白名单路径（无需认证的接口）
     BYPASS_PATHS = [
@@ -53,19 +79,33 @@ class AuthMiddleware(BaseHTTPMiddleware):
         auth_header = request.headers.get("Authorization", "")
 
         if not auth_header.startswith("Bearer "):
-            return unauthorized_resp("请先登录")
+            return unauthorized_resp("请先登录")  # HTTP 401 + body.code=401
 
         token = auth_header[7:]
 
-        # 3. 解析 JWT
+        # 3. 解析 JWT（直接捕获 jose 原生异常，按访问上下文决定 body_code）
         try:
-            payload = verify_token(token)
+            payload = verify_token(token, expected_type="access")
+        except jose_jwt.ExpiredSignatureError:
+            # 中间件永远期望 access → 过期统一映射 10001
+            # （refresh 过期在本中间件几乎不会发生，但理论存在：用 refresh 当 access 调接口）
+            return access_token_expired_resp()   # HTTP 401 + body.code=10001
         except JWTError:
-            return unauthorized_resp("Token无效")
+            return invalid_token_resp()          # HTTP 401 + body.code=10003
 
-        # 4. 构建用户对象（仅身份信息；权限/角色由 PermissionMiddleware 实时判定）
+        # 4. 校验 token 类型（拿到 payload 后再校验 type==access）
+        if payload.get("type") != "access":
+            return invalid_token_resp("Token 类型错误，期望 access")
+
+        user_id = payload.get("userId")
+
+        # 5. 校验账号状态（DB 一次 SELECT，仅查 status）
+        if not await UserService.verify_account_active(user_id):
+            return account_disabled_resp()        # HTTP 401 + body.code=10003
+
+        # 6. 构建用户对象（仅身份信息；权限/角色由 PermissionMiddleware 实时判定）
         user = {
-            "user_id": payload.get("userId"),
+            "user_id": user_id,
             "username": payload.get("username"),
         }
 

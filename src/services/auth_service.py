@@ -3,18 +3,28 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
 from datetime import datetime
+from jose import jwt as jose_jwt, JWTError
 
 from src.infra.jwt import (
     create_token,
     create_refresh_token,
     verify_token,
     verify_password,
-    JWTError,
 )
 from src.infra.redis import RedisCache, get_redis
 from src.infra.config import is_system_account
 from src.models import User, Role, UserRole
-from src.app.schemas.errors import NotFoundError, BadRequestError, ConflictError, ForbiddenError
+from src.models.user import UserStatus
+from src.app.schemas.errors import (
+    NotFoundError,
+    BadRequestError,
+    ConflictError,
+    ForbiddenError,
+    AccountDisabledError,
+    RefreshTokenExpiredError,
+    InvalidTokenError,
+)
+from src.app.schemas.auth import UserCreateResultVO
 from src.services.rbac_service import RbacService
 
 
@@ -25,12 +35,21 @@ class AuthService:
     async def register(
         db: AsyncSession,
         req,
-    ) -> User:
+        email_code: str,
+    ) -> UserCreateResultVO:
         """注册用户（自动分配 user 角色）
 
+        - 邮箱验证码校验
         - 用户名冲突 → ConflictError
         - ORM 构造由 req.to_create_orm() 完成
+        - 返回 UserCreateResultVO
         """
+        from src.infra.email import EmailCode
+
+        ok, err = await EmailCode.verify(req.username, "register", email_code)
+        if not ok:
+            raise BadRequestError(err)
+
         result = await db.execute(
             select(User).where(User.username == req.username)
         )
@@ -52,18 +71,28 @@ class AuthService:
 
         await db.commit()
         await db.refresh(user)
-        return user
+        return UserCreateResultVO.from_user(user)
 
     @staticmethod
     async def login(
         db: AsyncSession,
         username: str,
         password: str,
+        captcha_id: str | None = None,
+        verify_code: str | None = None,
     ) -> tuple[User, str, str]:
         """登录，返回 (用户, access_token, refresh_token)
 
-        权限/角色不再写入 token，由 PermissionMiddleware + Redis 实时判定。
+        - 支持可选的图形验证码校验
+        - 权限/角色不再写入 token，由 PermissionMiddleware + Redis 实时判定
         """
+        from src.infra.captcha import Captcha
+
+        if captcha_id and verify_code:
+            is_valid, err = await Captcha.verify(captcha_id, verify_code)
+            if not is_valid:
+                raise BadRequestError(err)
+
         result = await db.execute(
             select(User).where(User.username == username)
         )
@@ -75,7 +104,7 @@ class AuthService:
         if not verify_password(password, user.password):
             raise BadRequestError("用户名或密码错误")
 
-        if user.status != "active":
+        if user.status != UserStatus.ACTIVE.value:
             raise ForbiddenError("账户已被禁用")
 
         user.last_login_at = datetime.utcnow().isoformat()
@@ -91,12 +120,22 @@ class AuthService:
         db: AsyncSession,
         username: str,
         password: str,
+        captcha_id: str | None = None,
+        verify_code: str | None = None,
     ) -> tuple[User, str, str]:
         """管理员登录，返回 (用户, access_token, refresh_token)
 
-        中间件未持有 token 鉴权，因此登录资格判定放在服务层：
-        - 密码正确 + 是白名单用户 / 拥有 super_admin / admin / reviewer 角色 → 放行
+        - 支持可选的图形验证码校验
+        - 中间件未持有 token 鉴权，因此登录资格判定放在服务层：
+          密码正确 + 是白名单用户 / 拥有 super_admin / admin / reviewer 角色 → 放行
         """
+        from src.infra.captcha import Captcha
+
+        if captcha_id and verify_code:
+            is_valid, err = await Captcha.verify(captcha_id, verify_code)
+            if not is_valid:
+                raise BadRequestError(err)
+
         result = await db.execute(
             select(User).where(User.username == username)
         )
@@ -108,7 +147,7 @@ class AuthService:
         if not verify_password(password, user.password):
             raise BadRequestError("用户名或密码错误")
 
-        if user.status != "active":
+        if user.status != UserStatus.ACTIVE.value:
             raise ForbiddenError("账户已被禁用")
 
         # 鉴权：白名单超管，或拥有 super_admin / admin / reviewer 角色之一
@@ -133,28 +172,49 @@ class AuthService:
         """刷新 token，返回 (新的 access_token, 新的 refresh_token)
 
         不再查询角色/权限，新 token 只含身份信息。
+
+        异常细分（被 exception_handler 按 body_code 映射）：
+        - RefreshTokenExpiredError → HTTP 401 + body.code=10002（refresh 过期，业务异常）
+        - InvalidTokenError        → 重新 throw BadRequest（业务路由层）
+        - AccountDisabledError     → HTTP 401 + body.code=10003（账号被禁用，msg 区分）
+
+        设计：verify_token 直接透传 jose 原生异常（ExpiredSignatureError / JWTError），
+        本服务按"refresh 上下文"把 ExpiredSignatureError 翻译为业务异常 RefreshTokenExpiredError，
+        把其余 JWTError 翻译为 InvalidTokenError。
         """
-        # 1. 解析并验证 refresh token
-        payload = verify_token(refresh_token)
+        # 1. 解析 refresh token（jose 层抛原生异常；本服务按上下文翻译为业务异常）
+        try:
+            payload = verify_token(refresh_token, expected_type="refresh")
+        except jose_jwt.ExpiredSignatureError:
+            # refresh 过期 → 10002
+            raise RefreshTokenExpiredError()
+        except JWTError as e:
+            # refresh 本身就是个 token，无效就是"身份不可信"，映射到 10003（与 access 篡改同号）
+            raise InvalidTokenError(f"refresh_token 无效: {e}")
+
         if payload.get("type") != "refresh":
-            raise JWTError("无效的 refresh token 类型")
+            raise InvalidTokenError("Token 类型错误，期望 refresh")
 
         jti = payload.get("jti")
         if not jti:
-            raise JWTError("Refresh token 缺少 jti")
+            raise InvalidTokenError("Refresh token 缺少 jti")
 
         # 2. 检查是否已撤销
         redis = await get_redis()
         cache = RedisCache(redis)
         if await cache.is_refresh_token_revoked(jti):
-            raise JWTError("Refresh token 已失效")
+            raise InvalidTokenError("Refresh token 已失效")
 
         # 3. 检查用户是否仍然有效
         user_id = payload.get("userId")
         result = await db.execute(select(User).where(User.id == user_id))
         user = result.scalar_one_or_none()
-        if not user or user.status != "active":
-            raise JWTError("用户不存在或已禁用")
+        if not user:
+            raise NotFoundError(f"用户不存在: id={user_id}")
+        if user.status != UserStatus.ACTIVE.value:
+            # 用户中途被禁用 → 撤销所有 refresh token（防止继续 rotate）
+            await cache.revoke_all_user_refresh_tokens(user_id)
+            raise AccountDisabledError()  # HTTP 401 + body.code=10003
 
         # 4. 撤销旧 refresh token (rotation)
         await cache.revoke_refresh_token(jti)
@@ -167,7 +227,10 @@ class AuthService:
     @staticmethod
     async def revoke_refresh_token(refresh_token: str) -> None:
         """撤销指定的 refresh token（登出时调用）"""
-        payload = verify_token(refresh_token)
+        try:
+            payload = verify_token(refresh_token, expected_type="refresh")
+        except JWTError:
+            return  # token 无效或过期，忽略
         if payload.get("type") != "refresh":
             return
         jti = payload.get("jti")
@@ -176,6 +239,29 @@ class AuthService:
         redis = await get_redis()
         cache = RedisCache(redis)
         await cache.revoke_refresh_token(jti)
+
+    @staticmethod
+    async def send_email_code(
+        email: str,
+        email_type: str,
+        captcha_id: str | None = None,
+        captcha_code: str | None = None,
+    ) -> bool:
+        """发送邮箱验证码
+
+        - 可选的图形验证码校验
+        - 返回 True 表示发送成功，False 表示频率限制
+        """
+        from src.infra.captcha import Captcha
+
+        if captcha_id and captcha_code:
+            is_valid, err = await Captcha.verify(captcha_id, captcha_code)
+            if not is_valid:
+                raise BadRequestError(err)
+
+        from src.infra.email import EmailCode
+        ok, _ = await EmailCode.send(email, email_type)
+        return ok
 
     @staticmethod
     async def revoke_all_user_tokens(user_id: int) -> int:
@@ -190,6 +276,12 @@ class AuthService:
         req,
     ) -> bool:
         """重置密码（req: ForgotPasswordRequest —— apply_to 内部 hash + 写回）"""
+        from src.infra.email import EmailCode
+
+        ok, err = await EmailCode.verify(req.username, "reset", req.code)
+        if not ok:
+            raise BadRequestError(err)
+
         result = await db.execute(
             select(User).where(User.username == req.username)
         )
