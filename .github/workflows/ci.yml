@@ -49,25 +49,7 @@ jobs:
             set -e
             TARGET_DIR=/home/project/idbackend
             mkdir -p "$TARGET_DIR"
-            IMAGE="${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ALIYUN_NAMESPACE }}/idbackend:latest"
-            cat > "$TARGET_DIR/docker-compose.yml" <<'EOF'
-            services:
-              backend:
-                image: __IMAGE_PLACEHOLDER__
-                container_name: idbackend
-                restart: unless-stopped
-                ports:
-                  - "8000:8000"
-                networks:
-                  - idnetwork
-                env_file:
-                  - .env
-
-            networks:
-              idnetwork:
-                external: true
-            EOF
-            sed -i "s|__IMAGE_PLACEHOLDER__|$IMAGE|g" "$TARGET_DIR/docker-compose.yml"
+            printf 'services:\n  backend:\n    image: %s\n    container_name: idbackend\n    restart: unless-stopped\n    ports:\n      - "8000:8000"\n    networks:\n      - idnetwork\n    env_file:\n      - .env\n\nnetworks:\n  idnetwork:\n    external: true\n' "${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ALIYUN_NAMESPACE }}/idbackend:latest" > "$TARGET_DIR/docker-compose.yml"
             if [ ! -f "$TARGET_DIR/.env" ]; then
               echo "WARNING: $TARGET_DIR/.env not found, please upload it manually"
             fi
@@ -91,25 +73,7 @@ jobs:
             set -e
             TARGET_DIR=/home/project/idbackend
             mkdir -p "$TARGET_DIR"
-            IMAGE="${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ALIYUN_NAMESPACE }}/idbackend:latest"
-            cat > "$TARGET_DIR/docker-compose.yml" <<'EOF'
-            services:
-              backend:
-                image: __IMAGE_PLACEHOLDER__
-                container_name: idbackend
-                restart: unless-stopped
-                ports:
-                  - "8000:8000"
-                networks:
-                  - idnetwork
-                env_file:
-                  - .env
-
-            networks:
-              idnetwork:
-                external: true
-            EOF
-            sed -i "s|__IMAGE_PLACEHOLDER__|$IMAGE|g" "$TARGET_DIR/docker-compose.yml"
+            printf 'services:\n  backend:\n    image: %s\n    container_name: idbackend\n    restart: unless-stopped\n    ports:\n      - "8000:8000"\n    networks:\n      - idnetwork\n    env_file:\n      - .env\n\nnetworks:\n  idnetwork:\n    external: true\n' "${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ALIYUN_NAMESPACE }}/idbackend:latest" > "$TARGET_DIR/docker-compose.yml"
             if [ ! -f "$TARGET_DIR/.env" ]; then
               echo "WARNING: $TARGET_DIR/.env not found, please upload it manually"
             fi
