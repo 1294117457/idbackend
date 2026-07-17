@@ -491,9 +491,8 @@ class ApplicationService:
         db: AsyncSession,
         req: ApplicationQueryRequest,
     ) -> ApplicationListVO:
-        """我的待审核列表"""
-        reviewer_id = ApplicationService.get_current_user_id()
-        applications, total = await ApplicationRepository.list_pending_for_reviewer(db, reviewer_id, req)
+        """管理员的待审核列表（所有管理员可见）"""
+        applications, total = await ApplicationRepository.list_pending_for_reviewer(db, req)
         return ApplicationListVO.from_list_to_page(
             items=[ApplicationVO.from_orm_to_vo(a, with_proofs=True) for a in applications],
             total=total,

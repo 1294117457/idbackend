@@ -102,19 +102,11 @@ class ApplicationRepository:
     @staticmethod
     async def list_pending_for_reviewer(
         db: AsyncSession,
-        reviewer_id: int,
         req: ApplicationQueryRequest,
     ) -> Tuple[List[Application], int]:
-        """审核员的待审核列表（status=APPLYING 且 reviewer_ids 不包含自己）"""
-        contains_me = literal_column(
-            f"reviewer_ids @> to_jsonb(ARRAY[{reviewer_id}])"
-        )
+        """管理员的待审核列表（status=APPLYING，所有管理员可见）"""
         conditions = [
             Application.status == ApplicationStatus.APPLYING.value,
-            or_(
-                Application.reviewer_ids.is_(None),
-                ~contains_me,
-            ),
         ]
 
         from sqlalchemy.orm import aliased
