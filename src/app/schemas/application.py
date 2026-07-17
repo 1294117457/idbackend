@@ -1,16 +1,21 @@
-"""申请模块 DTO / VO（v4.5）
+"""申请模块 DTO / VO（v4.7 统一 Payload + action）
 
 ═══════════════════════════════════════════════════════════════════════
 设计要点
 ═══════════════════════════════════════════════════════════════════════
-三个写接口（saveDraft / submit / edit-submit）共享同一组 Payload：
-  - ApplicationPayload：application 主体 + proofs 整表替换列表
-  - ProofPayload       ：单条 proof（proofId 决定新建/更新；fileId 决定是否重传）
+统一 Payload + action：
+  - ApplicationPayload：application 主体 + proofs 列表 + action
+  - ProofPayload       ：单条 proof（含审核状态）
 
-applicationId 决定"新建 vs 更新"：
-  - saveDraft          ：可为 None（新建 DRAFT）或 非空（仅 DRAFT 可更新）
-  - submit             ：必须 None（新建 APPLYING）
-  - edit-submit        ：必须 非空（仅 DRAFT/REJECTED/REVOKED 可编辑并提交）
+action 决定行为：
+  - save    ：保存草稿（不校验 proof 完整性）
+  - submit  ：新建并提交（校验 proof 完整性）
+  - edit    ：编辑草稿并提交（校验 proof 完整性）
+  - review  ：审核员投票（pass/reject，配合 reviewAction）
+
+reviewAction 审核动作：
+  - pass    ：通过申请
+  - reject  ：驳回申请
 
 命名约定：
   - from_orm_to_vo：ORM → VO 转换（与 file 模块命名一致）
@@ -35,20 +40,25 @@ from src.app.schemas.page import Page
 # ═══════════════════════════════════════════════════════════════════════
 
 class ProofPayload(BaseModel):
-    """单条 proof（前台编辑后提交）。
+    """单条 proof（学生端编辑或审核员审核）。
 
-    字段语义：
+    学生端（action=save/submit/edit）：
       - proofId 为 None  → 新建
-      - proofId 非空      → 更新；id 对应的旧 proof 必须属于本 application
-      - fileId 为 None    → 该 proof 本轮没上传文件（仅在新建/重置为待补充时允许）
+      - proofId 非空      → 更新
+      - fileId 为 None    → 该 proof 本轮没上传文件
       - fileId 非空且与旧值不同 → 重置 status=PENDING
-      - proofScore < 0   → 字段校验失败（Pydantic 报错）
+      - proofScore < 0   → 字段校验失败
+
+    审核员端（action=review/pass/reject）：
+      - proofId 必填
+      - status 为 APPROVED / REJECTED
     """
     model_config = ConfigDict(populate_by_name=True)
 
     proofId: Optional[int] = Field(default=None)
     fileId: Optional[int] = Field(default=None)
     proofScore: float = Field(ge=0, description="证明分；新建时可临时为 0")
+    status: Optional[str] = Field(default=None, description="审核状态（仅审核时使用）：APPROVED / REJECTED")
 
     def to_application_proof(self, application_id: int) -> ApplicationProof:
         """Payload → ORM ApplicationProof（新建场景）"""
@@ -70,7 +80,13 @@ class ProofPayload(BaseModel):
 
 
 class ApplicationPayload(BaseModel):
-    """统一申请 Payload（saveDraft / submit / edit-submit 三接口共用）。
+    """统一申请 Payload（save / submit / edit / review 四种操作共用）。
+
+    action 决定具体行为：
+      - save       ：保存草稿（不校验 proof 完整性）
+      - submit     ：新建并提交（校验 proof 完整性）
+      - edit       ：编辑草稿（不校验 proof 完整性）
+      - review     ：审核通过/驳回（审核员端，配合 reviewAction）
 
     applicationId：
       - None      → 新建
@@ -85,19 +101,20 @@ class ApplicationPayload(BaseModel):
     applyScore: float = Field(ge=0)
     proofList: List[ProofPayload] = Field(default_factory=list)
     remark: Optional[str] = Field(default=None)
+    action: str = Field(default="save", description="操作类型：save/submit/edit/review")
+    reviewAction: Optional[str] = Field(default=None, description="审核动作：pass/reject（仅 action=review 时生效）")
+    reviewCount: int = Field(default=1, description="审核人数，从 template 获取")
 
     def to_application_model(
         self,
         user_id: int,
         status: str,
-        review_count: int = 1,
     ) -> Application:
         """Payload → ORM Application（新建场景）
 
         Args:
             user_id: 申请人 ID
             status: 初始状态（DRAFT 或 APPLYING）
-            review_count: 审核人数，默认 1
         """
         return Application(
             user_id=user_id,
@@ -107,7 +124,7 @@ class ApplicationPayload(BaseModel):
             apply_score=Decimal(str(self.applyScore)),
             gain_score=Decimal("0"),
             status=status,
-            review_count=review_count,
+            review_count=self.reviewCount or 1,
             approved_count=0,
             rejected_count=0,
         )
@@ -407,6 +424,8 @@ __all__ = [
     "ProofPayload",
     "ApplicationPayload",
     "ApplicationQueryRequest",
+    "PassApplicationRequest",
+    "ProofReviewPayload",
     # Response VO
     "ProofVO",
     "ApplicationOperationVO",

@@ -2,10 +2,16 @@
 
 职责：只做接收接口数据、传递给 service、返回对应数据。
 认证、contextvar 操作、异常处理由中间件统一处理。
-"""
-from typing import Optional, Annotated
 
-from fastapi import APIRouter, Depends, Query, Body, Path
+路由设计（v4.7 统一 Payload + action）：
+  - POST /api/applications              → 统一接口（action: save/submit/edit）
+  - POST /api/applications/{id}/review → 审核接口（action: pass/reject）
+  - POST /api/applications/{id}/cancel  → 取消申请
+  - POST /api/admin/applications/{id}/revoke → 撤回申请
+"""
+from typing import Optional
+
+from fastapi import APIRouter, Depends, Query, Path, Body
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.dependencies import get_db
@@ -24,37 +30,28 @@ router = APIRouter(tags=["申请"])
 
 
 # ════════════════════════════════════════════════════════════════════════
-# 学生端：草稿 / 提交
+# 学生端：统一申请接口
 # ════════════════════════════════════════════════════════════════════════
 
-@router.post("/api/applications/saveDraft", status_code=201)
-async def save_draft(
+@router.post("/api/applications", status_code=201)
+async def handle_application(
     req: ApplicationPayload,
     db: AsyncSession = Depends(get_db),
 ):
-    """保存草稿（新建或更新 DRAFT）"""
-    vo = await ApplicationService.save_draft(db, req)
-    return R.created_resp(vo.model_dump(), msg="草稿保存成功")
-
-
-@router.post("/api/applications/submit", status_code=201)
-async def submit(
-    req: ApplicationPayload,
-    db: AsyncSession = Depends(get_db),
-):
-    """新建并提交申请"""
-    vo = await ApplicationService.submit(db, req)
-    return R.created_resp(vo.model_dump(), msg="申请已提交")
-
-
-@router.post("/api/applications/edit-submit", status_code=201)
-async def edit_submit(
-    req: ApplicationPayload,
-    db: AsyncSession = Depends(get_db),
-):
-    """编辑后提交"""
-    vo = await ApplicationService.edit_submit(db, req)
-    return R.created_resp(vo.model_dump(), msg="申请已提交")
+    """统一申请接口（save/submit/edit）"""
+    action = req.action
+    if action == "save":
+        vo = await ApplicationService.save_draft(db, req)
+        return R.created_resp(vo.model_dump(), msg="草稿保存成功")
+    elif action == "submit":
+        vo = await ApplicationService.submit(db, req)
+        return R.created_resp(vo.model_dump(), msg="申请已提交")
+    elif action == "edit":
+        vo = await ApplicationService.edit_submit(db, req)
+        return R.created_resp(vo.model_dump(), msg="申请已提交")
+    else:
+        from src.app.schemas.errors import BadRequestError
+        raise BadRequestError(f"action 必须为 save/submit/edit，当前：{action}")
 
 
 @router.post("/api/applications/{application_id}/cancel")
@@ -109,41 +106,23 @@ async def get_application_detail(
 # 审核员端：审核 / 投票
 # ════════════════════════════════════════════════════════════════════════
 
-@router.post("/api/applications/{application_id}/proofs/{proof_id}/review")
-async def review_proof(
+@router.post("/api/applications/{application_id}/review")
+async def review_application(
     application_id: int = Path(..., description="申请ID"),
-    proof_id: int = Path(..., description="证明ID"),
-    req: dict = Body(...),
+    req: ApplicationPayload = Body(...),
     db: AsyncSession = Depends(get_db),
 ):
-    """审核 proof（APPROVED 或 REJECTED）"""
-    result = await ApplicationService.review_proof(
-        db, application_id, proof_id, req.get("action"), req.get("remark"),
-    )
-    return R.success_resp(result, msg="审核已记录")
-
-
-@router.post("/api/applications/{application_id}/pass")
-async def pass_application(
-    application_id: int = Path(..., description="申请ID"),
-    req: dict = Body(default={}),
-    db: AsyncSession = Depends(get_db),
-):
-    """审核员投 PASS"""
-    vo = await ApplicationService.pass_application(db, application_id, remark=req.get("remark"))
-    return R.success_resp(vo.model_dump(), msg="审核通过")
-
-
-@router.post("/api/applications/{application_id}/reject")
-async def reject_application(
-    application_id: int = Path(..., description="申请ID"),
-    req: dict = Body(...),
-    db: AsyncSession = Depends(get_db),
-):
-    """审核员 REJECT"""
-    remark = req.get("remark", "")
-    vo = await ApplicationService.reject_application(db, application_id, remark=remark)
-    return R.success_resp(vo.model_dump(), msg="已驳回")
+    """审核员投票（pass/reject，统一 Payload + action）"""
+    req.applicationId = application_id
+    if req.reviewAction == "pass":
+        vo = await ApplicationService.pass_application(db, req)
+        return R.success_resp(vo.model_dump(), msg="审核通过")
+    elif req.reviewAction == "reject":
+        vo = await ApplicationService.reject_application(db, req)
+        return R.success_resp(vo.model_dump(), msg="已驳回")
+    else:
+        from src.app.schemas.errors import BadRequestError
+        raise BadRequestError(f"reviewAction 必须为 pass/reject，当前：{req.reviewAction}")
 
 
 @router.post("/api/admin/applications/{application_id}/revoke")
@@ -164,7 +143,7 @@ async def revoke_application(
 
 @router.get("/api/admin/applications/my-pending")
 async def list_my_pending(
-    req: Annotated[ApplicationQueryRequest, Query()],
+    req: ApplicationQueryRequest = Depends(),
     db: AsyncSession = Depends(get_db),
 ):
     """我的待审核列表"""
@@ -174,7 +153,7 @@ async def list_my_pending(
 
 @router.get("/api/admin/applications/my-reviewed")
 async def list_my_reviewed(
-    req: Annotated[ApplicationQueryRequest, Query()],
+    req: ApplicationQueryRequest = Depends(),
     db: AsyncSession = Depends(get_db),
 ):
     """我的已审核列表"""

@@ -167,14 +167,10 @@ class ApplicationRepository:
     @staticmethod
     async def list_reviewed_by_reviewer(
         db: AsyncSession,
-        reviewer_id: int,
         req: ApplicationQueryRequest,
     ) -> Tuple[List[Application], int]:
-        """审核员的历史审核列表（reviewer_ids 包含自己）"""
-        contains_me = literal_column(
-            f"reviewer_ids @> to_jsonb(ARRAY[{reviewer_id}])"
-        )
-        conditions = [contains_me]
+        """管理员的审核历史列表（不限制审核人，可查看全部审核记录）"""
+        conditions = []
 
         from sqlalchemy.orm import aliased
         from src.models.user import User
@@ -188,6 +184,9 @@ class ApplicationRepository:
             conditions.append(Application.template_name.ilike(f"%{req.templateName}%"))
         if req.status:
             conditions.append(Application.status == req.status)
+        else:
+            # 默认只显示已审核完成的申请（PASSED/REJECTED/REVOKED/CANCELLED）
+            conditions.append(Application.status.in_(['PASSED', 'REJECTED', 'REVOKED', 'CANCELLED']))
         if req.startTime:
             from datetime import datetime, timezone
             start = datetime.fromisoformat(req.startTime.replace(" ", "T"))
