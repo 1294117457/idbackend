@@ -36,7 +36,6 @@ from src.app.schemas.template import (
 from src.app.schemas.errors import (
     NotFoundError,
     BadRequestError,
-    ConflictError,
 )
 from src.repositories.template_repo import TemplateRepository
 from src.repositories.template_category_repo import TemplateCategoryRepository
@@ -224,20 +223,13 @@ class TemplateService:
     ) -> None:
         """删除 template。
 
-        - 预检：template 下是否有未关闭的 application
-        - 物理删除（FK CASCADE 自动清理 template_rule 行）
+        - application 与 template 已解耦（无 FK）：
+          删除 template 不会触碰 applications 表的任何行，
+          application 上的 template_id 字段保留作为历史引用。
+        - 物理删除（template_rule 表的 FK CASCADE 自动清理绑定行）
         - 解绑后：检查 category 下 template 数量归零 → 翻 is_bind_template 回 FALSE
         """
         template = await TemplateService.get_by_id(db, template_id)
-
-        # 预检 active application
-        active_count = await TemplateRepository.count_active_applications(
-            db, [template_id],
-        )
-        if active_count > 0:
-            raise ConflictError(
-                f"该模板下还有 {active_count} 条未关闭的申请，禁止删除"
-            )
 
         category_id = template.category_id
         await TemplateRepository.delete(db, template_id)
@@ -336,9 +328,9 @@ class TemplateService:
         db: AsyncSession,
         req: TemplateDeleteRequest,
     ) -> None:
-        """POST /delete：删除 template（带引用检查 + category 维护）
+        """POST /delete：删除 template（POST 单入口）
 
-        委托给既有 TemplateService.delete，预检规则一致（拒绝有未关闭 application 的 template）。
+        application 与 template 已解耦：删除不影响 applications 表的任何行。
         """
         await TemplateService.delete(db, req.templateId)
 

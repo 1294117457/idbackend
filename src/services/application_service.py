@@ -77,8 +77,11 @@ class ApplicationService:
         payload: ApplicationPayload,
         review_count: int = 1,
     ) -> ApplicationVO:
-        """保存草稿（新建或更新 DRAFT）"""
-        ApplicationService.validate_proof_scores(payload)
+        """保存草稿（新建或更新 DRAFT）
+
+        草稿场景：允许 proof 不完整（用户先保存当前进度，后续再编辑补完）。
+        proof 完整性校验仅在 submit / edit_submit（进入审核流前）执行。
+        """
         user_id = ApplicationService.get_current_user_id()
         user = await db.get(User, user_id)
         if not user:
@@ -181,7 +184,13 @@ class ApplicationService:
         application.approved_count = 0
         application.rejected_count = 0
 
-        for proof in application.proofs:
+        # 整表替换 proofs（处理 proofId=null 的新 proof、proofId 已有的更新、未在 payload 中的删除）
+        await ApplicationService._replace_proofs(db, application.id, payload.proofList)
+
+        # 重新查询当前所有 proofs，把 status 重置为 PENDING
+        # （重新提交意味着所有 proof 重新走审核；ORM collection 在 _replace_proofs 删 proof 后可能不准，重新查一次更稳）
+        current_proofs = await ApplicationRepository.list_proofs_by_application(db, application.id)
+        for proof in current_proofs:
             proof.status = ProofStatus.PENDING.value
 
         operator_name = await ApplicationService.get_user_full_name(db, user_id)

@@ -227,7 +227,7 @@ async def delete_template_by_id(
 ):
     """v5：删除 template（POST 单入口）
 
-    请求体含 templateId（必填），service 校验未关闭的 application 数量。
+    请求体含 templateId（必填），不再校验 application 数量（允许删除有申请的模板）。
     """
     await TemplateService.delete_template_by_id(db, req)
     return R.success_resp(msg="删除成功")
