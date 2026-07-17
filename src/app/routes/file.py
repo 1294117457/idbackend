@@ -119,11 +119,11 @@ async def get_preview(
     - 响应 5MB 以上大文件可能导致网关超时，建议前端改用预览签名 URL
     """
     meta, data = await service.get_preview_bytes(file_id)
-    encoded_name = quote(meta.original_name, safe="")
+    encoded_name = quote(meta.originalName, safe="")
     disposition = f"inline; filename*=UTF-8''{encoded_name}"
     return Response(
         content=data,
-        media_type=meta.content_type,
+        media_type=meta.contentType,
         headers={
             "Content-Disposition": disposition,
             "Cache-Control": "private, max-age=3600",
