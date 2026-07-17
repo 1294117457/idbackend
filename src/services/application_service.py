@@ -38,6 +38,24 @@ class ApplicationService:
     # ------------------------------------------------------------------
 
     @staticmethod
+    def validate_proof_scores(payload: ApplicationPayload) -> None:
+        proofs = payload.proofList or []
+        if not proofs:
+            raise BadRequestError("请至少上传一份证明材料")
+
+        for idx, p in enumerate(proofs, start=1):
+            if p.fileId is None:
+                raise BadRequestError(f"第 {idx} 份证明材料未上传文件")
+            if p.proofScore is None or p.proofScore <= 0:
+                raise BadRequestError(f"第 {idx} 份证明材料分值必须大于 0")
+
+        total = sum(p.proofScore for p in proofs)
+        if abs(total - payload.applyScore) >= 0.01:
+            raise BadRequestError(
+                f"证明材料分值总和 {round(total, 2)} 与申请分 {round(payload.applyScore, 2)} 不一致",
+            )
+
+    @staticmethod
     def get_current_user_id() -> int:
         """获取当前用户 ID（从 contextvar）"""
         user_id = _get_user_id()
@@ -60,6 +78,7 @@ class ApplicationService:
         review_count: int = 1,
     ) -> ApplicationVO:
         """保存草稿（新建或更新 DRAFT）"""
+        ApplicationService.validate_proof_scores(payload)
         user_id = ApplicationService.get_current_user_id()
         user = await db.get(User, user_id)
         if not user:
@@ -104,6 +123,7 @@ class ApplicationService:
         review_count: int = 1,
     ) -> ApplicationVO:
         """新建并提交申请"""
+        ApplicationService.validate_proof_scores(payload)
         user_id = ApplicationService.get_current_user_id()
         if payload.applicationId is not None:
             raise BadRequestError("submit 接口 applicationId 必须为空")
@@ -145,6 +165,7 @@ class ApplicationService:
         payload: ApplicationPayload,
     ) -> ApplicationVO:
         """编辑后提交（仅 DRAFT/REJECTED/REVOKED 可操作）"""
+        ApplicationService.validate_proof_scores(payload)
         user_id = ApplicationService.get_current_user_id()
         if payload.applicationId is None:
             raise BadRequestError("edit-submit 接口 applicationId 不能为空")
