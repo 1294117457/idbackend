@@ -30,3 +30,4 @@ ENV/
 # 临时文件
 tmp/
 temp/
+k6
