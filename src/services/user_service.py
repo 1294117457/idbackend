@@ -344,7 +344,7 @@ class UserService:
         user_roles_map: Dict[int, List[str]] = {}
         for user in users:
             roles = await RbacService.get_user_roles(db, user.id)
-            user_roles_map[user.id] = [r["roleName"] for r in roles]
+            user_roles_map[user.id] = roles
 
         return users, total, user_roles_map
 
