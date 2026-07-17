@@ -58,8 +58,14 @@ jobs:
                 restart: unless-stopped
                 ports:
                   - "8000:8000"
+                networks:
+                  - idnetwork
                 env_file:
                   - .env
+
+            networks:
+              idnetwork:
+                external: true
             EOF
             sed -i "s|__IMAGE_PLACEHOLDER__|$IMAGE|g" "$TARGET_DIR/docker-compose.yml"
             if [ ! -f "$TARGET_DIR/.env" ]; then
@@ -94,8 +100,14 @@ jobs:
                 restart: unless-stopped
                 ports:
                   - "8000:8000"
+                networks:
+                  - idnetwork
                 env_file:
                   - .env
+
+            networks:
+              idnetwork:
+                external: true
             EOF
             sed -i "s|__IMAGE_PLACEHOLDER__|$IMAGE|g" "$TARGET_DIR/docker-compose.yml"
             if [ ! -f "$TARGET_DIR/.env" ]; then
