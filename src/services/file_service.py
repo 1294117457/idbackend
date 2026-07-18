@@ -7,7 +7,7 @@
 - 事务边界由 Service 管理（§13.5 架构决策：依赖注入层只管 session 生命周期）
 """
 import io
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Tuple
 
 from sqlalchemy import func, select
@@ -118,7 +118,7 @@ class FileService:
         # 事务 2：清理旧头像（独立事务，不阻塞主流程）
         if old and old.object_name != new_meta.object_name:
             old.is_deleted = True
-            old.delete_time = datetime.utcnow().isoformat()
+            old.delete_time = datetime.now(timezone.utc).isoformat()
             try:
                 await self._db.commit()
                 await self._safe_delete(old.object_name, ignore_error=True)
@@ -286,5 +286,5 @@ class FileService:
     async def delete_file(self, file_id: int) -> None:
         meta = await self.get_file(file_id)
         meta.is_deleted = True
-        meta.delete_time = datetime.utcnow().isoformat()
+        meta.delete_time = datetime.now(timezone.utc).isoformat()
         await self._db.commit()
