@@ -21,6 +21,7 @@ from typing import Optional, List
 
 from sqlalchemy import (
     String, Integer, ForeignKey, DECIMAL, Numeric, Text, Enum as SAEnum, Index,
+    Boolean,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -320,6 +321,7 @@ class ApplicationProof(Base, TimestampMixin):
         SAEnum(ProofStatus, native_enum=False, length=20, validate_strings=True),
         default=ProofStatus.PENDING.value,
     )
+    is_adjusted: Mapped[bool] = mapped_column(Boolean, default=False)
 
     application: Mapped["Application"] = relationship(back_populates="proofs")
     file: Mapped[Optional["FileMetadata"]] = relationship("FileMetadata", lazy="joined")

@@ -309,15 +309,29 @@ class ApplicationService:
                     proof.approve()                  # 领域方法
                 else:
                     proof.reject()                   # 领域方法
+
+                # 处理老师修正分值
+                if p.isAdjusted:
+                    proof.is_adjusted = True
+                    proof.proof_score = Decimal(str(p.proofScore))
+
                 await ApplicationRepository.update_proof(db, proof)
 
         # 全部 proof APPROVED 才允许 PASS
         if not ApplicationService._is_all_proofs_approved(application):
             raise ConflictError("还有证明未通过，无法 PASS")
 
+        # 从 payload.proofList 计算 gain_score（包含老师修正后的分值）
+        # v4.9: 确保 gain_score 是老师审核后的实际分值，而非旧数据
+        application.gain_score = sum(
+            Decimal(str(p.proofScore))
+            for p in payload.proofList
+            if p.status == ProofStatus.APPROVED.value
+        )
+
         reviewer_name = await ApplicationService._user_full_name(db, reviewer_id)
 
-        # 领域方法：投票 + 终态判断 + 得分计算
+        # 领域方法：投票 + 终态判断（不再调用 recalculate_gain_score，直接用上面计算好的）
         event = application.approve(
             reviewer_id=reviewer_id,
             operator_id=reviewer_id,

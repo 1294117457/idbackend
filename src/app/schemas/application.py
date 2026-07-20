@@ -1,28 +1,3 @@
-"""申请模块 DTO / VO（v4.7 统一 Payload + action）
-
-═══════════════════════════════════════════════════════════════════════
-设计要点
-═══════════════════════════════════════════════════════════════════════
-统一 Payload + action：
-  - ApplicationPayload：application 主体 + proofs 列表 + action
-  - ProofPayload       ：单条 proof（含审核状态）
-
-action 决定行为：
-  - save    ：保存草稿（不校验 proof 完整性）
-  - submit  ：新建并提交（校验 proof 完整性）
-  - edit    ：编辑草稿并提交（校验 proof 完整性）
-  - review  ：审核员投票（pass/reject，配合 reviewAction）
-
-reviewAction 审核动作：
-  - pass    ：通过申请
-  - reject  ：驳回申请
-
-命名约定：
-  - from_orm_to_vo：ORM → VO 转换（与 file 模块命名一致）
-  - to_conditions：查询 DTO → SQLAlchemy 条件列表
-  - to_xxx：DTO → ORM 构造
-═══════════════════════════════════════════════════════════════════════
-"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -52,6 +27,7 @@ class ProofPayload(BaseModel):
     审核员端（action=review/pass/reject）：
       - proofId 必填
       - status 为 APPROVED / REJECTED
+      - isAdjusted 为 true 时表示老师修改过分值
     """
     model_config = ConfigDict(populate_by_name=True)
 
@@ -59,6 +35,7 @@ class ProofPayload(BaseModel):
     fileId: Optional[int] = Field(default=None)
     proofScore: float = Field(ge=0, description="证明分；新建时可临时为 0")
     status: Optional[str] = Field(default=None, description="审核状态（仅审核时使用）：APPROVED / REJECTED")
+    isAdjusted: bool = Field(default=False, description="是否被老师修正过（仅审核时使用）")
 
     def to_application_proof(self, application_id: int) -> ApplicationProof:
         """Payload → ORM ApplicationProof（新建场景）"""
@@ -67,6 +44,7 @@ class ProofPayload(BaseModel):
             file_id=self.fileId,
             proof_score=Decimal(str(self.proofScore)),
             status=ProofStatus.PENDING.value,
+            is_adjusted=False,
         )
 
     def apply_to_proof(self, proof: ApplicationProof) -> None:
@@ -238,6 +216,7 @@ class ProofVO(BaseModel):
     proofScore: float = 0
     status: str
     statusText: str
+    isAdjusted: bool = False
     createdAt: Optional[str] = None
 
     @classmethod
@@ -261,6 +240,7 @@ class ProofVO(BaseModel):
             proofScore=float(proof.proof_score) if proof.proof_score else 0,
             status=proof.status,
             statusText=_proof_status_text(proof.status),
+            isAdjusted=proof.is_adjusted if hasattr(proof, 'is_adjusted') else False,
             createdAt=proof.created_at.isoformat() if proof.created_at else None,
         )
 
