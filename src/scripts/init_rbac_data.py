@@ -146,11 +146,10 @@ PERMISSIONS_DATA = [
     ("file:upload",           "上传文件",       "/api/file/upload",                         "file", "文件管理", 110),
     ("file:upload",           "上传头像",       "/api/file/avatar",                         "file", "文件管理", 111),
     ("file:list",             "文件搜索",       "/api/file/search",                         "file", "文件管理", 112),
-    ("file:detail",           "文件元信息",     "/api/file/{id}",                           "file", "文件管理", 113),
-    ("file:preview",          "预览链接",       "/api/file/{id}/preview-url",              "file", "文件管理", 114),
-    ("file:download",         "下载文件",       "/api/file/{id}/download-url",             "file", "文件管理", 115),
-    ("file:update",           "更新文件",       "/api/file/{id}",                           "file", "文件管理", 116),
-    ("file:delete",           "删除文件",       "/api/file/{id}",                           "file", "文件管理", 117),
+    ("file:preview",          "预览文件",       "/api/file/{id}/preview",                   "file", "文件管理", 113),
+    ("file:download",         "下载文件",       "/api/file/{id}/download-url",              "file", "文件管理", 114),
+    ("file:update",           "更新文件",       "/api/file/{id}",                           "file", "文件管理", 115),
+    ("file:delete",           "删除文件",       "/api/file/{id}",                           "file", "文件管理", 116),
 
     # ===== rbac: role 管理 =====
     ("role:list",             "角色列表",       "/api/system/role/list",                    "rbac", "权限管理", 120),
@@ -219,7 +218,7 @@ ROLE_PERMISSIONS = {
         "extra_info:list", "extra_info:detail",
         "extra_info:create", "extra_info:update", "extra_info:delete",
         # file 全部
-        "file:upload", "file:list", "file:detail",
+        "file:upload", "file:list",
         "file:preview", "file:download",
         "file:update", "file:delete",
     ],
@@ -241,7 +240,7 @@ ROLE_PERMISSIONS = {
         # 看分类（找模板用）
         "template_category:list",
         # 看证明材料
-        "file:list", "file:detail", "file:preview", "file:download",
+        "file:list", "file:preview", "file:download",
     ],
 
     # ============== user：仅自己 ==============
@@ -258,7 +257,7 @@ ROLE_PERMISSIONS = {
         # 看模板
         "template:list", "template:detail",
         # 上传 / 查看自己的证明
-        "file:upload", "file:list", "file:detail",
+        "file:upload", "file:list",
         "file:preview", "file:download",
     ],
 }

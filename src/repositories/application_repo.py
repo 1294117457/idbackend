@@ -100,6 +100,33 @@ class ApplicationRepository:
         return list(result.scalars().all()), total
 
     @staticmethod
+    async def check_user_template_duplicate(
+        db: AsyncSession,
+        user_id: int,
+        template_id: int,
+        exclude_application_id: Optional[int] = None,
+    ) -> Optional[Application]:
+        """检查某学生对某模板是否有未取消的申请（用于重复提交校验）。
+
+        edit_submit 场景需传入 exclude_application_id 排除自身。
+        """
+        conditions = [
+            Application.user_id == user_id,
+            Application.template_id == template_id,
+            Application.status.notin_(
+                [ApplicationStatus.CANCELLED.value, ApplicationStatus.REVOKED.value]
+            ),
+        ]
+        if exclude_application_id is not None:
+            conditions.append(Application.id != exclude_application_id)
+        result = await db.execute(
+            select(Application)
+            .where(*conditions)
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    @staticmethod
     async def list_pending_for_reviewer(
         db: AsyncSession,
         req: ApplicationQueryRequest,

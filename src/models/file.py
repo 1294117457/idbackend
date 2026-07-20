@@ -12,6 +12,7 @@ class FileCategory(str, enum.Enum):
     AVATAR = "AVATAR"        # 头像，公开读，返回直链
     PROOF = "PROOF"          # 申请证明材料，严格鉴权，预签名 URL
     POLICY = "POLICY"        # 政策文件，宽松鉴权，预签名 URL
+    EDITOR = "EDITOR"        # 富文本图片（template/rule/policy 等编辑器内嵌图），仅校验登录态，预签名 URL
 
 
 class FileMetadata(Base, TimestampMixin):

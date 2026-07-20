@@ -134,19 +134,6 @@ class FileService:
 
     # ---- 查询 ----
 
-    async def get_file(self, file_id: int) -> FileVO:
-        """获取文件元信息 VO"""
-        result = await self._db.execute(
-            select(FileMetadata).where(
-                FileMetadata.id == file_id,
-                FileMetadata.is_deleted == False,
-            )
-        )
-        meta = result.scalar_one_or_none()
-        if not meta:
-            raise NotFoundError(f"文件不存在：file_id={file_id}")
-        return FileVO.from_orm_to_vo(meta)
-
     async def search_files(self, req: FileQueryRequest) -> FileListVO:
 
         conditions = [FileMetadata.is_deleted == False, *req.to_conditions()]
@@ -175,35 +162,7 @@ class FileService:
             page_size=req.pageSize,
         )
 
-    # ---- 预览 / 下载（v6.0 全签名模式）----
-
-    async def get_preview_data(
-        self,
-        file_id: int,
-        expiry_minutes: int = 60,
-    ) -> FileDataVO:
-        """返回 FileDataVO——v6.0 统一签名 URL，移除 AVATAR 公开直链特例
-
-        所有 fileCategory 一律走 presigned URL，过期时间由 expiry_minutes 控制。
-        preview 场景 force_attachment=False：浏览器按 Content-Type 内联展示。
-        """
-        result = await self._db.execute(
-            select(FileMetadata).where(
-                FileMetadata.id == file_id,
-                FileMetadata.is_deleted == False,
-            )
-        )
-        meta = result.scalar_one_or_none()
-        if not meta:
-            raise NotFoundError(f"文件不存在：file_id={file_id}")
-
-        url = self._storage.get_download_url(
-            meta.object_name,
-            original_name=meta.original_name,
-            expiry=expiry_minutes * 60,
-            force_attachment=False,
-        )
-        return FileDataVO.from_orm_to_vo(meta, url)
+    # ---- 预览 / 下载（v8.0 统一接口）----
 
     async def get_download_data(
         self,
@@ -263,6 +222,76 @@ class FileService:
             )
         return FileVO.from_orm_to_vo(meta), data
 
+    async def get_preview_for_inline(self, file_id: int) -> Tuple[FileVO, bytes, str]:
+        """返回 (FileVO, data, content_type)——用于 /preview 路由
+
+        与 get_preview_bytes 的区别：
+        - Office 文件 → 调用 LibreOffice 转为 PDF，返回 application/pdf
+        - 非 Office → 直接返回原字节 + 原 content_type
+        - Office 转换失败 → 抛 OfficeConvertError（路由层降级处理）
+        - 入口闸门：Office 文件原始大小 > MAX_OFFICE_PREVIEW_FILE_SIZE（10MB） → 413
+        """
+        from src.infra.config import get_settings
+        from src.services.office_converter import (
+            is_office_content_type,
+            convert_office_to_pdf,
+            OfficeConvertError,
+        )
+
+        result = await self._db.execute(
+            select(FileMetadata).where(
+                FileMetadata.id == file_id,
+                FileMetadata.is_deleted == False,
+            )
+        )
+        meta = result.scalar_one_or_none()
+        if not meta:
+            raise NotFoundError(f"文件不存在：file_id={file_id}")
+
+        settings = get_settings()
+
+        # Office 文件单独走"入口大小限制"——避免下载 100MB 文件再白白转换
+        if is_office_content_type(meta.content_type):
+            # 全局开关或 soffice 不可用 → 让 OfficeConvertError 抛"未安装"
+            from src.services.office_converter import is_soffice_available
+            if not settings.OFFICE_CONVERT_ENABLED or not is_soffice_available():
+                raise OfficeConvertError(
+                    "Office 文件预览功能未启用（OFFICE_CONVERT_ENABLED=False 或 LibreOffice 未安装）"
+                )
+            if meta.file_size > settings.MAX_OFFICE_PREVIEW_FILE_SIZE:
+                from fastapi import HTTPException, status
+                raise HTTPException(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    detail=(
+                        f"Office 文件预览不能超过 "
+                        f"{settings.MAX_OFFICE_PREVIEW_FILE_SIZE // (1024 * 1024)}MB，请下载查看"
+                    ),
+                )
+        else:
+            # 非 Office：复用原 MAX_PREVIEW_FILE_SIZE（5MB）
+            if meta.file_size > settings.MAX_PREVIEW_FILE_SIZE:
+                from fastapi import HTTPException, status
+                raise HTTPException(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    detail=(
+                        f"预览文件大小不能超过 "
+                        f"{settings.MAX_PREVIEW_FILE_SIZE // (1024 * 1024)}MB"
+                    ),
+                )
+
+        data = await self._storage.download(meta.object_name)
+
+        # Office → PDF 转换
+        if is_office_content_type(meta.content_type):
+            try:
+                pdf_bytes = await convert_office_to_pdf(data, meta.original_name)
+            except OfficeConvertError as e:
+                # 路由层会捕获并降级为"提示下载"
+                raise
+            return FileVO.from_orm_to_vo(meta), pdf_bytes, "application/pdf"
+
+        return FileVO.from_orm_to_vo(meta), data, meta.content_type or "application/octet-stream"
+
     # ---- 更新 / 删除 ----
 
     async def update_file(self, req: FileUpdateRequest, file_id: int) -> FileVO:
@@ -284,7 +313,9 @@ class FileService:
         return FileVO.from_orm_to_vo(meta)
 
     async def delete_file(self, file_id: int) -> None:
-        meta = await self.get_file(file_id)
+        meta = await self._db.get(FileMetadata, file_id)
+        if not meta or meta.is_deleted:
+            raise NotFoundError(f"文件不存在：file_id={file_id}")
         meta.is_deleted = True
         meta.delete_time = datetime.now(timezone.utc).isoformat()
         await self._db.commit()

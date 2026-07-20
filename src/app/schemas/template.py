@@ -29,6 +29,8 @@ from typing import Optional, List, Dict, Any
 
 from pydantic import BaseModel, Field, ConfigDict, field_validator, condecimal
 
+from src.infra.html_sanitize import sanitize_html
+
 from src.app.schemas.page import Page
 from src.models.template import AttributeType
 
@@ -300,7 +302,12 @@ class TemplateCreateRequest(BaseModel):
     )
     reviewCount: int = Field(1, ge=1, description="审核员人数")
     sortOrder: int = Field(0, ge=0, description="展示顺序")
-    description: Optional[str] = Field(None, description="备注")
+    description: Optional[str] = Field(None, description="备注（支持富文本，HTML）")
+
+    @field_validator("description")
+    @classmethod
+    def _sanitize_description(cls, v: Optional[str]) -> Optional[str]:
+        return sanitize_html(v)
 
     def to_orm(self) -> "Template":
         """构造 ORM 对象（service 校验通过后落库）"""
@@ -314,6 +321,7 @@ class TemplateCreateRequest(BaseModel):
             sort_order=self.sortOrder,
             description=self.description,
             is_active=True,
+            is_repeated=True,
         )
 
 
@@ -326,8 +334,13 @@ class TemplateUpdateRequest(BaseModel):
     maxScore: Optional[condecimal(ge=0, max_digits=5, decimal_places=2)] = Field(None)
     reviewCount: Optional[int] = Field(None, ge=1)
     sortOrder: Optional[int] = Field(None, ge=0)
-    description: Optional[str] = Field(None)
+    description: Optional[str] = Field(None, description="备注（支持富文本，HTML）")
     isActive: Optional[bool] = Field(None)
+
+    @field_validator("description")
+    @classmethod
+    def _sanitize_description(cls, v: Optional[str]) -> Optional[str]:
+        return sanitize_html(v)
 
     def apply_to(self, template) -> bool:
         """把非空字段写回 ORM。返回是否有字段被实际修改。"""
@@ -366,6 +379,7 @@ class TemplateVO(BaseModel):
     sortOrder: int
     description: Optional[str] = None
     isActive: bool
+    isRepeated: bool
 
     @classmethod
     def from_orm_to_vo(cls, obj) -> "TemplateVO":
@@ -378,6 +392,7 @@ class TemplateVO(BaseModel):
             sortOrder=obj.sort_order,
             description=obj.description,
             isActive=obj.is_active,
+            isRepeated=obj.is_repeated,
         )
 
 
@@ -492,8 +507,14 @@ class TemplatePayload(BaseModel):
     )
     reviewCount: int = Field(1, ge=1, description="审核员人数")
     sortOrder: int = Field(0, ge=0, description="展示顺序")
-    description: Optional[str] = Field(None, description="备注")
+    description: Optional[str] = Field(None, description="备注（支持富文本，HTML）")
     isActive: bool = Field(True, description="是否启用（仅 Update 实际生效；Save 时强制为 True）")
+    isRepeated: bool = Field(True, description="是否允许重复提交：true=允许，false=不允许")
+
+    @field_validator("description")
+    @classmethod
+    def _sanitize_description(cls, v: Optional[str]) -> Optional[str]:
+        return sanitize_html(v)
 
     def to_orm(self) -> "Template":
         """构造 ORM 对象（service 校验通过后落库）"""
@@ -507,6 +528,7 @@ class TemplatePayload(BaseModel):
             sort_order=self.sortOrder,
             description=self.description,
             is_active=True,  # 新建场景强制启用
+            is_repeated=self.isRepeated,
         )
 
     def apply_to(self, template) -> bool:
@@ -532,6 +554,9 @@ class TemplatePayload(BaseModel):
             modified = True
         if template.is_active != self.isActive:
             template.is_active = self.isActive
+            modified = True
+        if template.is_repeated != self.isRepeated:
+            template.is_repeated = self.isRepeated
             modified = True
         return modified
 

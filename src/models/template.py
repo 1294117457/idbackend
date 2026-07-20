@@ -65,6 +65,7 @@ class Template(Base, TimestampMixin):
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     description: Mapped[Optional[str]] = mapped_column(Text)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    is_repeated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
     # 关系
     category: Mapped["TemplateCategory"] = relationship(  # noqa: F821

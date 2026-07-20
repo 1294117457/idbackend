@@ -1,27 +1,35 @@
-"""申请域模型（v4.3）
+"""申请域模型（v5 充血模型 + Domain Events）
 
 三个实体:
   - Application          申请主表（核心）
   - ApplicationProof     申请证明（辅助表）
   - ApplicationOperation 操作日志（事件审计）
+
+v5 充血模型职责：
+  - Application 承载所有状态机逻辑（cancel/submit/approve/reject/revoke）
+  - ApplicationProof 承载证明材料的审核行为（approve/reject/reset）
+  - Domain Event 由领域方法返回，由 Service 层处理（持久化、发通知等）
+  - schemas/ 只做 DTO 转换，不含任何业务逻辑
 """
 from __future__ import annotations
 
 import enum
+from dataclasses import dataclass, field
+from datetime import datetime
 from decimal import Decimal
 from typing import Optional, List
 
 from sqlalchemy import (
     String, Integer, ForeignKey, DECIMAL, Numeric, Text, Enum as SAEnum, Index,
-    JSON,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base, TimestampMixin
+from src.exceptions import ConflictError
 
 # ════════════════════════════════════════════════════════════════════════
-# 状态枚举（v4.3 字符串 5 态）
+# 状态枚举
 # ════════════════════════════════════════════════════════════════════════
 class ApplicationStatus(str, enum.Enum):
     """application 状态机（v4.3 字符串 5 态）"""
@@ -38,6 +46,53 @@ class ProofStatus(str, enum.Enum):
     PENDING = "PENDING"
     APPROVED = "APPROVED"
     REJECTED = "REJECTED"
+
+
+# ════════════════════════════════════════════════════════════════════════
+# Domain Events（领域事件）
+# ════════════════════════════════════════════════════════════════════════
+@dataclass
+class ApplicationEvent:
+    """Application 领域事件的基类"""
+
+    application_id: int
+    operator_id: int
+    operator_name: str
+    operation: str
+    remark: Optional[str] = None
+    occurred_at: datetime = field(default_factory=datetime.utcnow)
+
+
+# 学生端事件
+@dataclass
+class ApplicationSubmitted(ApplicationEvent):
+    """学生提交申请（首次提交或重新提交）"""
+    pass
+
+
+@dataclass
+class ApplicationCancelled(ApplicationEvent):
+    """学生取消申请"""
+    pass
+
+
+@dataclass
+class ApplicationRevoked(ApplicationEvent):
+    """学生撤回已通过的申请"""
+    pass
+
+
+# 审核员端事件
+@dataclass
+class ApplicationApproved(ApplicationEvent):
+    """审核员投票通过"""
+    is_final: bool = False
+
+
+@dataclass
+class ApplicationRejected(ApplicationEvent):
+    """审核员投票驳回"""
+    pass
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -114,18 +169,143 @@ class Application(Base, TimestampMixin):
         ),
     )
 
+    # ════════════════════════════════════════════════════════════════════
+    # 状态机（学生端）
+    # ════════════════════════════════════════════════════════════════════
+
+    def can_be_cancelled_by(self, user_id: int) -> bool:
+        """学生是否有权取消此申请"""
+        return (
+            self.user_id == user_id
+            and self.status
+            in {ApplicationStatus.DRAFT.value, ApplicationStatus.APPLYING.value}
+        )
+
+    def can_be_edited(self) -> bool:
+        """申请是否处于可编辑状态（DRAFT）"""
+        return self.status == ApplicationStatus.DRAFT.value
+
+    def cancel(self, operator_id: int, operator_name: str, remark: Optional[str] = None) -> ApplicationCancelled:
+        """取消申请（仅 DRAFT / APPLYING），返回领域事件"""
+        if self.status not in {
+            ApplicationStatus.DRAFT.value,
+            ApplicationStatus.APPLYING.value,
+        }:
+            raise ConflictError(f"仅 DRAFT 或 APPLYING 可取消，当前：{self.status}")
+        self.status = ApplicationStatus.CANCELLED.value
+        return ApplicationCancelled(
+            application_id=self.id,
+            operator_id=operator_id,
+            operator_name=operator_name,
+            operation=ApplicationStatus.CANCELLED.value,
+            remark=remark,
+        )
+
+    def submit(self, operator_id: int, operator_name: str) -> ApplicationSubmitted:
+        """重新提交进入审核流（从 DRAFT / REJECTED / REVOKED），返回领域事件"""
+        if self.status not in {
+            ApplicationStatus.DRAFT.value,
+            ApplicationStatus.REJECTED.value,
+            ApplicationStatus.REVOKED.value,
+        }:
+            raise ConflictError(f"仅 DRAFT / REJECTED / REVOKED 可提交，当前：{self.status}")
+        self.status = ApplicationStatus.APPLYING.value
+        self.approved_count = 0
+        self.rejected_count = 0
+        self.reviewer_ids = []
+        return ApplicationSubmitted(
+            application_id=self.id,
+            operator_id=operator_id,
+            operator_name=operator_name,
+            operation=ApplicationStatus.APPLYING.value,
+        )
+
+    def revoke(self, operator_id: int, operator_name: str, remark: str) -> ApplicationRevoked:
+        """撤回已通过的申请，返回领域事件"""
+        if self.status != ApplicationStatus.PASSED.value:
+            raise ConflictError(f"仅 PASSED 可撤回，当前：{self.status}")
+        self.status = ApplicationStatus.REVOKED.value
+        self.gain_score = Decimal("0")
+        return ApplicationRevoked(
+            application_id=self.id,
+            operator_id=operator_id,
+            operator_name=operator_name,
+            operation=ApplicationStatus.REVOKED.value,
+            remark=remark,
+        )
+
+    def recalculate_gain_score(self) -> None:
+        """重新计算实际得分（PASSED 时按已通过 proof 求和）"""
+        if self.status != ApplicationStatus.PASSED.value:
+            return
+        self.gain_score = sum(
+            (p.proof_score for p in self.proofs if p.status == ProofStatus.APPROVED.value),
+            Decimal("0"),
+        )
+
+    # ════════════════════════════════════════════════════════════════════
+    # 状态机（审核员端）
+    # ════════════════════════════════════════════════════════════════════
+
+    def has_voted(self, reviewer_id: int) -> bool:
+        """审核员是否已投过票"""
+        return reviewer_id in (self.reviewer_ids or [])
+
+    def approve(self, reviewer_id: int, operator_id: int, operator_name: str) -> ApplicationApproved:
+        """审核员投通过票，返回领域事件
+
+        Returns:
+            ApplicationApproved.is_final = True  → 申请已达到终态（approved_count >= review_count）
+            ApplicationApproved.is_final = False → 仍在审核中
+        """
+        if self.status != ApplicationStatus.APPLYING.value:
+            raise ConflictError(f"仅 APPLYING 可审核，当前：{self.status}")
+        if self.has_voted(reviewer_id):
+            raise ConflictError("该审核员已投过票")
+
+        self.reviewer_ids = (self.reviewer_ids or []) + [reviewer_id]
+        self.approved_count += 1
+
+        is_final = False
+        if self.approved_count >= self.review_count:
+            self.status = ApplicationStatus.PASSED.value
+            self.recalculate_gain_score()
+            is_final = True
+
+        return ApplicationApproved(
+            application_id=self.id,
+            operator_id=operator_id,
+            operator_name=operator_name,
+            operation=self.status,
+            is_final=is_final,
+        )
+
+    def reject(self, reviewer_id: int, operator_id: int, operator_name: str, remark: str) -> ApplicationRejected:
+        """审核员投驳回票，返回领域事件"""
+        if self.status != ApplicationStatus.APPLYING.value:
+            raise ConflictError(f"仅 APPLYING 可审核，当前：{self.status}")
+        if self.has_voted(reviewer_id):
+            raise ConflictError("该审核员已投过票")
+
+        self.reviewer_ids = (self.reviewer_ids or []) + [reviewer_id]
+        self.status = ApplicationStatus.REJECTED.value
+        self.rejected_count += 1
+
+        return ApplicationRejected(
+            application_id=self.id,
+            operator_id=operator_id,
+            operator_name=operator_name,
+            operation=self.status,
+            remark=remark,
+        )
+
 
 # ════════════════════════════════════════════════════════════════════════
 # ApplicationProof（辅助表）
 # ════════════════════════════════════════════════════════════════════════
 class ApplicationProof(Base, TimestampMixin):
-    """申请证明材料（辅助展示表）
+    """申请证明材料（辅助展示表）"""
 
-    v4.2 关键决策：
-      - proof.status 是会签中间状态，任意审核员都可修改（覆盖前审核员的决定）
-      - proof 不需要 review_count / approved_count 字段
-      - file_id nullable，允许纯文字描述
-    """
     __tablename__ = "application_proofs"
 
     application_id: Mapped[int] = mapped_column(
@@ -141,19 +321,25 @@ class ApplicationProof(Base, TimestampMixin):
         default=ProofStatus.PENDING.value,
     )
 
-    # 关系
-    # file 用 lazy="joined"：保证从 application 加载 proofs 后 file 也一次 JOIN 进来，
-    # 避免在 async 路由层访问 proof.file 触发 lazy load（MissingGreenlet）。
-    # 现有的 selectinload(Application.proofs) 会与 joined 兼容，不重复发 SQL。
     application: Mapped["Application"] = relationship(back_populates="proofs")
-    file: Mapped[Optional["FileMetadata"]] = relationship(
-        "FileMetadata", lazy="joined",
-    )
+    file: Mapped[Optional["FileMetadata"]] = relationship("FileMetadata", lazy="joined")
 
     __table_args__ = (
         Index("idx_proofs_application", "application_id"),
         Index("idx_proofs_application_status", "application_id", "status"),
     )
+
+    def approve(self) -> None:
+        """标记为已通过"""
+        self.status = ProofStatus.APPROVED.value
+
+    def reject(self) -> None:
+        """标记为已驳回"""
+        self.status = ProofStatus.REJECTED.value
+
+    def reset_to_pending(self) -> None:
+        """换文件后重置为待审核"""
+        self.status = ProofStatus.PENDING.value
 
 
 # ════════════════════════════════════════════════════════════════════════

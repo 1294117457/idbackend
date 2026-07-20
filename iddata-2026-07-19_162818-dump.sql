@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict 9qsqlPHzSVE4PepkJjgsAAGYvYFO23BWa7g5mZBhwFpARz3Id9pIAghyV1bfgoP
+\restrict Elmt66XWeeSN5h8QXV1Tu3KPxAtRqx3n1uPNf1ses2xhUw9ofJwyrrT33zq5n89
 
 -- Dumped from database version 16.14 (Debian 16.14-1.pgdg13+1)
 -- Dumped by pg_dump version 16.14 (Ubuntu 16.14-0ubuntu0.24.04.1)
@@ -689,6 +689,7 @@ CREATE TABLE public.template (
     id integer NOT NULL,
     created_at timestamp without time zone NOT NULL,
     updated_at timestamp without time zone NOT NULL,
+    is_repeated boolean DEFAULT true NOT NULL,
     CONSTRAINT ck_template_max_score_nonneg CHECK ((max_score >= (0)::numeric))
 );
 
@@ -1254,17 +1255,17 @@ CREATE INDEX idx_application_status ON public.applications USING btree (status);
 
 
 --
--- Name: idx_application_user_template_status; Type: INDEX; Schema: public; Owner: zhouch
+-- Name: idx_application_user_status; Type: INDEX; Schema: public; Owner: zhouch
 --
 
-CREATE INDEX idx_application_user_template_status ON public.applications USING btree (user_id, template_id, status);
+CREATE INDEX idx_application_user_status ON public.applications USING btree (user_id, status);
 
 
 --
--- Name: idx_applications_reviewer_ids; Type: INDEX; Schema: public; Owner: zhouch
+-- Name: idx_applications_reviewer_ids_gin; Type: INDEX; Schema: public; Owner: zhouch
 --
 
-CREATE INDEX idx_applications_reviewer_ids ON public.applications USING gin (reviewer_ids);
+CREATE INDEX idx_applications_reviewer_ids_gin ON public.applications USING gin (reviewer_ids jsonb_path_ops);
 
 
 --
@@ -1310,6 +1311,13 @@ CREATE INDEX idx_operation_application ON public.application_operation USING btr
 
 
 --
+-- Name: idx_operation_operator; Type: INDEX; Schema: public; Owner: zhouch
+--
+
+CREATE INDEX idx_operation_operator ON public.application_operation USING btree (operator_id);
+
+
+--
 -- Name: idx_proofs_application; Type: INDEX; Schema: public; Owner: zhouch
 --
 
@@ -1321,6 +1329,13 @@ CREATE INDEX idx_proofs_application ON public.application_proofs USING btree (ap
 --
 
 CREATE INDEX idx_proofs_application_status ON public.application_proofs USING btree (application_id, status);
+
+
+--
+-- Name: idx_reviewers; Type: INDEX; Schema: public; Owner: zhouch
+--
+
+CREATE INDEX idx_reviewers ON public.applications USING gin (reviewer_ids jsonb_path_ops);
 
 
 --
@@ -1496,14 +1511,6 @@ ALTER TABLE ONLY public.applications
 
 
 --
--- Name: applications applications_template_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: zhouch
---
-
-ALTER TABLE ONLY public.applications
-    ADD CONSTRAINT applications_template_id_fkey FOREIGN KEY (template_id) REFERENCES public.template(id);
-
-
---
 -- Name: applications applications_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: zhouch
 --
 
@@ -1619,5 +1626,5 @@ ALTER TABLE ONLY public.user_role
 -- PostgreSQL database dump complete
 --
 
-\unrestrict 9qsqlPHzSVE4PepkJjgsAAGYvYFO23BWa7g5mZBhwFpARz3Id9pIAghyV1bfgoP
+\unrestrict Elmt66XWeeSN5h8QXV1Tu3KPxAtRqx3n1uPNf1ses2xhUw9ofJwyrrT33zq5n89
 

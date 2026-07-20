@@ -21,6 +21,7 @@ def _sync_schema_blocking() -> None:
     print(f"[idpython] schema synced via Base.metadata.create_all ({table_count} tables)")
 
 
+
 # ============ Lifespan（应用生命周期） ============
 
 @asynccontextmanager

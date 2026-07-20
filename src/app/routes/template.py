@@ -26,7 +26,8 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Path, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.app.dependencies import get_db
+from src.app.dependencies import get_db, get_storage
+from src.infra.storage import Storage
 from src.app import response as R
 from src.app.schemas.template import (
     TemplateCreateRequest,
@@ -58,9 +59,13 @@ router = APIRouter(prefix="/api/bonus-template", tags=["模板"])
 async def list_templates(
     req: Annotated[TemplateListQueryRequest, Query()],
     db: AsyncSession = Depends(get_db),
+    storage: Storage = Depends(get_storage),
 ):
-    """分页列表（Page[TemplateVO]）"""
-    templates, total = await TemplateService.list_paged(db, req)
+    """分页列表（Page[TemplateVO]）
+
+    v9：后端在返回前对 description 做"占位 → 预签名 URL"批量替换。
+    """
+    templates, total = await TemplateService.list_paged(db, storage, req)
     items = [TemplateVO.from_orm_to_vo(t) for t in templates]
     vo = TemplateListVO.from_list_to_page(
         items=items,
@@ -75,23 +80,40 @@ async def list_templates(
 async def list_templates_by_category(
     req: Annotated[TemplateCategoryListQueryRequest, Query()],
     db: AsyncSession = Depends(get_db),
+    storage: Storage = Depends(get_storage),
 ):
-    """按分类列出模板（学生端选 template 用）"""
-    templates = await TemplateService.list_by_category(db, req.categoryId)
+    """按分类列出模板（学生端选 template 用）
+
+    v9：返回前做富文本占位替换。
+    """
+    templates = await TemplateService.list_by_category(db, storage, req.categoryId)
     return R.query_resp([TemplateVO.from_orm_to_vo(t).model_dump() for t in templates])
 
 
 @router.get("/{template_id}")
 async def get_template_detail(
     template_id: int = Path(..., ge=1),
+    raw: bool = Query(
+        False,
+        description=(
+            "是否返回原始描述（不替换占位 → 签名 URL）。"
+            "True：编辑场景，前端 RichEditor 期望看到 editor://object/{objectName}，"
+            "由前端自己渲染签名 URL + 维护 data-objectname 用于反查回占位。"
+            "False / 不传：渲染场景（学生/老师查看），后端直接返回签名 URL。"
+        ),
+    ),
     db: AsyncSession = Depends(get_db),
+    storage: Storage = Depends(get_storage),
 ):
     """模板详情（含完整规则树 + is_mixed_type 软提示）
 
     使用 selectinload 一次性 JOIN 完整数据（template → rules → attributes），
     共 3 条 SELECT（与 rule / attribute 数量无关）。
+
+    v9：默认对 description 做占位替换。
+    v9.5：raw=true 时不做占位替换（编辑场景）。
     """
-    template = await TemplateService.get_with_rules(db, template_id)
+    template = await TemplateService.get_with_rules(db, storage, template_id, raw=raw)
 
     # ORM → VO 投影
     rule_vos = []
@@ -116,9 +138,13 @@ async def get_template_detail(
 async def create_template(
     req: TemplateCreateRequest,
     db: AsyncSession = Depends(get_db),
+    storage: Storage = Depends(get_storage),
 ):
-    """创建模板（DTO 直接交给 service：to_orm() 处理 ORM 构造）"""
-    template = await TemplateService.create(db, req)
+    """创建模板（DTO 直接交给 service：to_orm() 处理 ORM 构造）
+
+    v9：返回前对 description 做占位替换。
+    """
+    template = await TemplateService.create(db, storage, req)
     return R.created_resp(
         TemplateVO.from_orm_to_vo(template).model_dump(),
         msg="模板创建成功",
@@ -130,9 +156,13 @@ async def update_template(
     template_id: int = Path(..., ge=1),
     req: TemplateUpdateRequest = ...,
     db: AsyncSession = Depends(get_db),
+    storage: Storage = Depends(get_storage),
 ):
-    """修改模板。DTO 整体交给 service：apply_to() 处理非空字段。"""
-    template = await TemplateService.update(db, template_id, req)
+    """修改模板。DTO 整体交给 service：apply_to() 处理非空字段。
+
+    v9：返回前对 description 做占位替换。
+    """
+    template = await TemplateService.update(db, storage, template_id, req)
     return R.success_resp(
         TemplateVO.from_orm_to_vo(template).model_dump(),
         msg="更新成功",
@@ -143,9 +173,10 @@ async def update_template(
 async def delete_template(
     template_id: int = Path(..., ge=1),
     db: AsyncSession = Depends(get_db),
+    storage: Storage = Depends(get_storage),
 ):
     """删除模板（级联清理 template_rule 行）"""
-    await TemplateService.delete(db, template_id)
+    await TemplateService.delete(db, storage, template_id)
     return R.success_resp(msg="删除成功")
 
 
@@ -158,13 +189,14 @@ async def bind_rule(
     template_id: int = Path(..., ge=1),
     req: TemplateBindRuleRequest = ...,
     db: AsyncSession = Depends(get_db),
+    storage: Storage = Depends(get_storage),
 ):
     """绑定 rule 到 template（v4 软提示策略）。
 
     返回 { bound, is_mixed_type }：
     - is_mixed_type=True 时前端应弹确认框软提示（业务合法）
     """
-    result = await TemplateService.bind_rule(db, template_id, req.ruleId)
+    result = await TemplateService.bind_rule(db, storage, template_id, req.ruleId)
     return R.success_resp(
         TemplateBindRuleResultVO(**result).model_dump(),
         msg="绑定成功",
@@ -176,9 +208,10 @@ async def unbind_rule(
     template_id: int = Path(..., ge=1),
     rule_id: int = Path(..., ge=1),
     db: AsyncSession = Depends(get_db),
+    storage: Storage = Depends(get_storage),
 ):
     """解绑 rule"""
-    await TemplateService.unbind_rule(db, template_id, rule_id)
+    await TemplateService.unbind_rule(db, storage, template_id, rule_id)
     return R.success_resp(msg="解绑成功")
 
 
@@ -190,13 +223,15 @@ async def unbind_rule(
 async def save_template_with_rules(
     req: TemplateSaveRequest,
     db: AsyncSession = Depends(get_db),
+    storage: Storage = Depends(get_storage),
 ):
     """v5：新建 template + 一次性绑 rule（POST 单入口）
 
     请求体不含 templateId（新建场景下不存在）。
     整个操作在 service 内一个事务里完成（template 落盘 + rule 全量替换）。
+    v9：返回前对 description 做占位替换。
     """
-    result = await TemplateService.save_template(db, req)
+    result = await TemplateService.save_template(db, storage, req)
     return R.success_resp(
         result.model_dump(),
         msg="保存成功",
@@ -207,13 +242,15 @@ async def save_template_with_rules(
 async def update_template_with_rules(
     req: TemplateSaveUpdateRequest,
     db: AsyncSession = Depends(get_db),
+    storage: Storage = Depends(get_storage),
 ):
     """v5：编辑 template + 重置 rule 绑定（POST 单入口）
 
     请求体含 templateId（必填），service 校验存在性。
     ruleIds 为全量，DIFF 语义生效（删除不在列表里的、新增列表里没有的）。
+    v9：返回前对 description 做占位替换。
     """
-    result = await TemplateService.update_template(db, req)
+    result = await TemplateService.update_template(db, storage, req)
     return R.success_resp(
         result.model_dump(),
         msg="更新成功",
@@ -224,10 +261,11 @@ async def update_template_with_rules(
 async def delete_template_by_id(
     req: TemplateDeleteRequest,
     db: AsyncSession = Depends(get_db),
+    storage: Storage = Depends(get_storage),
 ):
     """v5：删除 template（POST 单入口）
 
     请求体含 templateId（必填），不再校验 application 数量（允许删除有申请的模板）。
     """
-    await TemplateService.delete_template_by_id(db, req)
+    await TemplateService.delete_template_by_id(db, storage, req)
     return R.success_resp(msg="删除成功")

@@ -19,6 +19,8 @@ from sqlalchemy import select
 
 from src.models.template import Template
 from src.models.template_category import TemplateCategory
+from src.infra.storage import Storage
+from src.services.rich_text_processor import RichTextImageProcessor
 from src.app.schemas.template import (
     TemplateCreateRequest,
     TemplateUpdateRequest,
@@ -55,9 +57,16 @@ class TemplateService:
     @staticmethod
     async def list_paged(
         db: AsyncSession,
+        storage: Storage,
         req: TemplateListQueryRequest,
+        *,
+        raw: bool = False,
     ) -> tuple[List[Template], int]:
-        """分页列表 + 总数（对齐 file.search_files 风格）。"""
+        """分页列表 + 总数（对齐 file.search_files 风格）。
+
+        v10：返回前对每条 template.description 做"editor://object/{key} → 签名 URL"批量替换。
+        raw=True 时不做占位替换（编辑场景，期望前端看到占位）。
+        """
         total = await TemplateRepository.count(
             db,
             category_id=req.categoryId,
@@ -70,43 +79,75 @@ class TemplateService:
             offset=(req.pageNum - 1) * req.pageSize,
             limit=req.pageSize,
         )
+        if not raw:
+            processor = RichTextImageProcessor(db, storage)
+            await processor.replace_batch_on_models(templates)
         return templates, total
 
     @staticmethod
     async def list_by_category(
         db: AsyncSession,
+        storage: Storage,
         category_id: int,
         *,
         is_active: bool = True,
+        raw: bool = False,
     ) -> List[Template]:
-        """按分类 ID 列出模板（学生端选择 template）。"""
-        return await TemplateRepository.list_by_category(
+        """按分类 ID 列出模板（学生端选择 template）。
+
+        v9：返回前做富文本占位替换。
+        v9.5：raw=True 时不做占位替换。
+        """
+        templates = await TemplateRepository.list_by_category(
             db, category_id, is_active=is_active,
         )
+        if not raw:
+            processor = RichTextImageProcessor(db, storage)
+            await processor.replace_batch_on_models(templates)
+        return templates
 
     @staticmethod
     async def get_by_id(
         db: AsyncSession,
+        storage: Storage,
         template_id: int,
+        *,
+        raw: bool = False,
     ) -> Template:
-        """单条查询，找不到抛 NotFoundError。"""
+        """单条查询，找不到抛 NotFoundError。
+
+        v9：返回前做富文本占位替换。
+        v9.5：raw=True 时不做占位替换（编辑场景）。
+        """
         template = await TemplateRepository.get_by_id(db, template_id)
         if template is None:
             raise NotFoundError(f"模板(id={template_id})不存在")
+        if not raw:
+            processor = RichTextImageProcessor(db, storage)
+            await processor.replace_one_on_model(template)
         return template
 
     @staticmethod
     async def get_with_rules(
         db: AsyncSession,
+        storage: Storage,
         template_id: int,
+        *,
+        raw: bool = False,
     ) -> Template:
         """加载完整规则树（template → rules → attributes）。
 
         使用 selectinload，3 条 SQL 拿到全部数据，无 N+1。
+
+        v9：返回前做富文本占位替换。
+        v9.5：raw=True 时不做占位替换（编辑场景），前端富文本编辑器内自己渲染签名 URL。
         """
         template = await TemplateRepository.get_with_rules(db, template_id)
         if template is None:
             raise NotFoundError(f"模板(id={template_id})不存在")
+        if not raw:
+            processor = RichTextImageProcessor(db, storage)
+            await processor.replace_one_on_model(template)
         return template
 
     @staticmethod
@@ -123,6 +164,7 @@ class TemplateService:
     @staticmethod
     async def create(
         db: AsyncSession,
+        storage: Storage,
         req: TemplateCreateRequest,
     ) -> Template:
         """创建模板。
@@ -130,6 +172,7 @@ class TemplateService:
         - 校验分类存在
         - 校验分类未绑 template？v4 不限制：允许同一分类挂多个 template
         - 调 TemplateCategoryService.bind_template 把分类的 is_bind_template 翻为 TRUE（幂等）
+        - v9：返回前对 description 做占位替换
         """
         category = await TemplateCategoryRepository.get_by_id(db, req.categoryId)
         if category is None:
@@ -152,16 +195,20 @@ class TemplateService:
         from src.services.template_category_service import TemplateCategoryService
         await TemplateCategoryService.bind_template(db, req.categoryId)
 
+        # v9：占位替换（新建场景通常没有富文本，但保持接口一致性）
+        processor = RichTextImageProcessor(db, storage)
+        await processor.replace_one_on_model(template)
         return template
 
     @staticmethod
     async def update(
         db: AsyncSession,
+        storage: Storage,
         template_id: int,
         req: TemplateUpdateRequest,
     ) -> Template:
         """修改模板。"""
-        template = await TemplateService.get_by_id(db, template_id)
+        template = await TemplateService.get_by_id(db, storage, template_id)
 
         modified = req.apply_to(template)
         if modified:
@@ -172,6 +219,7 @@ class TemplateService:
     @staticmethod
     async def bind_rule(
         db: AsyncSession,
+        storage: Storage,
         template_id: int,
         rule_id: int,
     ) -> dict:
@@ -182,7 +230,7 @@ class TemplateService:
         - 混用时打 warning 日志，不抛异常
         """
         # 校验存在性
-        template = await TemplateService.get_by_id(db, template_id)
+        template = await TemplateService.get_by_id(db, storage, template_id)
 
         from src.services.rule_service import RuleService
         await RuleService.get_by_id(db, rule_id)  # 不存在抛 NotFoundError
@@ -208,17 +256,19 @@ class TemplateService:
     @staticmethod
     async def unbind_rule(
         db: AsyncSession,
+        storage: Storage,
         template_id: int,
         rule_id: int,
     ) -> None:
         """解绑 rule（不影响 rule 本体）。"""
-        await TemplateService.get_by_id(db, template_id)
+        await TemplateService.get_by_id(db, storage, template_id)
         await TemplateRepository.unbind_rule(db, template_id, rule_id)
         await TemplateRepository.commit(db)
 
     @staticmethod
     async def delete(
         db: AsyncSession,
+        storage: Storage,
         template_id: int,
     ) -> None:
         """删除 template。
@@ -229,7 +279,7 @@ class TemplateService:
         - 物理删除（template_rule 表的 FK CASCADE 自动清理绑定行）
         - 解绑后：检查 category 下 template 数量归零 → 翻 is_bind_template 回 FALSE
         """
-        template = await TemplateService.get_by_id(db, template_id)
+        template = await TemplateService.get_by_id(db, storage, template_id)
 
         category_id = template.category_id
         await TemplateRepository.delete(db, template_id)
@@ -248,6 +298,7 @@ class TemplateService:
     @staticmethod
     async def save_template(
         db: AsyncSession,
+        storage: Storage,
         req: TemplateSaveRequest,
     ) -> TemplateSaveResponse:
         """POST /save：新建 template + 一次性绑 rule（单事务）
@@ -260,7 +311,7 @@ class TemplateService:
         5. replace_bound_rules(template_id, req.ruleIds)
         6. commit
         7. 翻 category.is_bind_template = TRUE（幂等，category_service 内部事务）
-        8. 重新加载 template（含 rules）→ 组装 TemplateSaveResponse
+        8. 重新加载 template（含 rules）→ 组装 TemplateSaveResponse（v9：含 description 替换）
         """
         await TemplateService._assert_category_leaf(db, req.template.categoryId)
         await TemplateService._validate_rule_ids(db, req.ruleIds)
@@ -279,11 +330,12 @@ class TemplateService:
         from src.services.template_category_service import TemplateCategoryService
         await TemplateCategoryService.bind_template(db, req.template.categoryId)
 
-        return await TemplateService._build_save_response(db, template_id)
+        return await TemplateService._build_save_response(db, storage, template_id)
 
     @staticmethod
     async def update_template(
         db: AsyncSession,
+        storage: Storage,
         req: TemplateSaveUpdateRequest,
     ) -> TemplateSaveResponse:
         """POST /update：编辑 template + 重置 rule 绑定（DIFF，单事务）
@@ -296,9 +348,9 @@ class TemplateService:
         5. replace_bound_rules(template_id, req.ruleIds)
         6. commit
         7. 若 category 变了 → 旧的 category.is_bind_template 检查 + 新的 category.bind_template
-        8. 组装响应
+        8. 组装响应（v9：含 description 替换）
         """
-        template = await TemplateService.get_by_id(db, req.templateId)
+        template = await TemplateService.get_by_id(db, storage, req.templateId)
         old_category_id = template.category_id
 
         if template.category_id != req.template.categoryId:
@@ -321,18 +373,19 @@ class TemplateService:
             # 新的：翻 TRUE（幂等）
             await TemplateCategoryService.bind_template(db, req.template.categoryId)
 
-        return await TemplateService._build_save_response(db, req.templateId)
+        return await TemplateService._build_save_response(db, storage, req.templateId)
 
     @staticmethod
     async def delete_template_by_id(
         db: AsyncSession,
+        storage: Storage,
         req: TemplateDeleteRequest,
     ) -> None:
         """POST /delete：删除 template（POST 单入口）
 
         application 与 template 已解耦：删除不影响 applications 表的任何行。
         """
-        await TemplateService.delete(db, req.templateId)
+        await TemplateService.delete(db, storage, req.templateId)
 
     # ---------- v5 内部辅助 ----------
 
@@ -374,13 +427,14 @@ class TemplateService:
     @staticmethod
     async def _build_save_response(
         db: AsyncSession,
+        storage: Storage,
         template_id: int,
     ) -> TemplateSaveResponse:
         """加载 template（含 rules）→ 组装 TemplateSaveResponse
 
-        复用 get_with_rules + is_mixed_type 的逻辑。
+        复用 get_with_rules + is_mixed_type 的逻辑（v9：含 description 占位替换）。
         """
-        template = await TemplateService.get_with_rules(db, template_id)
+        template = await TemplateService.get_with_rules(db, storage, template_id)
 
         rule_vos = []
         bound_ids: List[int] = []

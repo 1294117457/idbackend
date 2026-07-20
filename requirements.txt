@@ -46,3 +46,6 @@ mammoth>=1.6.0
 
 # Safe formula evaluation（ScoreCalculationService 计算引擎，禁止任意代码执行）
 simpleeval>=1.0.0
+
+# HTML 净化（防 XSS）—— 用于 Template.description 富文本字段
+nh3>=0.2.17

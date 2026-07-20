@@ -122,3 +122,10 @@ QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 ## License
 
 MIT
+
+
+部署
+    docker-compose.yml部署基础设施，同步配置好docker network和挂在卷路径
+    github action集成部署前后端
+    后端env在服务器用服务名，基于docker network通信
+    本地测试直连服务器

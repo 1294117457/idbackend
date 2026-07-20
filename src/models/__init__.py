@@ -7,6 +7,13 @@ from src.models.application import (
     ApplicationOperation,
     ApplicationStatus,
     ProofStatus,
+    # Domain Events
+    ApplicationEvent,
+    ApplicationSubmitted,
+    ApplicationCancelled,
+    ApplicationRevoked,
+    ApplicationApproved,
+    ApplicationRejected,
 )
 from src.models.score_data import ScoreData
 from src.models.template import (
@@ -36,6 +43,13 @@ __all__ = [
     "ApplicationOperation",
     "ApplicationStatus",
     "ProofStatus",
+    # Domain Events
+    "ApplicationEvent",
+    "ApplicationSubmitted",
+    "ApplicationCancelled",
+    "ApplicationRevoked",
+    "ApplicationApproved",
+    "ApplicationRejected",
     # ScoreData
     "ScoreData",
     # Template（v4：5 张表 + 共享枚举）
