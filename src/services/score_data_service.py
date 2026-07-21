@@ -85,6 +85,41 @@ class ScoreDataService:
         return score_data
 
     # ------------------------------------------------------------------
+    # 1.5 revoke —— application.revoke 同事务调用，撤销分数流水
+    # ------------------------------------------------------------------
+    @staticmethod
+    async def revoke(
+        db: AsyncSession,
+        user_id: int,
+        application_id: int,
+    ) -> int:
+        """撤销一条流水（撤回已通过的申请时调用）
+
+        行为:
+          - UPDATE score_data SET is_active=FALSE WHERE application_id=?
+          - 返回影响的行数
+
+        事务: 与 revoke_application 同事务（atomic）
+        """
+        from src.models import ScoreData
+        from sqlalchemy import update
+
+        stmt = (
+            update(ScoreData)
+            .where(
+                and_(
+                    ScoreData.user_id == user_id,
+                    ScoreData.application_id == application_id,
+                    ScoreData.is_active == True,  # noqa: E712
+                )
+            )
+            .values(is_active=False)
+        )
+        result = await db.execute(stmt)
+        await db.flush()
+        return result.rowcount
+
+    # ------------------------------------------------------------------
     # 2. recalculate —— 全量聚合 + 写 user.score_info
     # ------------------------------------------------------------------
     @staticmethod

@@ -2,7 +2,7 @@
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from jose import jwt as jose_jwt, JWTError
 
 from src.infra.jwt import (
@@ -107,7 +107,7 @@ class AuthService:
         if user.status != UserStatus.ACTIVE.value:
             raise ForbiddenError("账户已被禁用")
 
-        user.last_login_at = datetime.utcnow().isoformat()
+        user.last_login_at = datetime.now(timezone.utc).isoformat()
         await db.commit()
 
         access_token = create_token(user_id=user.id, username=user.username)
@@ -156,7 +156,7 @@ class AuthService:
         ):
             raise ForbiddenError("无管理端登录权限")
 
-        user.last_login_at = datetime.utcnow().isoformat()
+        user.last_login_at = datetime.now(timezone.utc).isoformat()
         await db.commit()
 
         access_token = create_token(user_id=user.id, username=user.username)

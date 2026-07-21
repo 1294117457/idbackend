@@ -20,6 +20,7 @@ from src.infra.database import get_db
 from src.infra.storage import Storage
 from src.infra.redis import get_redis, RedisCache
 from src.services.file_service import FileService
+from src.infra.rich_text_service import RichTextService
 
 
 # ════════════════════════════════════════════════════════════════
@@ -56,6 +57,12 @@ def get_file_service(
     return FileService(db=db, storage=storage)
 
 
+def get_rich_text_service(
+    storage: Storage = Depends(get_storage),
+) -> RichTextService:
+    return RichTextService(storage=storage)
+
+
 # ════════════════════════════════════════════════════════════════
 # 限流
 # ════════════════════════════════════════════════════════════════
@@ -79,5 +86,6 @@ __all__ = [
     "set_storage",
     "clear_storage",
     "get_file_service",
+    "get_rich_text_service",
     "ip_rate_limit",
 ]

@@ -1,39 +1,14 @@
-"""文件模块 DTO / VO / 内部工具
-
-架构约定（见 docs/file/分层设计.md）：
-- Request 负责"接收输入 + 校验 + 提供转换方法（to_metadata / apply_to / to_conditions）"
-- VO 只做"ORM → 序列化"的投影，不含 url 等访问字段
-    - 转换方法为 `from_orm_to_vo(obj)`（语义清晰，与 Page.from_list_to_page 对称）
-- VO 不含 url，url 走 FileDataVO（预览/下载场景独立接口）
-- 工具函数（_build_object_name / _format_size）放在本模块，以便 Request 复用
-"""
-import uuid
 from datetime import datetime, timezone
-from typing import Optional, List
+from typing import Optional
 
 from fastapi import UploadFile
 from pydantic import BaseModel, Field, ConfigDict, field_validator
-from sqlalchemy import and_
 
 from src.models import FileCategory, FileMetadata
 from src.app.schemas.page import Page
 
 
 # ========== 内部工具（service 层会复用） ==========
-
-def _build_object_name(category: str, original_name: str, user_id: int) -> str:
-    """生成 MinIO 扁平存储的 key（不含分类/年份/用户前缀）
-
-    分类与时间区分由 DB 的 file_category / created_at 承担。
-    """
-    ext = original_name.rsplit(".", 1)[-1].lower() if "." in original_name else ""
-    if ext and len(ext) > 10:
-        ext = ext[:10]
-    unique_id = uuid.uuid4().hex
-    if ext:
-        return f"{unique_id}.{ext}"
-    return unique_id
-
 
 def _format_size(size: Optional[int]) -> str:
     """人类友好的文件大小"""
@@ -61,20 +36,12 @@ class FileUploadRequest(BaseModel):
 
     def to_metadata(self, user_id: int) -> FileMetadata:
         """根据本请求构造 ORM 对象（service 层只负责落库，不重复计算 key/ext）"""
-        original_name = self.file.filename or "unnamed"
-        ext = original_name.rsplit(".", 1)[-1].lower() if "." in original_name else ""
-        if ext and len(ext) > 10:
-            ext = ext[:10]
-        content_type = self.file.content_type or "application/octet-stream"
-        object_name = _build_object_name(self.fileCategory, original_name, user_id)
-        return FileMetadata(
-            object_name=object_name,
-            original_name=original_name,
-            file_size=len(self.content),
-            content_type=content_type,
-            file_extension=ext,
-            file_category=FileCategory(self.fileCategory),
-            upload_user_id=user_id,
+        return FileMetadata.create(
+            category=FileCategory(self.fileCategory),
+            original_name=self.file.filename or "unnamed",
+            content=self.content,
+            content_type=self.file.content_type or "application/octet-stream",
+            user_id=user_id,
         )
 
 
@@ -82,6 +49,7 @@ class FileAvatarUploadRequest(BaseModel):
     """头像上传请求——DTO 构造 ORM（含命名/ext/分类固定逻辑）"""
     content: bytes = Field(...)
     contentType: str = Field(default="image/jpeg", description="头像 MIME 类型")
+    originalName: str = Field(default="avatar", description="原始文件名")
 
     @field_validator("contentType")
     @classmethod
@@ -91,17 +59,12 @@ class FileAvatarUploadRequest(BaseModel):
     def to_metadata(self, user_id: int) -> FileMetadata:
         """构造头像 ORM 对象：固定命名 avatar_{user_id}.jpg、AVATAR 分类"""
         original_name = f"avatar_{user_id}.jpg"
-        object_name = _build_object_name(
-            FileCategory.AVATAR.value, original_name, user_id
-        )
-        return FileMetadata(
-            object_name=object_name,
+        return FileMetadata.create(
+            category=FileCategory.AVATAR,
             original_name=original_name,
-            file_size=len(self.content),
+            content=self.content,
             content_type=self.contentType,
-            file_extension="jpg",
-            file_category=FileCategory.AVATAR,
-            upload_user_id=user_id,
+            user_id=user_id,
         )
 
 
@@ -262,7 +225,6 @@ class FileDataVO(BaseModel):
 
 
 __all__ = [
-    "_build_object_name",
     "_format_size",
     "FileUploadRequest",
     "FileAvatarUploadRequest",

@@ -100,21 +100,40 @@ class ApplicationRepository:
         return list(result.scalars().all()), total
 
     @staticmethod
+    async def check_user_template_duplicate(
+        db: AsyncSession,
+        user_id: int,
+        template_id: int,
+        exclude_application_id: Optional[int] = None,
+    ) -> Optional[Application]:
+        """检查某学生对某模板是否有未取消的申请（用于重复提交校验）。
+
+        edit_submit 场景需传入 exclude_application_id 排除自身。
+        """
+        conditions = [
+            Application.user_id == user_id,
+            Application.template_id == template_id,
+            Application.status.notin_(
+                [ApplicationStatus.CANCELLED.value, ApplicationStatus.REVOKED.value]
+            ),
+        ]
+        if exclude_application_id is not None:
+            conditions.append(Application.id != exclude_application_id)
+        result = await db.execute(
+            select(Application)
+            .where(*conditions)
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    @staticmethod
     async def list_pending_for_reviewer(
         db: AsyncSession,
-        reviewer_id: int,
         req: ApplicationQueryRequest,
     ) -> Tuple[List[Application], int]:
-        """审核员的待审核列表（status=APPLYING 且 reviewer_ids 不包含自己）"""
-        contains_me = literal_column(
-            f"reviewer_ids @> to_jsonb(ARRAY[{reviewer_id}])"
-        )
+        """管理员的待审核列表（status=APPLYING，所有管理员可见）"""
         conditions = [
             Application.status == ApplicationStatus.APPLYING.value,
-            or_(
-                Application.reviewer_ids.is_(None),
-                ~contains_me,
-            ),
         ]
 
         from sqlalchemy.orm import aliased
@@ -167,14 +186,10 @@ class ApplicationRepository:
     @staticmethod
     async def list_reviewed_by_reviewer(
         db: AsyncSession,
-        reviewer_id: int,
         req: ApplicationQueryRequest,
     ) -> Tuple[List[Application], int]:
-        """审核员的历史审核列表（reviewer_ids 包含自己）"""
-        contains_me = literal_column(
-            f"reviewer_ids @> to_jsonb(ARRAY[{reviewer_id}])"
-        )
-        conditions = [contains_me]
+        """管理员的审核历史列表（不限制审核人，可查看全部审核记录）"""
+        conditions = []
 
         from sqlalchemy.orm import aliased
         from src.models.user import User
@@ -188,6 +203,9 @@ class ApplicationRepository:
             conditions.append(Application.template_name.ilike(f"%{req.templateName}%"))
         if req.status:
             conditions.append(Application.status == req.status)
+        else:
+            # 默认只显示已审核完成的申请（PASSED/REJECTED/REVOKED/CANCELLED）
+            conditions.append(Application.status.in_(['PASSED', 'REJECTED', 'REVOKED', 'CANCELLED']))
         if req.startTime:
             from datetime import datetime, timezone
             start = datetime.fromisoformat(req.startTime.replace(" ", "T"))

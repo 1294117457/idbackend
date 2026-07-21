@@ -1,5 +1,13 @@
 FROM python:3.11-slim
 
+# LibreOffice（Office → PDF 预览用，约 500MB）
+# 加 fonts-noto-cjk 解决中文 PDF 字体缺失问题
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libreoffice \
+        fonts-noto-cjk \
+        fonts-noto-cjk-extra \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 COPY requirements.txt .

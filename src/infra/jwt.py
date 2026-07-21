@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from typing import Optional, List
 from jose import jwt
 import hashlib
@@ -48,7 +48,7 @@ def create_token(
     permissions: List[str] = None,
     expires_hours: Optional[int] = None,
 ) -> str:
-    expire = datetime.utcnow() + timedelta(
+    expire = datetime.now(timezone.utc) + timedelta(
         hours=expires_hours or settings.JWT_EXPIRE_HOURS
     )
     payload = {
@@ -68,7 +68,7 @@ def create_refresh_token(
 ) -> str:
     import uuid
     jti = str(uuid.uuid4())
-    expire = datetime.utcnow() + timedelta(
+    expire = datetime.now(timezone.utc) + timedelta(
         days=expires_days or settings.JWT_REFRESH_EXPIRE_DAYS
     )
     payload = {
