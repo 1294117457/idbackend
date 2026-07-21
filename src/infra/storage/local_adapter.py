@@ -1,11 +1,7 @@
 """本地文件系统实现（开发 / 单测用，不依赖 MinIO）
 
 把 key 当作相对路径写到 base_dir 下；
-get_access_url 返回 /static/{key}，需要 Nginx 代理 static_dir 到 base_dir。
-
-v6.0 新增：
-- get_download_url 返回 /static/{key}（开发环境无签名概念）
-- get_presigned_upload_url 抛 NotImplementedError（本地存储不支持签名上传）
+get_public_url 返回 /static/{key}，需要 Nginx 代理 static_dir 到 base_dir。
 """
 import os
 from typing import BinaryIO, Optional
@@ -21,9 +17,10 @@ class LocalAdapter(Storage):
         os.makedirs(base_dir, exist_ok=True)
 
     def _safe_join(self, key: str) -> str:
-        """防止路径穿越：剔除 '..' 和绝对路径前缀"""
         key = key.replace("..", "").lstrip("/\\")
         return os.path.join(self._base_dir, key)
+
+    # ============ 基础操作 ============
 
     async def upload(
         self,
@@ -48,39 +45,57 @@ class LocalAdapter(Storage):
             os.remove(path)
         return True
 
-    def get_access_url(self, key: str, expiry: int = 3600) -> str:
-        # 本地存储走 Nginx 静态目录（dev 环境假设有 Nginx /static/ 代理）
-        return f"/static/{key}"
+    def delete_prefix(self, prefix: str) -> int:
+        """删除指定前缀下的所有文件"""
+        prefix = prefix.strip("/")
+        full_prefix = os.path.join(self._base_dir, prefix)
+        count = 0
+
+        if not os.path.exists(full_prefix):
+            return 0
+
+        for root, dirs, files in os.walk(full_prefix, topdown=False):
+            for name in files:
+                os.remove(os.path.join(root, name))
+                count += 1
+            os.rmdir(root)
+
+        return count
+
+    # ============ 公开访问 ============
 
     def get_public_url(self, key: str) -> str:
-        # 本地存储：公开读 = 同一静态 URL（无签名）
         return f"/static/{key}"
 
-    def get_download_url(
-        self,
-        key: str,
-        original_name: Optional[str] = None,
-        expiry: int = 3600,
-        force_attachment: bool = True,
-    ) -> str:
-        """v6.0：本地存储直接返回静态路径，无签名"""
-        return f"/static/{key}"
+    def set_public_read_prefix(self, prefix: str) -> None:
+        pass  # 本地存储无权限概念
+
+    # ============ 私有访问 ============
 
     def get_presigned_upload_url(
         self,
         key: str,
         content_type: str = "application/octet-stream",
-        content_length: Optional[int] = None,
         expiry: int = 3600,
     ) -> dict:
-        """v6.0：本地存储不支持签名上传，调用方需 catch 此异常"""
         raise NotImplementedError(
             "LocalAdapter 不支持签名上传；开发环境请直接走 POST /api/file/upload 中转流"
         )
+
+    def get_presigned_download_url(
+        self,
+        key: str,
+        original_name: Optional[str] = None,
+        expiry: int = 3600,
+        as_attachment: bool = True,
+    ) -> str:
+        """本地存储直接返回静态路径，无签名"""
+        return f"/static/{key}"
+
+    # ============ 生命周期 ============
 
     def ensure_bucket(self) -> None:
         os.makedirs(self._base_dir, exist_ok=True)
 
     def close(self) -> None:
-        # 本地文件无需关闭资源
         pass

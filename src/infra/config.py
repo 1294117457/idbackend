@@ -70,9 +70,6 @@ class Settings(BaseSettings):
     # 文件上传
     MAX_FILE_SIZE: int = 50 * 1024 * 1024  # 50MB
     MAX_PREVIEW_FILE_SIZE: int = 5 * 1024 * 1024  # 5MB，仅预览用
-    MAX_OFFICE_PREVIEW_FILE_SIZE: int = 10 * 1024 * 1024  # 10MB，Office 文件入口限制
-    OFFICE_CONVERT_TIMEOUT: int = 30  # LibreOffice 转换超时（秒）
-    OFFICE_CONVERT_ENABLED: bool = True  # 全局开关：False 时 Office 文件直接走下载
     SYSTEM_ACCOUNTS: str = "admin"
     ALLOWED_ORIGINS: List[str] = ["*"]
 

@@ -82,6 +82,14 @@ class InvalidTokenError(BusinessError):
     default_message = "Token 无效"
 
 
+class UnsupportedMediaTypeError(BusinessError):
+    """文件类型不支持预览 → HTTP 400"""
+
+    http_code = 400
+    error_code = "UNSUPPORTED_MEDIA_TYPE"
+    default_message = "该文件类型不支持预览"
+
+
 __all__ = [
     "BusinessError",
     "NotFoundError",

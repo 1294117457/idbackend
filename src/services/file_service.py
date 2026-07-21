@@ -7,7 +7,9 @@
 - 事务边界由 Service 管理（§13.5 架构决策：依赖注入层只管 session 生命周期）
 """
 import io
-from datetime import datetime, timezone
+import logging
+import uuid
+from datetime import datetime
 from typing import Optional, Tuple
 
 from sqlalchemy import func, select
@@ -25,7 +27,11 @@ from src.app.schemas import (
     FileListVO,
     FileDataVO,
     NotFoundError,
+    BadRequestError,
 )
+from src.exceptions import UnsupportedMediaTypeError
+
+logger = logging.getLogger(__name__)
 
 
 # ========== Service ==========
@@ -48,6 +54,13 @@ class FileService:
             else:
                 print(f"[FileService] MinIO 补偿删除失败: {key} - {e}")
                 raise
+
+    async def _get_metadata_or_404(self, file_id: int) -> FileMetadata:
+        """通用：按 ID 查文件元数据，不存在抛 404"""
+        meta = await self._db.get(FileMetadata, file_id)
+        if not meta or meta.is_deleted:
+            raise NotFoundError(f"文件不存在：file_id={file_id}")
+        return meta
 
     # ---- 上传 ----
 
@@ -73,12 +86,12 @@ class FileService:
             raise
         await self._db.refresh(metadata)
 
-        # v6.0：返回下载签名 URL（带 attachment），1 小时有效
-        return metadata, self._storage.get_download_url(
-            metadata.object_name,
+        # 返回下载签名 URL（带 attachment），1 小时有效
+        return metadata, self._storage.get_presigned_download_url(
+            key=metadata.object_name,
             original_name=metadata.original_name,
             expiry=3600,
-            force_attachment=True,
+            as_attachment=True,
         )
 
     async def upload_avatar(
@@ -87,7 +100,15 @@ class FileService:
     ) -> Tuple[FileMetadata, str]:
 
         user_id = get_user_id()
-        new_meta = req.to_metadata(user_id)
+
+        # 用 Model 的工厂方法创建元数据（包含路径生成逻辑）
+        new_meta = FileMetadata.create(
+            category=FileCategory.AVATAR,
+            original_name=req.originalName,
+            content=req.content,
+            content_type=req.contentType,
+            user_id=user_id,
+        )
 
         # 找旧头像（允许不存在）
         old: Optional[FileMetadata] = (await self._db.execute(
@@ -98,14 +119,14 @@ class FileService:
             )
         )).scalar_one_or_none()
 
-        # 上传新头像
+        # 2. 上传到 MinIO
         await self._storage.upload(
             file_obj=io.BytesIO(req.content),
             key=new_meta.object_name,
             content_type=new_meta.content_type,
         )
 
-        # 事务 1：写新记录
+        # 3. 事务 1：写新记录
         self._db.add(new_meta)
         try:
             await self._db.commit()
@@ -115,22 +136,17 @@ class FileService:
             raise
         await self._db.refresh(new_meta)
 
-        # 事务 2：清理旧头像（独立事务，不阻塞主流程）
+        # 4. 事务 2：清理旧头像（独立事务，不阻塞主流程）
         if old and old.object_name != new_meta.object_name:
-            old.is_deleted = True
-            old.delete_time = datetime.now(timezone.utc).isoformat()
+            old.mark_deleted()
             try:
                 await self._db.commit()
                 await self._safe_delete(old.object_name, ignore_error=True)
             except Exception:
                 await self._db.rollback()
 
-        return new_meta, self._storage.get_download_url(
-            new_meta.object_name,
-            original_name=new_meta.original_name,
-            expiry=86400 * 7,           # 头像默认 7 天（业务长期展示）
-            force_attachment=False,     # 头像预览用，不强制下载
-        )
+        # 5. 返回公开直链（Policy 已设置 avatar/ 公开）
+        return new_meta, self._storage.get_public_url(new_meta.object_name)
 
     # ---- 查询 ----
 
@@ -164,147 +180,29 @@ class FileService:
 
     # ---- 预览 / 下载（v8.0 统一接口）----
 
-    async def get_download_data(
-        self,
-        file_id: int,
-        expiry_minutes: int = 60,
-    ) -> FileDataVO:
-        """返回 FileDataVO——预签名下载 URL，后端不再中转字节
-
-        - 后端零带宽（MinIO 直发前端）
-        - URL 带 Content-Disposition: attachment（浏览器强制下载）
-        - 默认 60min 过期，前端可在 query 调整 expiryMinutes（1~1440）
-        """
-        result = await self._db.execute(
-            select(FileMetadata).where(
-                FileMetadata.id == file_id,
-                FileMetadata.is_deleted == False,
-            )
-        )
-        meta = result.scalar_one_or_none()
-        if not meta:
-            raise NotFoundError(f"文件不存在：file_id={file_id}")
-
-        url = self._storage.get_download_url(
-            meta.object_name,
-            original_name=meta.original_name,
-            expiry=expiry_minutes * 60,
-            force_attachment=True,
-        )
-        return FileDataVO.from_orm_to_vo(meta, url)
-
-    async def get_preview_bytes(self, file_id: int) -> Tuple[FileVO, bytes]:
-        """返回 (FileVO, bytes)——用于后端代理预览接口
-
-        校验文件大小不超过 MAX_PREVIEW_FILE_SIZE（默认 5MB），
-        超过则抛异常，由路由层返回 413。
-        """
+    async def get_preview_for_inline(self, file_id: int) -> Tuple[FileVO, bytes]:
         from src.infra.config import get_settings
 
-        result = await self._db.execute(
-            select(FileMetadata).where(
-                FileMetadata.id == file_id,
-                FileMetadata.is_deleted == False,
-            )
-        )
-        meta = result.scalar_one_or_none()
-        if not meta:
-            raise NotFoundError(f"文件不存在：file_id={file_id}")
+        meta = await self._get_metadata_or_404(file_id)
 
-        data = await self._storage.download(meta.object_name)
+        if not meta.can_preview:
+            raise UnsupportedMediaTypeError(f"文件「{meta.original_name}」不支持预览")
 
         settings = get_settings()
-        if len(data) > settings.MAX_PREVIEW_FILE_SIZE:
+        if meta.file_size > settings.MAX_PREVIEW_FILE_SIZE:
             from fastapi import HTTPException, status
             raise HTTPException(
                 status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                 detail=f"预览文件大小不能超过 {settings.MAX_PREVIEW_FILE_SIZE // (1024 * 1024)}MB",
             )
-        return FileVO.from_orm_to_vo(meta), data
-
-    async def get_preview_for_inline(self, file_id: int) -> Tuple[FileVO, bytes, str]:
-        """返回 (FileVO, data, content_type)——用于 /preview 路由
-
-        与 get_preview_bytes 的区别：
-        - Office 文件 → 调用 LibreOffice 转为 PDF，返回 application/pdf
-        - 非 Office → 直接返回原字节 + 原 content_type
-        - Office 转换失败 → 抛 OfficeConvertError（路由层降级处理）
-        - 入口闸门：Office 文件原始大小 > MAX_OFFICE_PREVIEW_FILE_SIZE（10MB） → 413
-        """
-        from src.infra.config import get_settings
-        from src.services.office_converter import (
-            is_office_content_type,
-            convert_office_to_pdf,
-            OfficeConvertError,
-        )
-
-        result = await self._db.execute(
-            select(FileMetadata).where(
-                FileMetadata.id == file_id,
-                FileMetadata.is_deleted == False,
-            )
-        )
-        meta = result.scalar_one_or_none()
-        if not meta:
-            raise NotFoundError(f"文件不存在：file_id={file_id}")
-
-        settings = get_settings()
-
-        # Office 文件单独走"入口大小限制"——避免下载 100MB 文件再白白转换
-        if is_office_content_type(meta.content_type):
-            # 全局开关或 soffice 不可用 → 让 OfficeConvertError 抛"未安装"
-            from src.services.office_converter import is_soffice_available
-            if not settings.OFFICE_CONVERT_ENABLED or not is_soffice_available():
-                raise OfficeConvertError(
-                    "Office 文件预览功能未启用（OFFICE_CONVERT_ENABLED=False 或 LibreOffice 未安装）"
-                )
-            if meta.file_size > settings.MAX_OFFICE_PREVIEW_FILE_SIZE:
-                from fastapi import HTTPException, status
-                raise HTTPException(
-                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                    detail=(
-                        f"Office 文件预览不能超过 "
-                        f"{settings.MAX_OFFICE_PREVIEW_FILE_SIZE // (1024 * 1024)}MB，请下载查看"
-                    ),
-                )
-        else:
-            # 非 Office：复用原 MAX_PREVIEW_FILE_SIZE（5MB）
-            if meta.file_size > settings.MAX_PREVIEW_FILE_SIZE:
-                from fastapi import HTTPException, status
-                raise HTTPException(
-                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                    detail=(
-                        f"预览文件大小不能超过 "
-                        f"{settings.MAX_PREVIEW_FILE_SIZE // (1024 * 1024)}MB"
-                    ),
-                )
 
         data = await self._storage.download(meta.object_name)
-
-        # Office → PDF 转换
-        if is_office_content_type(meta.content_type):
-            try:
-                pdf_bytes = await convert_office_to_pdf(data, meta.original_name)
-            except OfficeConvertError as e:
-                # 路由层会捕获并降级为"提示下载"
-                raise
-            return FileVO.from_orm_to_vo(meta), pdf_bytes, "application/pdf"
-
-        return FileVO.from_orm_to_vo(meta), data, meta.content_type or "application/octet-stream"
+        return FileVO.from_orm_to_vo(meta), data
 
     # ---- 更新 / 删除 ----
 
     async def update_file(self, req: FileUpdateRequest, file_id: int) -> FileVO:
-
-        result = await self._db.execute(
-            select(FileMetadata).where(
-                FileMetadata.id == file_id,
-                FileMetadata.is_deleted == False,
-            )
-        )
-        meta = result.scalar_one_or_none()
-        if not meta:
-            raise NotFoundError(f"文件不存在：file_id={file_id}")
+        meta = await self._get_metadata_or_404(file_id)
 
         if not req.apply_to(meta):
             return FileVO.from_orm_to_vo(meta)
@@ -312,10 +210,27 @@ class FileService:
         await self._db.refresh(meta)
         return FileVO.from_orm_to_vo(meta)
 
+    async def get_download_data(self, file_id: int, expiry_minutes: int = 60) -> FileDataVO:
+        """获取文件的下载数据（签名 URL）
+
+        - 查询文件元数据，不存在抛 404
+        - 返回签名 URL，有效期由 expiry_minutes 控制
+        """
+        meta = await self._get_metadata_or_404(file_id)
+        url = self._storage.get_presigned_download_url(
+            key=meta.object_name,
+            original_name=meta.original_name,
+            expiry=expiry_minutes * 60,
+            as_attachment=True,
+        )
+        return FileDataVO.from_orm_to_vo(meta, url)
+
     async def delete_file(self, file_id: int) -> None:
-        meta = await self._db.get(FileMetadata, file_id)
-        if not meta or meta.is_deleted:
-            raise NotFoundError(f"文件不存在：file_id={file_id}")
-        meta.is_deleted = True
-        meta.delete_time = datetime.now(timezone.utc).isoformat()
+        meta = await self._get_metadata_or_404(file_id)
+
+        # EDITOR 类型不应走此路径
+        if meta.file_category == FileCategory.EDITOR:
+            raise BadRequestError("富文本图片不应通过此接口删除")
+
+        meta.mark_deleted()
         await self._db.commit()

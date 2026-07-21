@@ -9,6 +9,7 @@ from src.exceptions import (
     AccountDisabledError,
     RefreshTokenExpiredError,
     InvalidTokenError,
+    UnsupportedMediaTypeError,
 )
 
 __all__ = [
@@ -21,4 +22,5 @@ __all__ = [
     "AccountDisabledError",
     "RefreshTokenExpiredError",
     "InvalidTokenError",
+    "UnsupportedMediaTypeError",
 ]

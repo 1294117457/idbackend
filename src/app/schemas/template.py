@@ -1,29 +1,3 @@
-"""Template / Rule / Attribute 模块 DTO / VO
-
-架构约定（与 file 模块一致）：
-- Request 负责"接收输入 + 校验 + 提供转换方法（to_orm / apply_to / to_conditions）"
-- VO 只做"ORM → 序列化"的投影
-    - 转换方法为 `from_orm_to_vo(obj)`（语义清晰，与 Page.from_list_to_page 对称）
-- 列表场景使用 Page[T] / XXXListVO(Page[T]) 模式
-- type 字段统一通过 AttributeTypeEnum 校验；Rule 与 Attribute 联动
-
-字段语义（v4）：
-- Rule.type / Attribute.type: CONDITION / TRANSFORM
-  - CONDITION: value=""（分数下沉到 rule.score）
-  - TRANSFORM: value=公式（含 input 变量）
-- template 不带 type 字段（业务允许混用 CONDITION + TRANSFORM rule）
-
-v5（action-style 统一接口）：
-- Template：
-  - POST /api/bonus-template/save    新建：template + ruleIds（全量替换绑定的 rule）
-  - POST /api/bonus-template/update  编辑：template + ruleIds（全量 DIFF 重置 rule 绑定）
-  - POST /api/bonus-template/delete  删除：仅 templateId
-- Rule：
-  - POST /api/rule/save    新建：rule + attributeIds（全量替换绑定的 attribute）
-  - POST /api/rule/update  编辑：rule + attributeIds（全量 DIFF 重置 attribute 绑定）
-  - POST /api/rule/delete  删除：仅 ruleId（拒绝被 template 绑定）
-- 旧的 REST 路由（POST "" / PUT / DELETE /{id}/attributes 等）已被废弃，不再保留
-"""
 from decimal import Decimal
 from typing import Optional, List, Dict, Any
 
@@ -214,37 +188,23 @@ class AttributeUpdateRequest(BaseModel):
 
     def apply_to(self, attr) -> bool:
         """把非空字段写回 ORM。返回是否有字段被实际修改。"""
+        field_map = {
+            "name": self.name,
+            "group_code": self.groupCode,
+            "group_name": self.groupName,
+            "type": self.type,
+            "value": self.value,
+            "input_min": self.inputMin,
+            "input_max": self.inputMax,
+            "sort_order": self.sortOrder,
+            "description": self.description,
+            "is_active": self.isActive,
+        }
         modified = False
-        if self.name is not None:
-            attr.name = self.name
-            modified = True
-        if self.groupCode is not None:
-            attr.group_code = self.groupCode
-            modified = True
-        if self.groupName is not None:
-            attr.group_name = self.groupName
-            modified = True
-        if self.type is not None:
-            attr.type = self.type
-            modified = True
-        if self.value is not None:
-            attr.value = self.value
-            modified = True
-        if self.inputMin is not None:
-            attr.input_min = self.inputMin
-            modified = True
-        if self.inputMax is not None:
-            attr.input_max = self.inputMax
-            modified = True
-        if self.sortOrder is not None:
-            attr.sort_order = self.sortOrder
-            modified = True
-        if self.description is not None:
-            attr.description = self.description
-            modified = True
-        if self.isActive is not None:
-            attr.is_active = self.isActive
-            modified = True
+        for orm_field, value in field_map.items():
+            if value is not None and getattr(attr, orm_field) != value:
+                setattr(attr, orm_field, value)
+                modified = True
         return modified
 
 
@@ -344,25 +304,19 @@ class TemplateUpdateRequest(BaseModel):
 
     def apply_to(self, template) -> bool:
         """把非空字段写回 ORM。返回是否有字段被实际修改。"""
+        field_map = {
+            "name": self.name,
+            "max_score": self.maxScore,
+            "review_count": self.reviewCount,
+            "sort_order": self.sortOrder,
+            "description": self.description,
+            "is_active": self.isActive,
+        }
         modified = False
-        if self.name is not None:
-            template.name = self.name
-            modified = True
-        if self.maxScore is not None:
-            template.max_score = self.maxScore
-            modified = True
-        if self.reviewCount is not None:
-            template.review_count = self.reviewCount
-            modified = True
-        if self.sortOrder is not None:
-            template.sort_order = self.sortOrder
-            modified = True
-        if self.description is not None:
-            template.description = self.description
-            modified = True
-        if self.isActive is not None:
-            template.is_active = self.isActive
-            modified = True
+        for orm_field, value in field_map.items():
+            if value is not None and getattr(template, orm_field) != value:
+                setattr(template, orm_field, value)
+                modified = True
         return modified
 
 
@@ -417,6 +371,27 @@ class TemplateDetailVO(TemplateVO):
     ) -> "TemplateDetailVO":
         base = TemplateVO.from_orm_to_vo(obj).model_dump()
         return cls(**base, rules=rules or [], isMixedType=is_mixed_type)
+
+    @classmethod
+    def from_template_with_rules(
+        cls,
+        template,
+        rules: List,
+        is_mixed_type: bool = False,
+    ) -> "TemplateDetailVO":
+        """从 template + rules 构建完整 VO（与 _build_save_response 逻辑一致）
+
+        - rules: 已按 sort_order 排序的 Rule ORM 对象列表
+        - is_mixed_type: 是否混用 CONDITION + TRANSFORM
+        """
+        rule_vos = []
+        for rule in rules:
+            attr_vos = [
+                AttributeVO.from_orm_to_vo(a)
+                for a in sorted(rule.attributes, key=lambda a: a.sort_order)
+            ]
+            rule_vos.append(RuleDetailVO.from_orm_to_vo(rule, attr_vos))
+        return cls.from_orm_to_vo(template, rule_vos, is_mixed_type)
 
 
 class TemplateListQueryRequest(BaseModel):
@@ -533,31 +508,21 @@ class TemplatePayload(BaseModel):
 
     def apply_to(self, template) -> bool:
         """把字段写回 ORM（覆盖式；返回是否有字段被实际修改）"""
+        field_map = {
+            "name": self.name,
+            "category_id": self.categoryId,
+            "max_score": self.maxScore,
+            "review_count": self.reviewCount,
+            "sort_order": self.sortOrder,
+            "description": self.description,
+            "is_active": self.isActive,
+            "is_repeated": self.isRepeated,
+        }
         modified = False
-        if template.name != self.name:
-            template.name = self.name
-            modified = True
-        if template.category_id != self.categoryId:
-            template.category_id = self.categoryId
-            modified = True
-        if template.max_score != self.maxScore:
-            template.max_score = self.maxScore
-            modified = True
-        if template.review_count != self.reviewCount:
-            template.review_count = self.reviewCount
-            modified = True
-        if template.sort_order != self.sortOrder:
-            template.sort_order = self.sortOrder
-            modified = True
-        if (template.description or None) != (self.description or None):
-            template.description = self.description
-            modified = True
-        if template.is_active != self.isActive:
-            template.is_active = self.isActive
-            modified = True
-        if template.is_repeated != self.isRepeated:
-            template.is_repeated = self.isRepeated
-            modified = True
+        for orm_field, value in field_map.items():
+            if getattr(template, orm_field) != value:
+                setattr(template, orm_field, value)
+                modified = True
         return modified
 
 
@@ -651,25 +616,19 @@ class RulePayload(BaseModel):
 
     def apply_to(self, rule) -> bool:
         """覆盖式写回 ORM；返回是否有字段被实际修改。"""
+        field_map = {
+            "type": self.type,
+            "score": self.score,
+            "name": self.name,
+            "sort_order": self.sortOrder,
+            "description": self.description,
+            "is_active": self.isActive,
+        }
         modified = False
-        if rule.type != self.type:
-            rule.type = self.type
-            modified = True
-        if (rule.score or None) != (self.score or None):
-            rule.score = self.score
-            modified = True
-        if rule.name != self.name:
-            rule.name = self.name
-            modified = True
-        if rule.sort_order != self.sortOrder:
-            rule.sort_order = self.sortOrder
-            modified = True
-        if (rule.description or None) != (self.description or None):
-            rule.description = self.description
-            modified = True
-        if rule.is_active != self.isActive:
-            rule.is_active = self.isActive
-            modified = True
+        for orm_field, value in field_map.items():
+            if getattr(rule, orm_field) != value:
+                setattr(rule, orm_field, value)
+                modified = True
         return modified
 
 

@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict Elmt66XWeeSN5h8QXV1Tu3KPxAtRqx3n1uPNf1ses2xhUw9ofJwyrrT33zq5n89
+\restrict N4LhfZe1eigAhvZLRPPwLnfeZUHXwlWi5w6hhB3Bzbr4yFFMpWAfkkRRgl0BURm
 
 -- Dumped from database version 16.14 (Debian 16.14-1.pgdg13+1)
 -- Dumped by pg_dump version 16.14 (Ubuntu 16.14-0ubuntu0.24.04.1)
@@ -127,11 +127,19 @@ CREATE TABLE public.application_proofs (
     status character varying(20) NOT NULL,
     id integer NOT NULL,
     created_at timestamp without time zone NOT NULL,
-    updated_at timestamp without time zone NOT NULL
+    updated_at timestamp without time zone NOT NULL,
+    is_adjusted boolean DEFAULT false NOT NULL
 );
 
 
 ALTER TABLE public.application_proofs OWNER TO zhouch;
+
+--
+-- Name: COLUMN application_proofs.is_adjusted; Type: COMMENT; Schema: public; Owner: zhouch
+--
+
+COMMENT ON COLUMN public.application_proofs.is_adjusted IS '是否被老师修正过：false=学生申报分，true=老师修正过的分';
+
 
 --
 -- Name: application_proofs_id_seq; Type: SEQUENCE; Schema: public; Owner: zhouch
@@ -1626,5 +1634,5 @@ ALTER TABLE ONLY public.user_role
 -- PostgreSQL database dump complete
 --
 
-\unrestrict Elmt66XWeeSN5h8QXV1Tu3KPxAtRqx3n1uPNf1ses2xhUw9ofJwyrrT33zq5n89
+\unrestrict N4LhfZe1eigAhvZLRPPwLnfeZUHXwlWi5w6hhB3Bzbr4yFFMpWAfkkRRgl0BURm
 

@@ -47,3 +47,30 @@ minio资源获取问题
 3.后端新增专门访问minio文件资源给前端的BFF端口
 ```
 
+Storage 层（基础设施）：
+├── upload(key, content)
+├── download(key) → bytes           # 后端内部使用
+├── delete(key)
+├── get_public_url(key)             # 公开路径直链
+└── get_presigned_url(key, expiry, as_attachment, filename)  # 私有路径预签名
+
+FileService（应用服务）：
+├── 公开文件 → 返回 get_public_url()
+└── 私有文件 → 返回 get_presigned_url()
+
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  1. 编辑阶段（前端）                                                      │
+│     用户粘贴/插入图片 → 上传到 /editor/upload → MinIO: editor/temp/{uuid}  │
+│     → DOM 插入 <img src="editor://temp/{uuid}.{ext}">                    │
+├─────────────────────────────────────────────────────────────────────────┤
+│  2. 保存阶段（后端 sign_html）                                            │
+│     接收 editor://temp/{uuid} → 移动到 editor/{entity}/{id}/{filename}   │
+│     → 替换占位符为 editor://object/{entity}/{id}/{filename}              │
+├─────────────────────────────────────────────────────────────────────────┤
+│  3. 渲染阶段（后端 sign_html）                                            │
+│     editor://object/template/123/uuid.png → 签名 URL                     │
+├─────────────────────────────────────────────────────────────────────────┤
+│  4. 删除阶段（后端 delete_by_entity）                                       │
+│     删除 editor/template/{id}/*                                          │
+└─────────────────────────────────────────────────────────────────────────┘

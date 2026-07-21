@@ -20,7 +20,7 @@ from src.app.schemas import (
     FileDataVO,
 )
 from src.services.file_service import FileService
-from src.services.office_converter import OfficeConvertError
+from src.exceptions import UnsupportedMediaTypeError
 
 router = APIRouter(prefix="/api/file", tags=["文件"])
 
@@ -69,6 +69,7 @@ async def upload_avatar(
     req = FileAvatarUploadRequest(
         content=content,
         contentType=file.content_type or "image/jpeg",
+        originalName=file.filename or "avatar",
     )
     _, url = await service.upload_avatar(req)
     return R.success_resp(url, msg="头像上传成功")
@@ -77,16 +78,16 @@ async def upload_avatar(
 # ============ 1.5 富文本专用：不写 file_metadata，独立通道 ============
 
 def _make_editor_object_name(filename: str | None) -> str:
-    """生成 editor/{uuid}.{ext} 形式的 object key。
+    """生成 editor/temp/{uuid}.{ext} 形式的 object key。
 
-    - 强制 editor/ 前缀：让 RichTextImageProcessor 的安全过滤直接命中
+    - 固定 editor/temp/ 前缀：临时文件，保存时迁移到最终路径
     - 后缀从原文件名提取并截断到 10 字符（避免超长扩展名被恶意利用）
     - 兜底无扩展名时只保留 uuid
     """
     ext = Path(filename or "img").suffix.lstrip(".").lower()[:10]
     if ext and all(c.isalnum() or c in "._-" for c in ext):
-        return f"editor/{uuid4().hex}.{ext}"
-    return f"editor/{uuid4().hex}"
+        return f"editor/temp/{uuid4().hex}.{ext}"
+    return f"editor/temp/{uuid4().hex}"
 
 
 @router.post("/editor/upload", status_code=201)
@@ -95,15 +96,15 @@ async def upload_editor_image(
     file: UploadFile = File(..., description="富文本图片"),
     storage: Storage = Depends(get_storage),
 ):
-    """富文本图片上传：直接存 MinIO，不写 file_metadata。
+    """富文本图片上传：直接存 MinIO editor/temp/，不写 file_metadata。
 
     与 /upload 的区别：
     - 走 storage 抽象层，不进 file_service（避免写 file_metadata 表）
-    - 固定 editor/ 前缀的 key
+    - 固定 editor/temp/ 前缀的 key（临时文件，保存时迁移到最终路径）
     - 返回 objectName + 1 小时签名 URL
 
     前端使用：
-    - 上传成功拿 objectName 拼占位 src="editor://object/{objectName}"
+    - 上传成功拿 objectName 拼占位 src="editor://temp/{filename}"
     - 编辑期 / 渲染期通过 /editor/sign-urls 拿签名 URL
     """
     key = _make_editor_object_name(file.filename)
@@ -114,11 +115,11 @@ async def upload_editor_image(
         key=key,
         content_type=content_type,
     )
-    url = storage.get_download_url(
+    url = storage.get_presigned_download_url(
         key,
         original_name=None,
         expiry=3600,
-        force_attachment=False,
+        as_attachment=False,
     )
     return R.created_resp(
         {"objectName": key, "url": url},
@@ -154,11 +155,11 @@ async def sign_editor_urls(
         return R.success_resp({})
 
     url_map = {
-        k: storage.get_download_url(
+        k: storage.get_presigned_download_url(
             k,
             original_name=None,
             expiry=expiryMinutes * 60,
-            force_attachment=False,
+            as_attachment=False,
         )
         for k in safe_keys
     }
@@ -185,22 +186,19 @@ async def get_preview(
     file_id: int,
     service: FileService = Depends(get_file_service),
 ):
-    """直接预览文件——从 MinIO 拉取后返回（Office 文件自动转 PDF）
+    """直接预览文件——支持 PDF、图片、Word(docx)
 
     行为：
-    - 图片/PDF/视频/音频：原样返回原 content-type
-    - Office（docx/xlsx/pptx/doc/xls/ppt/odt/ods/odp）：用 LibreOffice headless 转 PDF 后返回
-    - 超过大小阈值：413（图片/PDF 5MB、Office 10MB）
-    - Office 转换失败 / LibreOffice 未安装：返 501 + 提示下载
+    - 支持类型：PDF、图片、Word(docx)，直接返回原字节
+    - 不支持类型：抛 UnsupportedMediaTypeError
+    - 超过大小阈值：413
     """
     try:
-        meta, data, content_type = await service.get_preview_for_inline(file_id)
-    except OfficeConvertError as e:
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail=f"Office 文件预览转换失败，请下载查看：{e!s}",
-        )
+        meta, data = await service.get_preview_for_inline(file_id)
+    except UnsupportedMediaTypeError:
+        return R.success_resp({"unsupported": True})
 
+    content_type = meta.contentType or "application/octet-stream"
     encoded_name = quote(meta.originalName, safe="")
     disposition = f"inline; filename*=UTF-8''{encoded_name}"
     return Response(

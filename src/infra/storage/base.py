@@ -1,8 +1,4 @@
-"""存储抽象基类 —— 所有存储后端必须实现的契约
-
-业务只依赖这个接口，不依赖任何具体实现（boto3 / 本地文件 / ...）。
-通过 Depends(get_storage) 注入；类型注解是 Storage，运行时是 MinIOAdapter / LocalAdapter。
-"""
+"""存储抽象基类 —— 所有存储后端必须实现的契约"""
 from abc import ABC, abstractmethod
 from typing import BinaryIO, Optional
 
@@ -10,7 +6,7 @@ from typing import BinaryIO, Optional
 class Storage(ABC):
     """文件存储的统一接口"""
 
-    # ============= 业务操作 =============
+    # ============ 基础操作 ============
 
     @abstractmethod
     async def upload(
@@ -30,72 +26,58 @@ class Storage(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get_access_url(self, key: str, expiry: int = 3600) -> str:
+    def delete_prefix(self, prefix: str) -> int:
+        """删除指定前缀下的所有对象，返回删除数量。"""
         raise NotImplementedError
+
+    @abstractmethod
+    def copy_object(self, src_key: str, dst_key: str) -> bool:
+        """复制对象，返回是否成功。"""
+        raise NotImplementedError
+
+    # ============ 公开访问（头像）============
 
     @abstractmethod
     def get_public_url(self, key: str) -> str:
         raise NotImplementedError
 
-    def set_bucket_public_read_prefix(self, prefix: str) -> None:
-        """将 bucket 指定前缀设为公开读（匿名下载）。
+    def set_public_read_prefix(self, prefix: str) -> None:
+        """将指定前缀设为公开读（匿名下载）。
 
-        本地适配器无需实现，默认 no-op。
-        对象存储适配器（MinIO / S3）应 override 以调用 put_bucket_policy。
+        本地适配器默认 no-op；MinIO/S3 适配器 override 调用 put_bucket_policy。
         """
-        return None
 
-    # ============= v6.0 新增：签名模式 =============
+    # ============ 私有访问（预签名）============
 
     @abstractmethod
     def get_presigned_upload_url(
         self,
         key: str,
         content_type: str = "application/octet-stream",
-        content_length: Optional[int] = None,
         expiry: int = 3600,
     ) -> dict:
-        """生成 MinIO 预签名 PUT URL（v6.0 预留接口，本期不启用）
+        """返回预签名上传 URL + headers。
 
-        返回结构：
-            {
-                "url": "https://minio/...?X-Amz-Signature=xxx",
-                "headers": {"Content-Type": "..."},
-                "expires_at": "2026-07-12T19:00:00Z",
-            }
-
-        设计目的：未来支持浏览器直传，绕过应用服务器。
-        本期（v6.0）改造不启用，签名上传留给 v7.0。
-        LocalAdapter 应抛 NotImplementedError。
+        返回格式：
+        {
+            "url": "https://...",
+            "headers": {"Content-Type": "image/jpeg"},
+            "expires_at": "2025-01-01T00:00:00Z"
+        }
         """
         raise NotImplementedError
 
     @abstractmethod
-    def get_download_url(
+    def get_presigned_download_url(
         self,
         key: str,
         original_name: Optional[str] = None,
         expiry: int = 3600,
-        force_attachment: bool = True,
+        as_attachment: bool = True,
     ) -> str:
-        """生成 MinIO 预签名 GET URL（v6.0 主用接口）
-
-        Args:
-            key: 对象键名
-            original_name: 原始文件名（用于 Content-Disposition）
-            expiry: URL 过期秒数（默认 3600 = 1 小时）
-            force_attachment: True → 浏览器强制下载而非预览
-                              （添加 response-content-disposition: attachment）
-
-        Returns:
-            预签名 URL（含 ResponseContentDisposition 参数）
-
-        v6.0 行为：所有适配器都应实现。
-        LocalAdapter 直接返回 /static/{key}。
-        """
         raise NotImplementedError
 
-    # ============= 生命周期 =============
+    # ============ 生命周期 ============
 
     @abstractmethod
     def ensure_bucket(self) -> None:

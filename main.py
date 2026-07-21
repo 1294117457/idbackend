@@ -33,6 +33,10 @@ async def lifespan(app: FastAPI):
         storage = create_storage()
         set_storage(storage)
         storage.ensure_bucket()
+        storage.set_public_read_prefix("avatar")
+        # storage.set_public_read_prefix("proof")
+        # storage.set_public_read_prefix("policy")
+        # storage.set_public_read_prefix("editor")
         print(f"[idpython] 存储后端就绪: {type(storage).__name__}")
     except Exception as e:
         print(f"[idpython] 存储初始化失败: {e}")
