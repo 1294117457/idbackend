@@ -58,8 +58,6 @@ class TemplateService:
         storage: Storage,
         rich_text_service: RichTextService,
         req: TemplateListQueryRequest,
-        *,
-        raw: bool = False,
     ) -> tuple[List[Template], int]:
         total = await TemplateRepository.count(
             db,
@@ -73,13 +71,12 @@ class TemplateService:
             offset=(req.pageNum - 1) * req.pageSize,
             limit=req.pageSize,
         )
-        if not raw:
-            for t in templates:
-                t.description = rich_text_service.sign_html(
-                    t.description,
-                    entity_type="template",
-                    entity_id=t.id,
-                )
+        for t in templates:
+            t.description = rich_text_service.sign_html(
+                t.description,
+                entity_type="template",
+                entity_id=t.id,
+            )
         return templates, total
 
     @staticmethod
@@ -88,25 +85,21 @@ class TemplateService:
         storage: Storage,
         rich_text_service: RichTextService,
         category_id: int,
-        *,
         is_active: bool = True,
-        raw: bool = False,
     ) -> List[Template]:
         """按分类 ID 列出模板（学生端选择 template）。
 
-        v9：返回前做富文本占位替换。
-        v9.5：raw=True 时不做占位替换。
+        返回前做富文本占位替换。
         """
         templates = await TemplateRepository.list_by_category(
             db, category_id, is_active=is_active,
         )
-        if not raw:
-            for t in templates:
-                t.description = rich_text_service.sign_html(
-                    t.description,
-                    entity_type="template",
-                    entity_id=t.id,
-                )
+        for t in templates:
+            t.description = rich_text_service.sign_html(
+                t.description,
+                entity_type="template",
+                entity_id=t.id,
+            )
         return templates
 
     @staticmethod
@@ -115,23 +108,19 @@ class TemplateService:
         storage: Storage,
         rich_text_service: RichTextService,
         template_id: int,
-        *,
-        raw: bool = False,
     ) -> Template:
         """单条查询，找不到抛 NotFoundError。
 
-        v9：返回前做富文本占位替换。
-        v9.5：raw=True 时不做占位替换（编辑场景）。
+        返回前做富文本占位替换。
         """
         template = await TemplateRepository.get_by_id(db, template_id)
         if template is None:
             raise NotFoundError(f"模板(id={template_id})不存在")
-        if not raw:
-            template.description = rich_text_service.sign_html(
-                template.description,
-                entity_type="template",
-                entity_id=template_id,
-            )
+        template.description = rich_text_service.sign_html(
+            template.description,
+            entity_type="template",
+            entity_id=template_id,
+        )
         return template
 
     @staticmethod
@@ -140,25 +129,21 @@ class TemplateService:
         storage: Storage,
         rich_text_service: RichTextService,
         template_id: int,
-        *,
-        raw: bool = False,
     ) -> Template:
         """加载完整规则树（template → rules → attributes）。
 
         使用 selectinload，3 条 SQL 拿到全部数据，无 N+1。
 
-        v9：返回前做富文本占位替换。
-        v9.5：raw=True 时不做占位替换（编辑场景），前端富文本编辑器内自己渲染签名 URL。
+        返回前做富文本占位替换。
         """
         template = await TemplateRepository.get_with_rules(db, template_id)
         if template is None:
             raise NotFoundError(f"模板(id={template_id})不存在")
-        if not raw:
-            template.description = rich_text_service.sign_html(
-                template.description,
-                entity_type="template",
-                entity_id=template_id,
-            )
+        template.description = rich_text_service.sign_html(
+            template.description,
+            entity_type="template",
+            entity_id=template_id,
+        )
         return template
 
     @staticmethod
@@ -233,7 +218,7 @@ class TemplateService:
     ) -> Template:
         """修改模板。"""
         template = await TemplateService.get_by_id(
-            db, storage, rich_text_service, template_id, raw=True,
+            db, storage, rich_text_service, template_id,
         )
 
         modified = req.apply_to(template)
@@ -264,7 +249,7 @@ class TemplateService:
         """
         # 校验存在性
         await TemplateService.get_by_id(
-            db, storage, rich_text_service, template_id, raw=True,
+            db, storage, rich_text_service, template_id,
         )
 
         from src.services.rule_service import RuleService
@@ -298,7 +283,7 @@ class TemplateService:
     ) -> None:
         """解绑 rule（不影响 rule 本体）。"""
         await TemplateService.get_by_id(
-            db, storage, rich_text_service, template_id, raw=True,
+            db, storage, rich_text_service, template_id,
         )
         await TemplateRepository.unbind_rule(db, template_id, rule_id)
         await TemplateRepository.commit(db)

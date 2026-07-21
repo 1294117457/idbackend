@@ -98,14 +98,8 @@ async def upload_editor_image(
 ):
     """富文本图片上传：直接存 MinIO editor/temp/，不写 file_metadata。
 
-    与 /upload 的区别：
-    - 走 storage 抽象层，不进 file_service（避免写 file_metadata 表）
-    - 固定 editor/temp/ 前缀的 key（临时文件，保存时迁移到最终路径）
-    - 返回 objectName + 1 小时签名 URL
-
-    前端使用：
-    - 上传成功拿 objectName 拼占位 src="editor://temp/{filename}"
-    - 编辑期 / 渲染期通过 /editor/sign-urls 拿签名 URL
+    - 固定 editor/temp/ 前缀的 key
+    - 返回签名 URL，前端直接存储在 HTML 中
     """
     key = _make_editor_object_name(file.filename)
     content_type = file.content_type or "application/octet-stream"
@@ -125,45 +119,6 @@ async def upload_editor_image(
         {"objectName": key, "url": url},
         msg="富文本图片上传成功",
     )
-
-
-@router.post("/editor/sign-urls")
-async def sign_editor_urls(
-    keys: list[str] = Body(..., embed=True, description="object key 列表（去重）"),
-    expiryMinutes: int = Query(
-        60,
-        ge=1,
-        le=1440,
-        description="URL 过期分钟数（默认 60min，最大 24h）",
-    ),
-    storage: Storage = Depends(get_storage),
-):
-    """富文本占位渲染专用：按 object key 批量签 URL，**不查 DB**。
-
-    - 仅允许 editor/ 前缀（防滥用签其它类别的对象）
-    - 不存在的 key 不会出现在返回 map 里（前端静默降级，破图占位由后端 _do_replace 兜底）
-    """
-    safe_keys: set[str] = set()
-    for k in keys:
-        if not isinstance(k, str) or not k.startswith("editor/"):
-            continue
-        # editor/ 后面必须有内容（防裸 "editor/"）
-        if len(k) <= len("editor/"):
-            continue
-        safe_keys.add(k)
-    if not safe_keys:
-        return R.success_resp({})
-
-    url_map = {
-        k: storage.get_presigned_download_url(
-            k,
-            original_name=None,
-            expiry=expiryMinutes * 60,
-            as_attachment=False,
-        )
-        for k in safe_keys
-    }
-    return R.success_resp(url_map, msg="ok")
 
 
 # ============ 2. 查询 ============

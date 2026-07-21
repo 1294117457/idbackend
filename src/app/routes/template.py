@@ -98,15 +98,6 @@ async def list_templates_by_category(
 @router.get("/{template_id}")
 async def get_template_detail(
     template_id: int = Path(..., ge=1),
-    raw: bool = Query(
-        False,
-        description=(
-            "是否返回原始描述（不替换占位 → 签名 URL）。"
-            "True：编辑场景，前端 RichEditor 期望看到 editor://object/{objectName}，"
-            "由前端自己渲染签名 URL + 维护 data-objectname 用于反查回占位。"
-            "False / 不传：渲染场景（学生/老师查看），后端直接返回签名 URL。"
-        ),
-    ),
     db: AsyncSession = Depends(get_db),
     storage: Storage = Depends(get_storage),
     rich_text_service: RichTextService = Depends(get_rich_text_service),
@@ -116,11 +107,10 @@ async def get_template_detail(
     使用 selectinload 一次性 JOIN 完整数据（template → rules → attributes），
     共 3 条 SELECT（与 rule / attribute 数量无关）。
 
-    v9：默认对 description 做占位替换。
-    v9.5：raw=true 时不做占位替换（编辑场景）。
+    返回前对 description 做占位替换。
     """
     template = await TemplateService.get_with_rules(
-        db, storage, rich_text_service, template_id, raw=raw,
+        db, storage, rich_text_service, template_id,
     )
     is_mixed = await TemplateService.is_mixed_type(db, template_id)
 

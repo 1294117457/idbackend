@@ -1,6 +1,6 @@
 from datetime import datetime, timezone, timedelta
 from typing import BinaryIO, Optional
-from urllib.parse import quote, urlparse, parse_qs, urlencode
+from urllib.parse import quote, urlparse
 
 import boto3
 from botocore.config import Config
@@ -145,12 +145,17 @@ class MinIOAdapter(Storage):
             ExpiresIn=expiry,
         )
         # 返回相对路径：/bucket/key?query_string
+        # 直接保留原始 query string，避免 parse_qs + urlencode 破坏签名参数结构
+        # （特别是 X-Amz-Credential=['...'] 中的 [] 会被误解析为数组语法）
         parsed = urlparse(full_url)
-        query_params = parse_qs(parsed.query)
-        query_string = urlencode(query_params, safe="")
-        relative_path = f"/{self._bucket}/{key}"
-        if query_string:
-            relative_path = f"{relative_path}?{query_string}"
+        bucket_prefix = f"/{self._bucket}/"
+        key_pos = parsed.path.find(bucket_prefix)
+        if key_pos == -1:
+            # 兜底：直接返回完整路径（理论上不会走到这里）
+            return parsed.path.lstrip("/") + (f"?{parsed.query}" if parsed.query else "")
+        relative_path = parsed.path[key_pos:]  # 含 /bucket 前缀
+        if parsed.query:
+            relative_path = f"{relative_path}?{parsed.query}"
         return relative_path
 
     # ============ 生命周期 ============
