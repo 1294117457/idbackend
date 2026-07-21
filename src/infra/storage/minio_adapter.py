@@ -1,6 +1,6 @@
 from datetime import datetime, timezone, timedelta
 from typing import BinaryIO, Optional
-from urllib.parse import quote
+from urllib.parse import quote, urlparse, parse_qs, urlencode
 
 import boto3
 from botocore.config import Config
@@ -139,11 +139,19 @@ class MinIOAdapter(Storage):
                 )
             else:
                 params["ResponseContentDisposition"] = "attachment"
-        return self._client.generate_presigned_url(
+        full_url = self._client.generate_presigned_url(
             ClientMethod="get_object",
             Params=params,
             ExpiresIn=expiry,
         )
+        # 返回相对路径：/bucket/key?query_string
+        parsed = urlparse(full_url)
+        query_params = parse_qs(parsed.query)
+        query_string = urlencode(query_params, safe="")
+        relative_path = f"/{self._bucket}/{key}"
+        if query_string:
+            relative_path = f"{relative_path}?{query_string}"
+        return relative_path
 
     # ============ 生命周期 ============
 
@@ -184,7 +192,7 @@ class MinIOAdapter(Storage):
 
     def close(self) -> None:
         self._client.close()
-        
+
 def build_default_minio_adapter() -> MinIOAdapter:
     s = get_settings()
     return MinIOAdapter(
