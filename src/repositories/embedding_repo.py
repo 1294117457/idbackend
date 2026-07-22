@@ -259,22 +259,19 @@ class EmbeddingRepository:
         """使用 pgvector 余弦距离在数据库层完成向量检索。"""
         from sqlalchemy import text
 
-        # 避免 Python str(list) 对极小值使用科学记号（pgvector 无法解析）
-        vec_str = "[" + ",".join(f"{v:.10f}" for v in query_vector) + "]"
-
         sql = """
             SELECT id, source_id, chunk_index, title, content, category,
-                   1 - (embedding <=> :query_vector::vector) AS score
+                   1 - (embedding <=> :query_vector) AS score
             FROM embeddings
             WHERE embedding IS NOT NULL
         """
-        params: dict = {"query_vector": vec_str, "top_k": top_k}
+        params: dict = {"query_vector": str(query_vector), "top_k": top_k}
 
         if category:
             sql += " AND category = :category"
             params["category"] = category
 
-        sql += " ORDER BY embedding <=> :query_vector::vector LIMIT :top_k"
+        sql += " ORDER BY embedding <=> :query_vector LIMIT :top_k"
 
         result = await db.execute(text(sql), params)
         rows = result.mappings().all()
