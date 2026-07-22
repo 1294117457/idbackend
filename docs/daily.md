@@ -47,18 +47,7 @@ minio资源获取问题
 3.后端新增专门访问minio文件资源给前端的BFF端口
 ```
 
-Storage 层（基础设施）：
-├── upload(key, content)
-├── download(key) → bytes           # 后端内部使用
-├── delete(key)
-├── get_public_url(key)             # 公开路径直链
-└── get_presigned_url(key, expiry, as_attachment, filename)  # 私有路径预签名
-
-FileService（应用服务）：
-├── 公开文件 → 返回 get_public_url()
-└── 私有文件 → 返回 get_presigned_url()
-
-
+```
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  1. 编辑阶段（前端）                                                      │
 │     用户粘贴/插入图片 → 上传到 /editor/upload → MinIO: editor/temp/{uuid}  │
@@ -74,3 +63,30 @@ FileService（应用服务）：
 │  4. 删除阶段（后端 delete_by_entity）                                       │
 │     删除 editor/template/{id}/*                                          │
 └─────────────────────────────────────────────────────────────────────────┘
+```
+
+
+
+
+
+
+
+#### Embedding
+
+```
+src/
+├── models/
+│   └── embedding.py              # ✅ 已创建
+├── repositories/
+│   └── embedding_repo.py        # ✅ 已创建，向量 CRUD
+├── services/
+│   └── embedding_service.py     # ✅ 已创建，包含：
+│       ├── parse_file()         # 解析文件 → txt
+│       ├── chunk_text()         # 文本切块
+│       ├── generate_embedding() # 调用 Qwen API
+│       ├── upsert()            # 存向量
+│       └── search()            # 向量检索
+└── agent/
+    └── graph/                  # Agent 直接调用 EmbeddingService
+```
+

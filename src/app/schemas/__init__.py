@@ -142,3 +142,21 @@ from src.app.schemas.auth import (  # noqa: E402, F401
     UserCreateResultVO,
     CaptchaVO,
 )
+
+# ========== Embedding ==========
+
+from src.app.schemas.embedding import (  # noqa: E402, F401
+    EmbeddingUploadRequest,
+    EmbeddingUpdateRequest,
+    EmbeddingQueryRequest,
+    EmbeddingDeleteRequest,
+    EmbeddingSearchRequest,
+    EmbeddingVO,
+    EmbeddingDetailVO,
+    EmbeddingSearchResultVO,
+    EmbeddingUploadResultVO,
+    EmbeddingDeleteResultVO,
+    EmbeddingStatsVO,
+    EmbeddingListVO,
+    EmbeddingSearchListVO,
+)

@@ -117,16 +117,3 @@ class FileMetadata(Base, TimestampMixin):
     def is_owned_by(self, user_id: int) -> bool:
         """归属校验——领域行为"""
         return self.upload_user_id == user_id
-
-
-class PolicyDocument(Base, TimestampMixin):
-    """政策文档表 (用于 RAG)"""
-    __tablename__ = "policy_documents"
-
-    title: Mapped[str] = mapped_column(String(200), nullable=False)
-    content: Mapped[str] = mapped_column(String, nullable=False)
-    category: Mapped[Optional[str]] = mapped_column(String(50))
-    source_url: Mapped[Optional[str]] = mapped_column(String(500))
-    embedding: Mapped[Optional[str]] = mapped_column(String)
-    doc_metadata: Mapped[Optional[dict]] = mapped_column(JSON, default=dict)
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True)

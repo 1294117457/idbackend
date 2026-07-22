@@ -22,10 +22,14 @@ router = APIRouter(prefix="/api/system/config", tags=["系统配置"])
 
 
 class AgentConfig(BaseModel):
+    provider: Optional[str] = None
     api_key: Optional[str] = None
     base_url: Optional[str] = None
     chat_model: Optional[str] = None
+    embedding_api_key: Optional[str] = None
+    embedding_base_url: Optional[str] = None
     embedding_model: Optional[str] = None
+    embedding_dim: Optional[int] = None
 
 
 class SmtpConfig(BaseModel):
@@ -51,10 +55,14 @@ async def get_config(
 
     return R.query_resp({
         "agent": {
-            "api_key": settings.QWEN3_API_KEY[:4] + "****" if settings.QWEN3_API_KEY else "",
-            "base_url": settings.QWEN_BASE_URL,
-            "chat_model": settings.QWEN_CHAT_MODEL,
-            "embedding_model": settings.QWEN_EMBEDDING_MODEL,
+            "provider": settings.LLM_PROVIDER,
+            "api_key": settings.LLM_API_KEY[:4] + "****" if settings.LLM_API_KEY else "",
+            "base_url": settings.LLM_BASE_URL,
+            "chat_model": settings.LLM_CHAT_MODEL,
+            "embedding_api_key": settings.EMBEDDING_API_KEY[:4] + "****" if settings.EMBEDDING_API_KEY else "",
+            "embedding_base_url": settings.EMBEDDING_BASE_URL,
+            "embedding_model": settings.EMBEDDING_MODEL,
+            "embedding_dim": settings.EMBEDDING_DIM,
         },
         "smtp": {
             "smtp_host": settings.SMTP_HOST,
@@ -75,10 +83,14 @@ async def get_agent_config(
     settings = get_settings()
 
     return R.query_resp({
-        "api_key": settings.QWEN3_API_KEY[:4] + "****" if settings.QWEN3_API_KEY else "",
-        "base_url": settings.QWEN_BASE_URL,
-        "chat_model": settings.QWEN_CHAT_MODEL,
-        "embedding_model": settings.QWEN_EMBEDDING_MODEL,
+        "provider": settings.LLM_PROVIDER,
+        "api_key": settings.LLM_API_KEY[:4] + "****" if settings.LLM_API_KEY else "",
+        "base_url": settings.LLM_BASE_URL,
+        "chat_model": settings.LLM_CHAT_MODEL,
+        "embedding_api_key": settings.EMBEDDING_API_KEY[:4] + "****" if settings.EMBEDDING_API_KEY else "",
+        "embedding_base_url": settings.EMBEDDING_BASE_URL,
+        "embedding_model": settings.EMBEDDING_MODEL,
+        "embedding_dim": settings.EMBEDDING_DIM,
     })
 
 
@@ -94,10 +106,14 @@ async def update_agent_config(
         lines = f.readlines()
 
     updates = {
-        "QWEN3_API_KEY": config.api_key,
-        "QWEN_BASE_URL": config.base_url,
-        "QWEN_CHAT_MODEL": config.chat_model,
-        "QWEN_EMBEDDING_MODEL": config.embedding_model,
+        "LLM_PROVIDER": config.provider,
+        "LLM_API_KEY": config.api_key,
+        "LLM_BASE_URL": config.base_url,
+        "LLM_CHAT_MODEL": config.chat_model,
+        "EMBEDDING_API_KEY": config.embedding_api_key,
+        "EMBEDDING_BASE_URL": config.embedding_base_url,
+        "EMBEDDING_MODEL": config.embedding_model,
+        "EMBEDDING_DIM": str(config.embedding_dim) if config.embedding_dim else None,
     }
 
     new_lines = []

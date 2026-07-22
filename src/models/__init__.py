@@ -26,7 +26,8 @@ from src.models.template import (
 )
 from src.models.template_category import TemplateCategory
 from src.models.extra_info_field import ExtraInfoField
-from src.models.file import FileMetadata, FileCategory, PolicyDocument
+from src.models.file import FileMetadata, FileCategory
+from src.models.embedding import Embedding, EmbeddingCategory
 from src.models.config import SystemConfig, AgentSession
 
 __all__ = [
@@ -66,7 +67,9 @@ __all__ = [
     # File
     "FileMetadata",
     "FileCategory",
-    "PolicyDocument",
+    # Embedding
+    "Embedding",
+    "EmbeddingCategory",
     # Config
     "SystemConfig",
     "AgentSession",
