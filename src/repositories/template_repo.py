@@ -9,6 +9,7 @@
 - 静态方法风格（对齐 TemplateCategoryRepository / FileService）
 - selectinload 一次 JOIN 完整规则树（template → rules → attributes），避免 N+1
 """
+
 from decimal import Decimal
 from typing import List, Optional, Iterable
 
@@ -262,10 +263,7 @@ class TemplateRepository:
         if deduped_ids:
             await db.execute(
                 insert(TemplateRule),
-                [
-                    {"template_id": template_id, "rule_id": rid}
-                    for rid in deduped_ids
-                ],
+                [{"template_id": template_id, "rule_id": rid} for rid in deduped_ids],
             )
 
     @staticmethod

@@ -2,11 +2,12 @@
 
 提供管理端的 embedding 上传、删除、查询等功能。
 """
-from fastapi import APIRouter, Depends, UploadFile, File
+from fastapi import APIRouter, Depends, UploadFile, File, Form
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.dependencies import get_db
 from src.app import response as R
+from src.infra.file_parser import parse_file
 from src.services.embedding_service import get_embedding_service
 from src.app.schemas.embedding import (
     EmbeddingUploadRequest,
@@ -29,11 +30,7 @@ async def upload_embedding(
     request: EmbeddingUploadRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """上传并索引新的 embedding。
-
-    - 生成向量并存储到数据库
-    - 同一 category + ref_id 组合会执行 upsert（更新）
-    """
+    """上传文本 → 切块 → 生成向量 → 入库"""
     service = get_embedding_service()
     result = await service.upload(db, request)
     return R.query_resp(result)
@@ -44,21 +41,15 @@ async def upload_file_and_parse(
     file: UploadFile = File(..., description="支持 PDF/DOCX/XLSX/TXT"),
     db: AsyncSession = Depends(get_db),
 ):
-    """上传文件 → 自动解析文本 → 返回解析后的内容（不直接入库）。
-
-    用于：
-    - 前端预览解析结果
-    - 用户确认后再手动入库
-    """
+    """上传文件 → 解析文本 → 返回内容（不入库，用于预览）"""
     content = await file.read()
     if not content:
-        return R.error_resp("文件内容为空")
+        return R.bad_request_resp("文件内容为空")
 
-    service = get_embedding_service()
-    parsed_text = service.parse_file(content, file.filename or "")
+    parsed_text = parse_file(content, file.filename or "")
 
     if not parsed_text or not parsed_text.strip():
-        return R.error_resp("文件解析失败或内容为空")
+        return R.bad_request_resp("文件解析失败或内容为空")
 
     return R.query_resp({
         "filename": file.filename,
@@ -71,26 +62,22 @@ async def upload_file_and_parse(
 @router.post("/upload-file-and-index")
 async def upload_file_and_index(
     file: UploadFile = File(..., description="支持 PDF/DOCX/XLSX/TXT"),
-    title: str | None = None,
-    category: str = "POLICY",
+    title: str | None = Form(None),
+    category: str = Form("POLICY"),
     db: AsyncSession = Depends(get_db),
 ):
-    """上传文件 → 自动解析 → 直接生成向量并入库（一步到位）。
-
-    - 适用于大文件场景，避免前端把整段文本回填到 JSON body
-    - 同一 category + ref_id 组合会执行 upsert
-    """
+    """上传文件 → 解析 → 切块 → 生成向量 → 入库（一步到位）"""
     from src.app.schemas.embedding import EmbeddingUploadRequest
 
     file_bytes = await file.read()
     if not file_bytes:
-        return R.error_resp("文件内容为空")
+        return R.bad_request_resp("文件内容为空")
+
+    parsed_text = parse_file(file_bytes, file.filename or "")
+    if not parsed_text or not parsed_text.strip():
+        return R.bad_request_resp("文件解析失败或内容为空")
 
     service = get_embedding_service()
-    parsed_text = service.parse_file(file_bytes, file.filename or "")
-    if not parsed_text or not parsed_text.strip():
-        return R.error_resp("文件解析失败或内容为空")
-
     request = EmbeddingUploadRequest(
         title=title or file.filename or "",
         content=parsed_text,
@@ -106,11 +93,11 @@ async def update_embedding(
     request: EmbeddingUpdateRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """更新 embedding（仅更新文本，向量会重新生成）"""
+    """更新单个 chunk（文本变化时向量自动重新生成）"""
     service = get_embedding_service()
     result = await service.update(db, embedding_id, request)
     if result is None:
-        return R.error_resp("Embedding 不存在", code="NOT_FOUND")
+        return R.not_found_resp("Embedding 不存在")
     return R.query_resp(result)
 
 
@@ -124,10 +111,21 @@ async def delete_embeddings(
     request: EmbeddingDeleteRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """批量删除 embedding"""
+    """批量删除 embedding（按行 ID）"""
     service = get_embedding_service()
     result = await service.delete(db, request)
     return R.query_resp(result)
+
+
+@router.delete("/source/{source_id}")
+async def delete_by_source(
+    source_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """按 source_id 删除某来源的所有 chunks"""
+    service = get_embedding_service()
+    count = await service.delete_by_source(db, source_id)
+    return R.success_resp({"deletedCount": count}, msg=f"已删除 {count} 个 chunk")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -164,7 +162,7 @@ async def get_embedding_detail(
     service = get_embedding_service()
     result = await service.get_detail(db, embedding_id)
     if result is None:
-        return R.error_resp("Embedding 不存在", code="NOT_FOUND")
+        return R.not_found_resp("Embedding 不存在")
     return R.query_resp(result)
 
 
@@ -188,7 +186,7 @@ async def search_embeddings(
     request: EmbeddingSearchRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """向量语义搜索 embedding"""
+    """向量语义搜索"""
     service = get_embedding_service()
     result = await service.search_(db, request)
     return R.query_resp(result)

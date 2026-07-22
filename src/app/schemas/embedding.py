@@ -27,14 +27,6 @@ class EmbeddingUploadRequest(BaseModel):
     content: str = Field(..., min_length=1, description="内容原文")
     category: str = Field(..., description="分类：POLICY / SYSTEM_GUIDE / TEMPLATE / FAQ")
 
-    def to_model(self) -> EmbeddingModel:
-        """Payload → ORM Embedding（仅结构转换，不含 vector）"""
-        return EmbeddingModel(
-            title=self.title,
-            content=self.content,
-            category=self.category,
-        )
-
     def validate_category(self) -> str:
         """校验并返回合法的 category 值"""
         valid = [e.value for e in EmbeddingCategory]
@@ -92,44 +84,67 @@ def _category_text(category: str) -> str:
     }.get(category, "未知")
 
 
-class EmbeddingVO(BaseModel):
-    """Embedding 列表项 VO"""
+class EmbeddingChunkVO(BaseModel):
+    """单个 chunk VO（树形子节点）"""
     id: int
+    chunkIndex: int = 0
+    content: str
+    createdAt: Optional[str] = None
+
+    @classmethod
+    def from_orm(cls, emb: EmbeddingModel) -> "EmbeddingChunkVO":
+        return cls(
+            id=emb.id,
+            chunkIndex=emb.chunk_index or 0,
+            content=emb.content,
+            createdAt=emb.created_at.isoformat() if emb.created_at else None,
+        )
+
+
+class EmbeddingDocVO(BaseModel):
+    """文档级 VO（树形父节点，按 source_id 分组）"""
+    sourceId: str
+    title: Optional[str] = None
+    category: str
+    categoryText: str
+    chunkCount: int = 0
+    createdAt: Optional[str] = None
+    children: List[EmbeddingChunkVO] = []
+
+
+class EmbeddingVO(BaseModel):
+    """Embedding 列表项 VO（扁平，用于详情等场景）"""
+    id: int
+    sourceId: Optional[str] = None
+    chunkIndex: Optional[int] = None
     title: Optional[str] = None
     content: str
     category: str
     categoryText: str
-    refId: Optional[int] = None
     createdAt: Optional[str] = None
     updatedAt: Optional[str] = None
 
     @classmethod
     def from_orm_to_vo(cls, emb: EmbeddingModel) -> "EmbeddingVO":
-        """ORM → VO 转换"""
         return cls(
             id=emb.id,
+            sourceId=emb.source_id,
+            chunkIndex=emb.chunk_index,
             title=emb.title,
             content=emb.content,
             category=emb.category,
             categoryText=_category_text(emb.category),
-            refId=emb.ref_id,
             createdAt=emb.created_at.isoformat() if emb.created_at else None,
             updatedAt=emb.updated_at.isoformat() if emb.updated_at else None,
         )
 
 
 class EmbeddingDetailVO(EmbeddingVO):
-    """Embedding 详情 VO（包含 embedding 向量，用于调试）"""
+    """Embedding 详情 VO（含向量，调试用）"""
     embedding: Optional[List[float]] = None
 
     @classmethod
     def from_orm_to_vo(cls, emb: EmbeddingModel, include_vector: bool = False) -> "EmbeddingDetailVO":
-        """ORM → VO 转换
-
-        Args:
-            emb: Embedding ORM 对象
-            include_vector: 是否包含 embedding 向量（默认否，向量较长影响响应体积）
-        """
         vo = super().from_orm_to_vo(emb)
         if include_vector:
             vo.embedding = emb.embedding
@@ -139,44 +154,44 @@ class EmbeddingDetailVO(EmbeddingVO):
 class EmbeddingSearchResultVO(BaseModel):
     """Embedding 搜索结果 VO"""
     id: int
+    sourceId: Optional[str] = None
+    chunkIndex: Optional[int] = None
     title: Optional[str] = None
     content: str
     category: str
     categoryText: str
-    refId: Optional[int] = None
     score: float = Field(..., description="相似度分数")
 
     @classmethod
     def from_search_result(cls, result: dict) -> "EmbeddingSearchResultVO":
-        """搜索结果 dict → VO 转换"""
         return cls(
             id=result["id"],
+            sourceId=result.get("source_id"),
+            chunkIndex=result.get("chunk_index"),
             title=result.get("title"),
             content=result["content"],
             category=result["category"],
             categoryText=_category_text(result["category"]),
-            refId=result.get("ref_id"),
             score=result["score"],
         )
 
 
 class EmbeddingUploadResultVO(BaseModel):
     """Embedding 上传结果 VO"""
-    id: int
+    sourceId: str = Field(..., description="来源 ID")
     title: str
     category: str
     categoryText: str
-    isNew: bool = Field(..., description="是否为新建（True）还是更新（False）")
+    chunkCount: int = Field(..., description="拆分的 chunk 数量")
 
     @classmethod
-    def from_orm_to_vo(cls, emb: EmbeddingModel, is_new: bool) -> "EmbeddingUploadResultVO":
-        """ORM → VO 转换"""
+    def from_upload(cls, source_id: str, title: str, category: str, chunk_count: int) -> "EmbeddingUploadResultVO":
         return cls(
-            id=emb.id,
-            title=emb.title or "",
-            category=emb.category,
-            categoryText=_category_text(emb.category),
-            isNew=is_new,
+            sourceId=source_id,
+            title=title,
+            category=category,
+            categoryText=_category_text(category),
+            chunkCount=chunk_count,
         )
 
 
@@ -192,8 +207,13 @@ class EmbeddingStatsVO(BaseModel):
     categoryStats: dict = Field(..., description="各分类的统计")
 
 
+class EmbeddingDocListVO(Page[EmbeddingDocVO]):
+    """Embedding 文档级分页查询结果（树形）"""
+    pass
+
+
 class EmbeddingListVO(Page[EmbeddingVO]):
-    """Embedding 分页查询结果"""
+    """Embedding 分页查询结果（扁平）"""
     pass
 
 
@@ -203,19 +223,20 @@ class EmbeddingSearchListVO(Page[EmbeddingSearchResultVO]):
 
 
 __all__ = [
-    # Request DTO
     "EmbeddingUploadRequest",
     "EmbeddingUpdateRequest",
     "EmbeddingQueryRequest",
     "EmbeddingDeleteRequest",
     "EmbeddingSearchRequest",
-    # Response VO
+    "EmbeddingChunkVO",
+    "EmbeddingDocVO",
     "EmbeddingVO",
     "EmbeddingDetailVO",
     "EmbeddingSearchResultVO",
     "EmbeddingUploadResultVO",
     "EmbeddingDeleteResultVO",
     "EmbeddingStatsVO",
+    "EmbeddingDocListVO",
     "EmbeddingListVO",
     "EmbeddingSearchListVO",
 ]

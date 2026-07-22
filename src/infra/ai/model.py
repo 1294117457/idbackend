@@ -57,11 +57,15 @@ def get_embedding_model() -> OpenAIEmbeddings:
 
 async def embed_text(text: str) -> List[float]:
     """生成单个文本的向量"""
+    if not text or not text.strip():
+        raise ValueError("embed_text: text 不能为空")
     model = get_embedding_model()
     return await model.aembed_query(text)
 
 
 async def embed_texts(texts: List[str]) -> List[List[float]]:
     """批量生成多个文本的向量"""
+    if not texts:
+        return []
     model = get_embedding_model()
     return await model.aembed_documents(texts)
