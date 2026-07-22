@@ -47,6 +47,7 @@ def get_embedding_model() -> OpenAIEmbeddings:
             model=settings.EMBEDDING_MODEL,
             api_key=settings.EMBEDDING_API_KEY,
             base_url=settings.EMBEDDING_BASE_URL,
+            dimensions=settings.EMBEDDING_DIM,  # 支持自定义维度（如 embedding-3）
         )
     return _embedding_model
 

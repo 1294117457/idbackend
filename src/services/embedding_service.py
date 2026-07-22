@@ -69,12 +69,19 @@ class EmbeddingService:
         """
         chunks = split_text(content)
         if not chunks:
-            raise ValueError(f"内容为空或解析失败: {title}")
+            raise ValueError(f"内容为空、解析失败或全部被过滤（< {50} 字符）: {title}")
 
         if source_id is None:
             source_id = f"doc_{uuid.uuid4().hex[:12]}"
 
         vectors = await embed_texts(chunks)
+
+        # L2 归一化：消除向量模长差异，确保余弦相似度计算稳定
+        import numpy as np
+        vectors = [
+            (np.array(v, dtype=np.float32) / max(np.linalg.norm(v), 1e-8)).tolist()
+            for v in vectors
+        ]
 
         # 先删旧 chunks（同一来源覆盖写入）
         await EmbeddingRepository.delete_by_source_id(db, source_id)

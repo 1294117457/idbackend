@@ -35,12 +35,16 @@ _CHINESE_SEPARATORS = [
 ]
 
 
+_CHUNK_MIN_LENGTH = 50  # 最小 chunk 字符数，过短的无意义片段（封面/页眉/日期行）不入库
+
+
 def split_text(
     text: str,
     *,
     chunk_size: Optional[int] = None,
     chunk_overlap: Optional[int] = None,
     separators: Optional[List[str]] = None,
+    min_length: Optional[int] = None,
 ) -> List[str]:
     """将文本按语义边界递归切分为多个 chunk。
 
@@ -49,6 +53,7 @@ def split_text(
         chunk_size: 每个 chunk 的目标大小（字符数），默认取配置 RAG_CHUNK_SIZE
         chunk_overlap: 相邻 chunk 的重叠字符数，默认取配置 RAG_CHUNK_OVERLAP
         separators: 自定义分隔符列表，默认使用中文优化的分隔符
+        min_length: 最小 chunk 字符数，默认 _CHUNK_MIN_LENGTH（50）
 
     Returns:
         切分后的文本片段列表
@@ -59,6 +64,7 @@ def split_text(
     settings = get_settings()
     size = chunk_size or settings.RAG_CHUNK_SIZE
     overlap = chunk_overlap or settings.RAG_CHUNK_OVERLAP
+    min_len = min_length or _CHUNK_MIN_LENGTH
 
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=size,
@@ -70,8 +76,8 @@ def split_text(
 
     chunks = splitter.split_text(text)
 
-    # 过滤掉空白 chunk
-    return [c for c in chunks if c.strip()]
+    # 先过滤空白，再过滤过短 chunk（封面、页眉、日期行、孤立标题等）
+    return [c for c in chunks if c.strip() and len(c) >= min_len]
 
 
 def split_text_with_metadata(

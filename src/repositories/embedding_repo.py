@@ -246,8 +246,6 @@ class EmbeddingRepository:
         result = await db.execute(stmt)
         return int(result.rowcount or 0)
 
-    # ---------- 向量搜索 ----------
-
     @staticmethod
     async def vector_search(
         db: AsyncSession,
@@ -265,13 +263,13 @@ class EmbeddingRepository:
             FROM embeddings
             WHERE embedding IS NOT NULL
         """
-        params: dict = {"query_vector": str(query_vector), "top_k": top_k}
+        params: dict = {"query_vector": str(query_vector)}
 
         if category:
             sql += " AND category = :category"
             params["category"] = category
 
-        sql += " ORDER BY embedding <=> :query_vector LIMIT :top_k"
+        sql += f" ORDER BY embedding <=> :query_vector LIMIT {top_k}"
 
         result = await db.execute(text(sql), params)
         rows = result.mappings().all()

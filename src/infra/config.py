@@ -64,12 +64,11 @@ class Settings(BaseSettings):
     EMBEDDING_BASE_URL: str = "https://api.openai.com/v1" # API Base URL
     EMBEDDING_MODEL: str = "text-embedding-3-small"       # Embedding 模型名称
     EMBEDDING_DIM: int = 1536                             # 向量维度（OpenAI small 是 1536）
-    RAG_CHUNK_SIZE: int = 500                # 文本切块大小（字符数）
-    RAG_CHUNK_OVERLAP: int = 50             # 切块重叠大小
+    RAG_CHUNK_SIZE: int = 400                # 文本切块大小（字符数）
+    RAG_CHUNK_OVERLAP: int = 100             # 切块重叠大小
     RAG_TOP_K_VECTOR: int = 10              # 向量检索召回数
-    RAG_TOP_K_KEYWORD: int = 6              # 关键词检索召回数
+    RAG_TOP_K_KEYWORD: int = 6              # 关键词检索召回数（保留配置，暂未启用）
     RAG_TOP_K_FINAL: int = 5                # 最终返回数
-    RAG_RRF_K: int = 60                     # RRF 融合参数
 
     # 上下文
     CONTEXT_MAX_MESSAGES: int = 20

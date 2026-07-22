@@ -90,3 +90,14 @@ src/
     └── graph/                  # Agent 直接调用 EmbeddingService
 ```
 
+BM25（关键词搜索） 和向量搜索是两条并行的召回路径：
+
+向量搜索：把 query 转成向量，用余弦相似度找语义相近的 chunk
+BM25/关键词搜索：分析 query 和文档中关键词的词频统计关系（BM25 是一种更成熟的 TF-IDF 变体），找文字上直接匹配的 chunk
+PostgreSQL 的全文检索靠 tsvector（文档）和 tsquery（查询词）匹配。plainto_tsquery('simple') 是把用户输入转成查询词的工具，但 'simple' 分词器只认空格和英文，会把中文逐字拆开。
+
+举个例子，搜"推免工作"：
+
+simple 分词器：拆成 '推' AND '免' AND '工' AND '作' 四个字，匹配任何含这四个单字的文档
+zhparser（中文分词）：拆成 '推免' 和 '工作' 两个词，精确匹配
+所以你的中文文档用 simple 分词几乎是无效的。zhparser 是专门为中文设计的分词器。

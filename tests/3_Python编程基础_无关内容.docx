@@ -1,0 +1,124 @@
+# Python编程基础
+
+## 第一章 Python简介
+
+Python是一种广泛使用的高级编程语言，由Guido van Rossum于1991年首次发布。Python的设计哲学强调代码的可读性和简洁的语法，相比C++或Java，Python让开发者可以用更少的代码表达想法。
+
+## 第二章 数据类型
+
+Python支持多种数据类型，包括整数（int）、浮点数（float）、字符串（str）、布尔值（bool）等。
+
+```python
+x = 5           # 整数
+y = 3.14        # 浮点数
+name = "Alice"  # 字符串
+is_active = True  # 布尔值
+```
+
+## 第三章 控制流
+
+### 条件语句
+
+Python使用if、elif、else关键字进行条件判断：
+
+```python
+if score >= 90:
+    grade = "A"
+elif score >= 80:
+    grade = "B"
+else:
+    grade = "C"
+```
+
+### 循环语句
+
+Python支持for循环和while循环：
+
+```python
+for i in range(10):
+    print(i)
+
+while count < 10:
+    count += 1
+```
+
+## 第四章 函数
+
+函数是组织代码的基本单元：
+
+```python
+def greet(name):
+    return f"Hello, {name}!"
+
+result = greet("Alice")
+print(result)  # 输出: Hello, Alice!
+```
+
+## 第五章 数据结构
+
+### 列表
+
+列表是Python中最常用的数据结构：
+
+```python
+fruits = ["苹果", "香蕉", "橙子"]
+fruits.append("葡萄")
+print(fruits[0])  # 输出: 苹果
+```
+
+### 字典
+
+字典用于存储键值对：
+
+```python
+person = {"name": "张三", "age": 25, "city": "厦门"}
+print(person["name"])  # 输出: 张三
+```
+
+## 第六章 面向对象编程
+
+Python支持面向对象编程：
+
+```python
+class Student:
+    def __init__(self, name, student_id):
+        self.name = name
+        self.student_id = student_id
+    
+    def introduce(self):
+        return f"我叫{self.name}，学号是{self.student_id}"
+
+s = Student("李四", "33120202201909")
+print(s.introduce())
+```
+
+## 第七章 文件操作
+
+```python
+# 写入文件
+with open("test.txt", "w", encoding="utf-8") as f:
+    f.write("Hello World")
+
+# 读取文件
+with open("test.txt", "r", encoding="utf-8") as f:
+    content = f.read()
+    print(content)
+```
+
+## 第八章 常用库
+
+Python拥有丰富的第三方库：
+
+- **NumPy**: 数值计算
+- **Pandas**: 数据分析
+- **Matplotlib**: 数据可视化
+- **Requests**: HTTP请求
+- **Flask/Django**: Web开发
+
+## 第九章 实践建议
+
+1. 多写代码，实践是最好的学习方式
+2. 阅读优秀开源项目的源代码
+3. 使用虚拟环境管理项目依赖
+4. 编写单元测试确保代码质量
+5. 养成良好的编码习惯和注释习惯
