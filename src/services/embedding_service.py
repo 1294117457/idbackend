@@ -158,6 +158,42 @@ class EmbeddingService:
             top_k=top_k,
         )
 
+    async def bm25_search(
+        self,
+        db: AsyncSession,
+        query: str,
+        *,
+        category: Optional[str] = None,
+        top_k: int = 5,
+    ) -> List[dict]:
+        """BM25 中文全文检索（纯关键词，适合精确匹配）。"""
+        return await EmbeddingRepository.bm25_search(
+            db, query, category=category, top_k=top_k
+        )
+
+    async def rrf_search(
+        self,
+        db: AsyncSession,
+        query: str,
+        *,
+        category: Optional[str] = None,
+        top_k: int = 5,
+    ) -> List[dict]:
+        """RRF 混合检索：向量相似度 + BM25 关键词，按 Reciprocal Rank 融合排名。
+
+        - 兼顾语义召回（embedding）与精确命中（关键词/术语/编号）
+        - 候选池：每路各取 2 * top_k，避免一边独占的结果被裁掉
+        - RRF k 常数 60，无需归一化两路原始分数
+        """
+        query_vector = await embed_text(query)
+        return await EmbeddingRepository.rrf_search(
+            db,
+            query=query,
+            query_vector=query_vector,
+            category=category,
+            top_k=top_k,
+        )
+
     # ═══════════════════════════════════════════════════════════════════════════
     # 管理端 API（上传/删除/查询）
     # ═══════════════════════════════════════════════════════════════════════════
@@ -280,8 +316,13 @@ class EmbeddingService:
         db: AsyncSession,
         request: EmbeddingSearchRequest,
     ) -> EmbeddingSearchListVO:
-        """向量语义搜索"""
-        results = await self.search(
+        """混合检索（向量 + BM25 → RRF 融合）
+
+        - 向量检索：语义相似度（embedding 模型）
+        - BM25 检索：精确关键词命中（zhparser）
+        - RRF 融合：按 Reciprocal Rank 加权，避免单边独占的结果被丢失
+        """
+        results = await self.rrf_search(
             db,
             query=request.query,
             category=request.category,
