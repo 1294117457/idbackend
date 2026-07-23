@@ -160,3 +160,28 @@ from src.app.schemas.embedding import (  # noqa: E402, F401
     EmbeddingListVO,
     EmbeddingSearchListVO,
 )
+
+# ========== 系统配置 ==========
+
+from src.app.schemas.system_config import (  # noqa: E402, F401
+    LlmConfigRequest,
+    LlmConfigVO,
+    EmbedConfigRequest,
+    EmbedConfigVO,
+    SmtpConfigRequest,
+    SmtpConfigVO,
+    RagSearchConfigRequest,
+    RagSearchConfigVO,
+    ConfigItemVO,
+    ConfigItemRequest,
+    ConfigListVO,
+    SystemConfigVO,
+    ConfigCategory,
+    ConfigValueType,
+    RagConfigKeys,
+    LlmConfigKeys,
+    EmbedConfigKeys,
+    SmtpConfigKeys,
+    LlmEmbedConfigRequest,
+    LlmEmbedConfigVO,
+)

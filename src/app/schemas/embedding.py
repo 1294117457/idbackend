@@ -66,7 +66,7 @@ class EmbeddingSearchRequest(BaseModel):
 
     query: str = Field(..., min_length=1, description="搜索查询文本")
     category: Optional[str] = Field(default=None, description="分类过滤")
-    top_k: int = Field(default=5, ge=1, le=50, description="返回数量")
+    # top_k 从 config.py 统一读取，不从前端请求获取
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -110,6 +110,29 @@ class EmbeddingDocVO(BaseModel):
     chunkCount: int = 0
     createdAt: Optional[str] = None
     children: List[EmbeddingChunkVO] = []
+
+    @classmethod
+    def from_source_group(
+        cls,
+        source_id: str,
+        chunks: List[EmbeddingModel],
+    ) -> "EmbeddingDocVO":
+        """一组同 source 的 chunks → DocVO（树形父节点）
+
+        约定：
+        - chunks 至少 1 条（service 已在 list_ 中过滤空组）
+        - 用第一个 chunk 的 title / category / createdAt 作为文档级元数据
+        """
+        first = chunks[0]
+        return cls(
+            sourceId=source_id,
+            title=first.title,
+            category=first.category,
+            categoryText=_category_text(first.category),
+            chunkCount=len(chunks),
+            createdAt=first.created_at.isoformat() if first.created_at else None,
+            children=[EmbeddingChunkVO.from_orm(c) for c in chunks],
+        )
 
 
 class EmbeddingVO(BaseModel):
@@ -163,7 +186,28 @@ class EmbeddingSearchResultVO(BaseModel):
     score: float = Field(..., description="相似度分数")
 
     @classmethod
+    def from_repo_hit(cls, hit: dict) -> dict:
+        """repo 原始 hit dict → service 层标准 hit dict
+
+        约定：
+        - repo 返回字段 raw_score（数据库原始分数），service 统一用 score
+        - 返回 dict 而非 VO：fusion 阶段需要往里塞内部字段
+          （_final_score / _vector_rank / _bm25_rank / _sources / normalized_score），
+          VO 装不下这些字段
+        """
+        return {
+            "id": hit["id"],
+            "source_id": hit["source_id"],
+            "chunk_index": hit["chunk_index"],
+            "title": hit["title"],
+            "content": hit["content"],
+            "category": hit["category"],
+            "score": round(hit["raw_score"], 4),
+        }
+
+    @classmethod
     def from_search_result(cls, result: dict) -> "EmbeddingSearchResultVO":
+        """fused 后的 hit dict → VO（最终返回给前端的结构）"""
         return cls(
             id=result["id"],
             sourceId=result.get("source_id"),

@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.infra.ai import embed_text, embed_texts
 from src.infra.ai.text_splitter import split_text
-from src.infra.config import get_settings
+from src.infra.ai.retrieval_processor import process_hits, fuse_hits
 from src.models.embedding import Embedding, EmbeddingCategory
 from src.repositories.embedding_repo import EmbeddingRepository
 from src.app.schemas.embedding import (
@@ -36,7 +36,6 @@ from src.app.schemas.embedding import (
     EmbeddingListVO,
     EmbeddingSearchListVO,
     Page,
-    _category_text,
 )
 
 logger = logging.getLogger(__name__)
@@ -45,10 +44,55 @@ logger = logging.getLogger(__name__)
 class EmbeddingService:
     """Embedding 服务（Layer 2）"""
 
-    def __init__(self):
-        self.settings = get_settings()
+    # ─────────────────────────────────────────────────────────────────────────
+    # 融合辅助方法（纯业务逻辑，不涉及 DB / API 调用）
+    # ─────────────────────────────────────────────────────────────────────────
 
-    # ---------- 核心：多 chunk 存储 ----------
+    @staticmethod
+    def _annotate_ranks(
+        fused: dict[int, dict],
+        vector_hits: List[dict],
+        bm25_hits: List[dict],
+    ) -> None:
+        """记录每个 chunk 在两路结果中的原始排名（仅供调试展示）。"""
+        for rank, hit in enumerate(vector_hits, start=1):
+            chunk_id = hit["id"]
+            if chunk_id in fused:
+                fused[chunk_id]["_vector_rank"] = rank
+        for rank, hit in enumerate(bm25_hits, start=1):
+            chunk_id = hit["id"]
+            if chunk_id in fused:
+                fused[chunk_id]["_bm25_rank"] = rank
+
+    @staticmethod
+    def _format_ranked_results(
+        fused: dict[int, dict],
+        top_k: int,
+    ) -> List[EmbeddingSearchResultVO]:
+        """排序 + 截断 + 转 VO（直接返回前端结构）。"""
+        ranked = sorted(fused.values(), key=lambda x: x["_final_score"], reverse=True)
+        top_hits = ranked[:top_k]
+
+        if not top_hits:
+            return []
+
+        # 把 fused 内部字段（_final_score → score）归位后再转 VO
+        return [
+            EmbeddingSearchResultVO.from_search_result({
+                "id": h["id"],
+                "source_id": h["source_id"],
+                "chunk_index": h["chunk_index"],
+                "title": h["title"],
+                "content": h["content"],
+                "category": h["category"],
+                "score": round(h["_final_score"], 6),
+            })
+            for h in top_hits
+        ]
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # 核心：多 chunk 存储
+    # ─────────────────────────────────────────────────────────────────────────
 
     async def upsert(
         self,
@@ -59,14 +103,7 @@ class EmbeddingService:
         category: str,
         source_id: Optional[str] = None,
     ) -> Tuple[str, int]:
-        """解析文本 → 切块 → 批量生成向量 → 存入数据库（每个 chunk 一行）。
 
-        Args:
-            source_id: 指定来源 ID（如 tpl_123）。为 None 时自动生成 doc_xxx。
-
-        Returns:
-            (source_id, chunk_count)
-        """
         chunks = split_text(content)
         if not chunks:
             raise ValueError(f"内容为空、解析失败或全部被过滤（< {50} 字符）: {title}")
@@ -138,25 +175,34 @@ class EmbeddingService:
         await EmbeddingRepository.commit(db)
         return count
 
-    # ---------- 向量搜索 ----------
+    # ─────────────────────────────────────────────────────────────────────────
+    # 搜索方法（vector / bm25 / rrf）
+    # ─────────────────────────────────────────────────────────────────────────
 
-    async def search(
+    async def vector_search(
         self,
         db: AsyncSession,
         query: str,
         *,
         category: Optional[str] = None,
-        top_k: int = 5,
+        top_k: Optional[int] = None,
     ) -> List[dict]:
-        """向量相似度搜索（pgvector SQL 实现）。"""
-        query_vector = await embed_text(query)
+ 
+        from src.infra.config import get_rag_config
+        rag_cfg = get_rag_config()
 
-        return await EmbeddingRepository.vector_search(
+        if top_k is None:
+            top_k = rag_cfg.get("top_k", 5)
+
+        query_vector = await embed_text(query)
+        hits = await EmbeddingRepository.vector_search(
             db,
             query_vector,
             category=category,
             top_k=top_k,
         )
+
+        return [EmbeddingSearchResultVO.from_repo_hit(h) for h in hits]
 
     async def bm25_search(
         self,
@@ -164,12 +210,23 @@ class EmbeddingService:
         query: str,
         *,
         category: Optional[str] = None,
-        top_k: int = 5,
+        top_k: Optional[int] = None,
     ) -> List[dict]:
-        """BM25 中文全文检索（纯关键词，适合精确匹配）。"""
-        return await EmbeddingRepository.bm25_search(
-            db, query, category=category, top_k=top_k
+
+        from src.infra.config import get_rag_config
+        rag_cfg = get_rag_config()
+
+        if top_k is None:
+            top_k = rag_cfg.get("top_k", 5)
+
+        hits = await EmbeddingRepository.bm25_search(
+            db,
+            query,
+            category=category,
+            top_k=top_k,
         )
+
+        return [EmbeddingSearchResultVO.from_repo_hit(h) for h in hits]
 
     async def rrf_search(
         self,
@@ -177,22 +234,48 @@ class EmbeddingService:
         query: str,
         *,
         category: Optional[str] = None,
-        top_k: int = 5,
+        top_k: Optional[int] = None,
     ) -> List[dict]:
-        """RRF 混合检索：向量相似度 + BM25 关键词，按 Reciprocal Rank 融合排名。
+        from src.infra.config import get_rag_config
 
-        - 兼顾语义召回（embedding）与精确命中（关键词/术语/编号）
-        - 候选池：每路各取 2 * top_k，避免一边独占的结果被裁掉
-        - RRF k 常数 60，无需归一化两路原始分数
-        """
+        rag_cfg = get_rag_config()
+
+        if top_k is None:
+            top_k = rag_cfg.get("top_k", 5)
+
+        candidate_k_cfg = rag_cfg.get("candidate_k")
+        candidate_k = candidate_k_cfg if candidate_k_cfg else max(top_k * 6, top_k + 15)
+
         query_vector = await embed_text(query)
-        return await EmbeddingRepository.rrf_search(
-            db,
-            query=query,
-            query_vector=query_vector,
-            category=category,
-            top_k=top_k,
+
+        raw_vector_hits = await EmbeddingRepository.vector_search(
+            db, query_vector, category=category, top_k=candidate_k
         )
+        raw_bm25_hits = await EmbeddingRepository.bm25_search(
+            db, query, category=category, top_k=candidate_k
+        )
+
+        # 转换为 service 层格式（保留 raw_score 字段，供 fuse_hits 内部 process_hits 使用）
+        vector_hits = [EmbeddingSearchResultVO.from_repo_hit(h) for h in raw_vector_hits]
+        bm25_hits = [EmbeddingSearchResultVO.from_repo_hit(h) for h in raw_bm25_hits]
+
+        # 各路分别 Min-Max 归一化 + 同文档衰减（单路处理）
+        process_hits(vector_hits, normalize=True, weight=1.0, same_doc_decay=0.7)
+        process_hits(bm25_hits,   normalize=True, weight=1.0, same_doc_decay=0.7)
+
+        # 双路融合：单路打折 + 阈值过滤
+        fused = fuse_hits(
+            vector_hits, bm25_hits,
+            vector_weight=0.5,
+            bm25_weight=0.5,
+            single_source_penalty=0.1,
+            min_final_score=0.11,
+        )
+
+        # 记录原始排名（用于调试展示）
+        self._annotate_ranks(fused, vector_hits, bm25_hits)
+
+        return self._format_ranked_results(fused, top_k)
 
     # ═══════════════════════════════════════════════════════════════════════════
     # 管理端 API（上传/删除/查询）
@@ -262,7 +345,7 @@ class EmbeddingService:
         request: EmbeddingQueryRequest,
     ):
         """分页查询（按文档分组，树形结构）"""
-        from src.app.schemas.embedding import EmbeddingDocVO, EmbeddingChunkVO, EmbeddingDocListVO
+        from src.app.schemas.embedding import EmbeddingDocVO, EmbeddingDocListVO
 
         source_ids, total = await EmbeddingRepository.paginate_by_source(
             db,
@@ -283,20 +366,11 @@ class EmbeddingService:
             if chunk.source_id in doc_map:
                 doc_map[chunk.source_id].append(chunk)
 
-        docs = []
-        for sid, chunk_list in doc_map.items():
-            if not chunk_list:
-                continue
-            first = chunk_list[0]
-            docs.append(EmbeddingDocVO(
-                sourceId=sid,
-                title=first.title,
-                category=first.category,
-                categoryText=_category_text(first.category),
-                chunkCount=len(chunk_list),
-                createdAt=first.created_at.isoformat() if first.created_at else None,
-                children=[EmbeddingChunkVO.from_orm(c) for c in chunk_list],
-            ))
+        docs = [
+            EmbeddingDocVO.from_source_group(sid, chunk_list)
+            for sid, chunk_list in doc_map.items()
+            if chunk_list
+        ]
 
         return Page.from_list_to_page(docs, total, request.page_num, request.page_size)
 
@@ -322,16 +396,19 @@ class EmbeddingService:
         - BM25 检索：精确关键词命中（zhparser）
         - RRF 融合：按 Reciprocal Rank 加权，避免单边独占的结果被丢失
         """
+        from src.infra.config import get_rag_config
+        rag_cfg = get_rag_config()
+        top_k = rag_cfg.get("top_k", 5)
+
+        # rrf_search → _format_ranked_results 直接返回 List[VO]
         results = await self.rrf_search(
             db,
             query=request.query,
             category=request.category,
-            top_k=request.top_k,
+            top_k=top_k,
         )
 
-        vos = [EmbeddingSearchResultVO.from_search_result(r) for r in results]
-        total = len(vos)
-        return Page.from_list_to_page(vos, total, 1, request.top_k)
+        return Page.from_list_to_page(results, len(results), 1, top_k)
 
     async def get_stats(self, db: AsyncSession) -> EmbeddingStatsVO:
         """获取统计信息"""

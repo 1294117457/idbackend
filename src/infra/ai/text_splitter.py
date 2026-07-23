@@ -14,7 +14,8 @@ from typing import List, Optional
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from src.infra.config import get_settings
+from src.infra.config import get_rag_config
+
 
 # 中文优化的分隔符列表（优先级从高到低）
 _CHINESE_SEPARATORS = [
@@ -50,8 +51,8 @@ def split_text(
 
     Args:
         text: 待切分的文本
-        chunk_size: 每个 chunk 的目标大小（字符数），默认取配置 RAG_CHUNK_SIZE
-        chunk_overlap: 相邻 chunk 的重叠字符数，默认取配置 RAG_CHUNK_OVERLAP
+        chunk_size: 每个 chunk 的目标大小（字符数），默认从 get_rag_config() 获取
+        chunk_overlap: 相邻 chunk 的重叠字符数，默认从 get_rag_config() 获取
         separators: 自定义分隔符列表，默认使用中文优化的分隔符
         min_length: 最小 chunk 字符数，默认 _CHUNK_MIN_LENGTH（50）
 
@@ -61,10 +62,10 @@ def split_text(
     if not text or not text.strip():
         return []
 
-    settings = get_settings()
-    size = chunk_size or settings.RAG_CHUNK_SIZE
-    overlap = chunk_overlap or settings.RAG_CHUNK_OVERLAP
-    min_len = min_length or _CHUNK_MIN_LENGTH
+    rag = get_rag_config()
+    size = chunk_size if chunk_size is not None else rag.get("chunk_size", 400)
+    overlap = chunk_overlap if chunk_overlap is not None else rag.get("chunk_overlap", 100)
+    min_len = min_length if min_length is not None else _CHUNK_MIN_LENGTH
 
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=size,
