@@ -82,11 +82,15 @@ class Settings(BaseSettings):
 
     # ── RAG 参数（.env 默认值，DB 优先覆盖）────────────────────
     # 字段名与 system_config DB 表保持一致
-    RAG_TOP_K: int = 6          # 最终返回条数
-    RAG_CANDIDATE_K: int = 0   # 候选池（0 = 自动公式 max(top_k*6, top_k+15)）
-    RAG_RRF_K: int = 30
-    RAG_SOURCE_DISCOUNT: float = 0.6
-    RAG_BM25_RANK1_WEIGHT: float = 2.0
+    # 召回参数
+    RAG_TOP_K: int = 5             # 最终返回条数
+    RAG_CANDIDATE_K: int = 0       # 候选池（0 = 自动公式 max(top_k*6, top_k+15)）
+    RAG_MIN_SCORE: float = 0.05    # 融合后最低分门槛，低于丢弃
+    # 融合权重
+    RAG_VECTOR_WEIGHT: float = 1.0            # 向量路权重
+    RAG_BM25_WEIGHT: float = 1.0              # BM25 路权重
+    RAG_SINGLE_SOURCE_PENALTY: float = 0.5    # 单路命中折扣（不乘 weight）
+    RAG_SAME_DOC_DECAY: float = 0.7           # 同文档第 n 个 chunk × decay^(n-1)
     # 切块参数（text_splitter 使用）
     RAG_CHUNK_SIZE: int = 400
     RAG_CHUNK_OVERLAP: int = 100
@@ -136,7 +140,7 @@ def get_settings() -> Settings:
 #     "llm":  {"provider": ..., "api_key": ..., ...},
 #     "embed": {"api_key": ..., "base_url": ..., ...},
 #     "smtp": {"host": ..., "port": ..., ...},
-#     "rag":  {"search_mode": ..., "candidate_k": ..., ...},
+#     "rag":  {"top_k": ..., "candidate_k": ..., "vector_weight": ..., ...},
 #   }
 
 _runtime_cache: Dict[str, Any] = {}
@@ -207,11 +211,16 @@ def get_rag_config() -> Dict[str, Any]:
     字段名与 system_config DB 表保持完全一致。
     """
     defaults = {
+        # 召回参数
         "top_k": get_settings().RAG_TOP_K,
         "candidate_k": get_settings().RAG_CANDIDATE_K,
-        "rrf_k": get_settings().RAG_RRF_K,
-        "source_discount": get_settings().RAG_SOURCE_DISCOUNT,
-        "bm25_rank1_weight": get_settings().RAG_BM25_RANK1_WEIGHT,
+        "min_score": get_settings().RAG_MIN_SCORE,
+        # 融合权重
+        "vector_weight": get_settings().RAG_VECTOR_WEIGHT,
+        "bm25_weight": get_settings().RAG_BM25_WEIGHT,
+        "single_source_penalty": get_settings().RAG_SINGLE_SOURCE_PENALTY,
+        "same_doc_decay": get_settings().RAG_SAME_DOC_DECAY,
+        # 切块参数
         "chunk_size": get_settings().RAG_CHUNK_SIZE,
         "chunk_overlap": get_settings().RAG_CHUNK_OVERLAP,
     }

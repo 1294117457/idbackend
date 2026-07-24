@@ -38,25 +38,34 @@ class ConfigValueType(str):
 # ============================================================
 
 class RagSearchConfigRequest(BaseModel):
-    """RAG 搜索配置更新请求"""
-    search_mode: Optional[str] = None
-    candidate_k: Optional[int] = None
-    rrf_k: Optional[int] = None
-    source_discount: Optional[float] = None
-    bm25_rank1_weight: Optional[float] = None
+    """RAG 搜索配置更新请求
+
+    字段分组：
+    - 召回参数：top_k / candidate_k / min_score
+    - 融合权重：vector_weight / bm25_weight / single_source_penalty / same_doc_decay
+    """
+    # 召回参数
     top_k: Optional[int] = None
-    hybrid_weight: Optional[float] = None
+    candidate_k: Optional[int] = None
+    min_score: Optional[float] = None
+    # 融合权重
+    vector_weight: Optional[float] = None
+    bm25_weight: Optional[float] = None
+    single_source_penalty: Optional[float] = None
+    same_doc_decay: Optional[float] = None
 
 
 class RagSearchConfigVO(BaseModel):
     """RAG 搜索配置响应 VO（敏感字段脱敏）"""
-    search_mode: Optional[str] = None
-    candidate_k: Optional[int] = None
-    rrf_k: Optional[int] = None
-    source_discount: Optional[float] = None
-    bm25_rank1_weight: Optional[float] = None
+    # 召回参数
     top_k: Optional[int] = None
-    hybrid_weight: Optional[float] = None
+    candidate_k: Optional[int] = None
+    min_score: Optional[float] = None
+    # 融合权重
+    vector_weight: Optional[float] = None
+    bm25_weight: Optional[float] = None
+    single_source_penalty: Optional[float] = None
+    same_doc_decay: Optional[float] = None
 
 
 # ============================================================
@@ -214,21 +223,30 @@ class LlmEmbedConfigVO(BaseModel):
 # ============================================================
 
 class RagConfigKeys:
-    """RAG 搜索配置对应的 config_key"""
-    SEARCH_MODE = "RAG_SEARCH_MODE"
-    CANDIDATE_K = "RAG_CANDIDATE_K"
-    RRF_K = "RAG_RRF_K"
-    SOURCE_DISCOUNT = "RAG_SOURCE_DISCOUNT"
-    BM25_RANK1_WEIGHT = "RAG_BM25_RANK1_WEIGHT"
+    """RAG 搜索配置对应的 config_key
+
+    字段分组：
+    - 召回参数：TOP_K / CANDIDATE_K / MIN_SCORE
+    - 融合权重：VECTOR_WEIGHT / BM25_WEIGHT / SINGLE_SOURCE_PENALTY / SAME_DOC_DECAY
+    """
+    # 召回参数
     TOP_K = "RAG_TOP_K"
-    HYBRID_WEIGHT = "RAG_HYBRID_WEIGHT"
+    CANDIDATE_K = "RAG_CANDIDATE_K"
+    MIN_SCORE = "RAG_MIN_SCORE"
+    # 融合权重
+    VECTOR_WEIGHT = "RAG_VECTOR_WEIGHT"
+    BM25_WEIGHT = "RAG_BM25_WEIGHT"
+    SINGLE_SOURCE_PENALTY = "RAG_SINGLE_SOURCE_PENALTY"
+    SAME_DOC_DECAY = "RAG_SAME_DOC_DECAY"
 
     @classmethod
     def all_keys(cls) -> List[str]:
         return [
-            cls.SEARCH_MODE, cls.CANDIDATE_K, cls.RRF_K,
-            cls.SOURCE_DISCOUNT, cls.BM25_RANK1_WEIGHT,
-            cls.TOP_K, cls.HYBRID_WEIGHT,
+            # 召回参数
+            cls.TOP_K, cls.CANDIDATE_K, cls.MIN_SCORE,
+            # 融合权重
+            cls.VECTOR_WEIGHT, cls.BM25_WEIGHT,
+            cls.SINGLE_SOURCE_PENALTY, cls.SAME_DOC_DECAY,
         ]
 
 

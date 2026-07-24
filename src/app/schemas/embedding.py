@@ -6,7 +6,7 @@
 - 转换方法：ORM → VO（to_vo 类方法）
 """
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 
 from pydantic import BaseModel, Field, ConfigDict
 
@@ -183,41 +183,49 @@ class EmbeddingSearchResultVO(BaseModel):
     content: str
     category: str
     categoryText: str
-    score: float = Field(..., description="相似度分数")
+
+    # 原始分数
+    vectorScore: float = 0.0
+    bm25Score: float = 0.0
+
+    # 归一化分数
+    normVectorScore: float = 0.0
+    normBm25Score: float = 0.0
+
+    # 融合分数
+    fusedScore: float = 0.0
+
+    # 来源标识
+    isVectorHit: bool = False
+    isBm25Hit: bool = False
 
     @classmethod
-    def from_repo_hit(cls, hit: dict) -> dict:
-        """repo 原始 hit dict → service 层标准 hit dict
-
-        约定：
-        - repo 返回字段 raw_score（数据库原始分数），service 统一用 score
-        - 返回 dict 而非 VO：fusion 阶段需要往里塞内部字段
-          （_final_score / _vector_rank / _bm25_rank / _sources / normalized_score），
-          VO 装不下这些字段
-        """
-        return {
-            "id": hit["id"],
-            "source_id": hit["source_id"],
-            "chunk_index": hit["chunk_index"],
-            "title": hit["title"],
-            "content": hit["content"],
-            "category": hit["category"],
-            "score": round(hit["raw_score"], 4),
-        }
-
-    @classmethod
-    def from_search_result(cls, result: dict) -> "EmbeddingSearchResultVO":
-        """fused 后的 hit dict → VO（最终返回给前端的结构）"""
+    def from_search_hit(cls, hit: dict) -> "EmbeddingSearchResultVO":
+        """SearchHit dict → VO（最终返回给前端的结构）"""
         return cls(
-            id=result["id"],
-            sourceId=result.get("source_id"),
-            chunkIndex=result.get("chunk_index"),
-            title=result.get("title"),
-            content=result["content"],
-            category=result["category"],
-            categoryText=_category_text(result["category"]),
-            score=result["score"],
+            id=int(hit.get("id", 0)),
+            sourceId=hit.get("source_id"),
+            chunkIndex=hit.get("chunk_index"),
+            title=hit.get("title"),
+            content=hit.get("content", ""),
+            category=hit.get("category", ""),
+            categoryText=_category_text(hit.get("category", "")),
+            vectorScore=round(hit.get("vectorScore", 0.0), 6),
+            bm25Score=round(hit.get("bm25Score", 0.0), 6),
+            normVectorScore=round(hit.get("normVectorScore", 0.0), 6),
+            normBm25Score=round(hit.get("normBm25Score", 0.0), 6),
+            fusedScore=round(hit.get("fusedScore", 0.0), 6),
+            isVectorHit=hit.get("isVectorHit", False),
+            isBm25Hit=hit.get("isBm25Hit", False),
         )
+
+
+class EmbeddingSearchListVO(BaseModel):
+    """Embedding 搜索结果 VO（携带配置和统计信息）"""
+    list: List[EmbeddingSearchResultVO]
+    config: Dict[str, Any] = Field(default_factory=dict, description="本次搜索使用的配置")
+    query: str = ""
+    totalTimeMs: float = 0.0
 
 
 class EmbeddingUploadResultVO(BaseModel):
@@ -258,11 +266,6 @@ class EmbeddingDocListVO(Page[EmbeddingDocVO]):
 
 class EmbeddingListVO(Page[EmbeddingVO]):
     """Embedding 分页查询结果（扁平）"""
-    pass
-
-
-class EmbeddingSearchListVO(Page[EmbeddingSearchResultVO]):
-    """Embedding 搜索结果分页"""
     pass
 
 

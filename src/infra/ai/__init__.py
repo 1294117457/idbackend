@@ -12,7 +12,7 @@ from src.infra.ai.model import (
     embed_texts,
 )
 from src.infra.ai.text_splitter import split_text
-from src.infra.ai.retrieval_processor import process_hits, fuse_hits
+from src.infra.ai.retrieval_processor import RetrievalProcessor
 
 __all__ = [
     "get_chat_model",
@@ -20,6 +20,5 @@ __all__ = [
     "embed_text",
     "embed_texts",
     "split_text",
-    "process_hits",
-    "fuse_hits",
+    "RetrievalProcessor",
 ]

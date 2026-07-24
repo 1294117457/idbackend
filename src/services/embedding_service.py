@@ -18,7 +18,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.infra.ai import embed_text, embed_texts
 from src.infra.ai.text_splitter import split_text
-from src.infra.ai.retrieval_processor import process_hits, fuse_hits
 from src.models.embedding import Embedding, EmbeddingCategory
 from src.repositories.embedding_repo import EmbeddingRepository
 from src.app.schemas.embedding import (
@@ -43,52 +42,6 @@ logger = logging.getLogger(__name__)
 
 class EmbeddingService:
     """Embedding 服务（Layer 2）"""
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # 融合辅助方法（纯业务逻辑，不涉及 DB / API 调用）
-    # ─────────────────────────────────────────────────────────────────────────
-
-    @staticmethod
-    def _annotate_ranks(
-        fused: dict[int, dict],
-        vector_hits: List[dict],
-        bm25_hits: List[dict],
-    ) -> None:
-        """记录每个 chunk 在两路结果中的原始排名（仅供调试展示）。"""
-        for rank, hit in enumerate(vector_hits, start=1):
-            chunk_id = hit["id"]
-            if chunk_id in fused:
-                fused[chunk_id]["_vector_rank"] = rank
-        for rank, hit in enumerate(bm25_hits, start=1):
-            chunk_id = hit["id"]
-            if chunk_id in fused:
-                fused[chunk_id]["_bm25_rank"] = rank
-
-    @staticmethod
-    def _format_ranked_results(
-        fused: dict[int, dict],
-        top_k: int,
-    ) -> List[EmbeddingSearchResultVO]:
-        """排序 + 截断 + 转 VO（直接返回前端结构）。"""
-        ranked = sorted(fused.values(), key=lambda x: x["_final_score"], reverse=True)
-        top_hits = ranked[:top_k]
-
-        if not top_hits:
-            return []
-
-        # 把 fused 内部字段（_final_score → score）归位后再转 VO
-        return [
-            EmbeddingSearchResultVO.from_search_result({
-                "id": h["id"],
-                "source_id": h["source_id"],
-                "chunk_index": h["chunk_index"],
-                "title": h["title"],
-                "content": h["content"],
-                "category": h["category"],
-                "score": round(h["_final_score"], 6),
-            })
-            for h in top_hits
-        ]
 
     # ─────────────────────────────────────────────────────────────────────────
     # 核心：多 chunk 存储
@@ -187,7 +140,7 @@ class EmbeddingService:
         category: Optional[str] = None,
         top_k: Optional[int] = None,
     ) -> List[dict]:
- 
+
         from src.infra.config import get_rag_config
         rag_cfg = get_rag_config()
 
@@ -202,7 +155,7 @@ class EmbeddingService:
             top_k=top_k,
         )
 
-        return [EmbeddingSearchResultVO.from_repo_hit(h) for h in hits]
+        return hits
 
     async def bm25_search(
         self,
@@ -226,7 +179,7 @@ class EmbeddingService:
             top_k=top_k,
         )
 
-        return [EmbeddingSearchResultVO.from_repo_hit(h) for h in hits]
+        return hits
 
     async def rrf_search(
         self,
@@ -235,8 +188,10 @@ class EmbeddingService:
         *,
         category: Optional[str] = None,
         top_k: Optional[int] = None,
-    ) -> List[dict]:
+    ):
+        """混合检索（向量 + BM25 → RFF 融合），返回 FusionResult。"""
         from src.infra.config import get_rag_config
+        from src.infra.ai.retrieval_processor import RetrievalProcessor, SearchHit
 
         rag_cfg = get_rag_config()
 
@@ -255,27 +210,51 @@ class EmbeddingService:
             db, query, category=category, top_k=candidate_k
         )
 
-        # 转换为 service 层格式（保留 raw_score 字段，供 fuse_hits 内部 process_hits 使用）
-        vector_hits = [EmbeddingSearchResultVO.from_repo_hit(h) for h in raw_vector_hits]
-        bm25_hits = [EmbeddingSearchResultVO.from_repo_hit(h) for h in raw_bm25_hits]
+        # 读取 RAG 配置（融合权重 / 衰减 / 阈值）
+        same_doc_decay = rag_cfg.get("same_doc_decay", 0.7)
+        vector_weight = rag_cfg.get("vector_weight", 1.0)
+        bm25_weight = rag_cfg.get("bm25_weight", 1.0)
+        single_source_penalty = rag_cfg.get("single_source_penalty", 0.5)
+        min_final_score = rag_cfg.get("min_score", 0.05)
+        normalize_scores = rag_cfg.get("normalize_scores", True)
 
-        # 各路分别 Min-Max 归一化 + 同文档衰减（单路处理）
-        process_hits(vector_hits, normalize=True, weight=1.0, same_doc_decay=0.7)
-        process_hits(bm25_hits,   normalize=True, weight=1.0, same_doc_decay=0.7)
+        processor = RetrievalProcessor()
 
-        # 双路融合：单路打折 + 阈值过滤
-        fused = fuse_hits(
-            vector_hits, bm25_hits,
-            vector_weight=0.5,
-            bm25_weight=0.5,
-            single_source_penalty=0.1,
-            min_final_score=0.11,
+        # 各路分别：归一化 + 同文档衰减 + 乘权重
+        vec_hits = processor.single_process(
+            raw_vector_hits,
+            source="vector",
+            weight=vector_weight,
+            same_doc_decay=same_doc_decay,
+            normalize=False,
+            score_field="raw_score",
+        )
+        bm25_hits = processor.single_process(
+            raw_bm25_hits,
+            source="bm25",
+            weight=bm25_weight,
+            same_doc_decay=same_doc_decay,
+            normalize=True,
+            score_field="raw_score",
         )
 
-        # 记录原始排名（用于调试展示）
-        self._annotate_ranks(fused, vector_hits, bm25_hits)
+        # 双路融合
+        fusion_result = processor.multi_process(
+            vec_hits,
+            bm25_hits,
+            vector_weight=vector_weight,
+            bm25_weight=bm25_weight,
+            same_doc_decay=same_doc_decay,
+            single_source_penalty=single_source_penalty,
+            min_score=min_final_score,
+            normalize_scores=normalize_scores,
+            query=query,
+        )
 
-        return self._format_ranked_results(fused, top_k)
+        # 截断 top_k
+        fusion_result.hits = fusion_result.hits[:top_k]
+
+        return fusion_result
 
     # ═══════════════════════════════════════════════════════════════════════════
     # 管理端 API（上传/删除/查询）
@@ -390,25 +369,40 @@ class EmbeddingService:
         db: AsyncSession,
         request: EmbeddingSearchRequest,
     ) -> EmbeddingSearchListVO:
-        """混合检索（向量 + BM25 → RRF 融合）
-
-        - 向量检索：语义相似度（embedding 模型）
-        - BM25 检索：精确关键词命中（zhparser）
-        - RRF 融合：按 Reciprocal Rank 加权，避免单边独占的结果被丢失
-        """
-        from src.infra.config import get_rag_config
-        rag_cfg = get_rag_config()
-        top_k = rag_cfg.get("top_k", 5)
-
-        # rrf_search → _format_ranked_results 直接返回 List[VO]
-        results = await self.rrf_search(
+        """混合检索（向量 + BM25 → RFF 融合）"""
+        fusion_result = await self.rrf_search(
             db,
             query=request.query,
             category=request.category,
-            top_k=top_k,
         )
 
-        return Page.from_list_to_page(results, len(results), 1, top_k)
+        # SearchHit → EmbeddingSearchResultVO
+        hits_vo = [
+            EmbeddingSearchResultVO(
+                id=int(hit.chunk_id) if hit.chunk_id.isdigit() else 0,
+                sourceId=hit.source_id,
+                chunkIndex=hit.metadata.get("chunk_index"),
+                title=hit.metadata.get("title"),
+                content=hit.content,
+                category=hit.metadata.get("category", ""),
+                categoryText=hit.metadata.get("category_text", ""),
+                vectorScore=round(hit.vector_score, 6),
+                bm25Score=round(hit.bm25_score, 6),
+                normVectorScore=round(hit.norm_vector_score, 6),
+                normBm25Score=round(hit.norm_bm25_score, 6),
+                fusedScore=round(hit.fused_score, 6),
+                isVectorHit=hit.is_vector_hit,
+                isBm25Hit=hit.is_bm25_hit,
+            )
+            for hit in fusion_result.hits
+        ]
+
+        return EmbeddingSearchListVO(
+            list=hits_vo,
+            config=fusion_result.config,
+            query=fusion_result.query,
+            totalTimeMs=fusion_result.total_time_ms,
+        )
 
     async def get_stats(self, db: AsyncSession) -> EmbeddingStatsVO:
         """获取统计信息"""

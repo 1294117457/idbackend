@@ -32,15 +32,22 @@ class SystemConfigService:
 
     @staticmethod
     def _map_to_rag_dict(rows: Dict[str, Any]) -> Dict[str, Any]:
-        """将 DB rows 映射为 RAG 配置字典"""
+        """将 DB rows 映射为 RAG 配置字典
+
+        字段分组：
+        - 召回参数：top_k / candidate_k / min_score
+        - 融合权重：vector_weight / bm25_weight / single_source_penalty / same_doc_decay
+        """
         return {
-            "search_mode": rows.get(RagConfigKeys.SEARCH_MODE),
-            "candidate_k": rows.get(RagConfigKeys.CANDIDATE_K),
-            "rrf_k": rows.get(RagConfigKeys.RRF_K),
-            "source_discount": rows.get(RagConfigKeys.SOURCE_DISCOUNT),
-            "bm25_rank1_weight": rows.get(RagConfigKeys.BM25_RANK1_WEIGHT),
+            # 召回参数
             "top_k": rows.get(RagConfigKeys.TOP_K),
-            "hybrid_weight": rows.get(RagConfigKeys.HYBRID_WEIGHT),
+            "candidate_k": rows.get(RagConfigKeys.CANDIDATE_K),
+            "min_score": rows.get(RagConfigKeys.MIN_SCORE),
+            # 融合权重
+            "vector_weight": rows.get(RagConfigKeys.VECTOR_WEIGHT),
+            "bm25_weight": rows.get(RagConfigKeys.BM25_WEIGHT),
+            "single_source_penalty": rows.get(RagConfigKeys.SINGLE_SOURCE_PENALTY),
+            "same_doc_decay": rows.get(RagConfigKeys.SAME_DOC_DECAY),
         }
 
     @staticmethod
@@ -144,15 +151,22 @@ class SystemConfigService:
 
     @staticmethod
     async def update_rag_config(db: AsyncSession, config: Dict[str, Any]) -> Dict[str, Any]:
-        """更新 RAG 配置"""
+        """更新 RAG 配置
+
+        字段分组：
+        - 召回参数：top_k(int) / candidate_k(int) / min_score(float)
+        - 融合权重：vector_weight(float) / bm25_weight(float) / single_source_penalty(float) / same_doc_decay(float)
+        """
         mappings = [
-            (RagConfigKeys.SEARCH_MODE, "search_mode", "string"),
-            (RagConfigKeys.CANDIDATE_K, "candidate_k", "int"),
-            (RagConfigKeys.RRF_K, "rrf_k", "int"),
-            (RagConfigKeys.SOURCE_DISCOUNT, "source_discount", "float"),
-            (RagConfigKeys.BM25_RANK1_WEIGHT, "bm25_rank1_weight", "float"),
+            # 召回参数
             (RagConfigKeys.TOP_K, "top_k", "int"),
-            (RagConfigKeys.HYBRID_WEIGHT, "hybrid_weight", "float"),
+            (RagConfigKeys.CANDIDATE_K, "candidate_k", "int"),
+            (RagConfigKeys.MIN_SCORE, "min_score", "float"),
+            # 融合权重
+            (RagConfigKeys.VECTOR_WEIGHT, "vector_weight", "float"),
+            (RagConfigKeys.BM25_WEIGHT, "bm25_weight", "float"),
+            (RagConfigKeys.SINGLE_SOURCE_PENALTY, "single_source_penalty", "float"),
+            (RagConfigKeys.SAME_DOC_DECAY, "same_doc_decay", "float"),
         ]
         for key, field, value_type in mappings:
             if field in config and config[field] is not None:
