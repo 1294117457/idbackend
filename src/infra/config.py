@@ -98,6 +98,18 @@ class Settings(BaseSettings):
     # ── 上下文 ──────────────────────────────────────────────────
     CONTEXT_MAX_MESSAGES: int = 20
 
+    # ── 上下文压缩（summary merge 策略）──────────────────────────
+    # 累计多少条新消息触发一次 LLM 摘要
+    SUMMARY_COMPRESS_INTERVAL: int = 20
+    # 近期摘要最多保留几条（is_archived=false）
+    SUMMARY_RECENT_MAX_COUNT: int = 3
+    # 近期摘要字数上限 (LLM prompt 硬约束)
+    SUMMARY_RECENT_MAX_CHARS: int = 300
+    # 历史摘要字数上限 (再压缩触发阈值)
+    SUMMARY_ARCHIVED_MAX_CHARS: int = 800
+    # 历史摘要合并时, LLM 输出的目标字数
+    SUMMARY_MERGE_TARGET_CHARS: int = 800
+
     # ── SMTP（.env 默认值）───────────────────────────────────────
     SMTP_HOST: str = "smtp.xmu.edu.cn"
     SMTP_PORT: int = 587

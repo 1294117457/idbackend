@@ -28,7 +28,16 @@ from src.models.template_category import TemplateCategory
 from src.models.extra_info_field import ExtraInfoField
 from src.models.file import FileMetadata, FileCategory
 from src.models.embedding import Embedding, EmbeddingCategory
-from src.models.system_config import SystemConfig, AgentSession
+from src.models.system_config import SystemConfig
+from src.models.ai_chat import (
+    AgentSession,
+    AgentMessage,
+    AgentSessionSummary,
+    AgentSessionSnapshot,
+    SessionStatus,
+    MessageRole,
+    MessageType,
+)
 
 __all__ = [
     "Base",
@@ -72,5 +81,12 @@ __all__ = [
     "EmbeddingCategory",
     # Config
     "SystemConfig",
+    # AI Chat
     "AgentSession",
+    "AgentMessage",
+    "AgentSessionSummary",
+    "AgentSessionSnapshot",
+    "SessionStatus",
+    "MessageRole",
+    "MessageType",
 ]

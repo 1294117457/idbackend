@@ -51,13 +51,3 @@ class SystemConfig(Base):
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
     )
-
-
-class AgentSession(Base, TimestampMixin):
-    """Agent 会话表"""
-
-    __tablename__ = "agent_sessions"
-
-    user_id: Mapped[int] = mapped_column()
-    session_id: Mapped[str] = mapped_column(String(100), unique=True)
-    session_metadata: Mapped[Optional[dict]] = mapped_column(JSON, default=dict)
