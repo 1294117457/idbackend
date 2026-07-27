@@ -23,14 +23,12 @@ class FileCategory(str, enum.Enum):
 class FileMetadata(Base, TimestampMixin):
     __tablename__ = "file_metadata"
 
-    # 支持直接预览的类型（浏览器原生支持，无需转换）
+    # 支持直接预览的类型（浏览器原生支持，无需任何服务端转换）
     PREVIEWABLE_TYPES: frozenset[str] = frozenset({
         # 图片
         "image/jpeg", "image/png", "image/gif", "image/webp", "image/svg+xml",
         # PDF
         "application/pdf",
-        # Word 2007+ (Office Open XML)
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     })
 
     @property

@@ -1,0 +1,49 @@
+# 镜像构建上下文黑名单——这些不该被打包进镜像
+# （减少 200MB+ 体积，也防止 .env 密钥泄露）
+
+# 版本控制
+.git/
+.gitignore
+.github/
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+*.so
+
+# 环境 & 密钥（重要！不要进镜像）
+.env
+.env.local
+.env.*.local
+
+# 日志 & 临时
+*.log
+tmp/
+temp/
+k6
+
+# 测试数据 / 上传样本
+tests/fixtures/
+tests/uploads/
+uploads/
+
+# 文档（不需要运行时）
+docs/
+*.md
+README.md
+LICENSE
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 数据迁移备份
+migrations/*.bak
+*.sql.gz
+
+# Docker 构建产物本身（防止递归）
+Dockerfile.bak
