@@ -1,190 +1,183 @@
 """系统配置 API
 
 提供系统配置管理功能，仅 super_admin 可访问：
-- GET /api/system/config - 获取系统配置
-- PUT /api/system/config - 更新系统配置
-- GET /api/system/config/agent - 获取 Agent 配置
-- PUT /api/system/config/agent - 更新 Agent 配置
+- GET /api/system/config - 获取全量配置
+- GET /api/system/config/rag - 获取 RAG 搜索配置
+- PUT /api/system/config/rag - 更新 RAG 搜索配置
+- GET /api/system/config/llm - 获取 LLM 配置
+- PUT /api/system/config/llm - 更新 LLM 配置
+- GET /api/system/config/embed - 获取 Embedding 配置
+- PUT /api/system/config/embed - 更新 Embedding 配置
 - GET /api/system/config/smtp - 获取 SMTP 配置
 - PUT /api/system/config/smtp - 更新 SMTP 配置
-- POST /api/system/config/rbac/reset - 重置 RBAC（清空 + 重新 seed）
-"""
-import os
-from fastapi import APIRouter, Depends
-from sqlalchemy.ext.asyncio import AsyncSession
-from pydantic import BaseModel
-from typing import Optional
+- POST /api/system/config/rbac/reset - 重置 RBAC
 
-from src.app.dependencies import get_db
+所有运行时配置（LLM/Embed/SMTP/RAG）优先从 DB 读取，DB 无记录时回退到 .env。
+PUT 后会自动刷新 config.py 中的运行时缓存。
+"""
+
+from fastapi import APIRouter
+
 from src.app import response as R
+from src.infra.database import AsyncSessionLocal
+from src.services.system_config_service import SystemConfigService
+from src.app.schemas.system_config import (
+    LlmConfigRequest,
+    EmbedConfigRequest,
+    SmtpConfigRequest,
+    RagSearchConfigRequest,
+    LlmEmbedConfigRequest,
+)
 
 router = APIRouter(prefix="/api/system/config", tags=["系统配置"])
 
 
-class AgentConfig(BaseModel):
-    api_key: Optional[str] = None
-    base_url: Optional[str] = None
-    chat_model: Optional[str] = None
-    embedding_model: Optional[str] = None
-
-
-class SmtpConfig(BaseModel):
-    smtp_host: Optional[str] = None
-    smtp_port: Optional[int] = None
-    smtp_username: Optional[str] = None
-    smtp_password: Optional[str] = None
-    smtp_from: Optional[str] = None
-
-
-class SystemConfigUpdate(BaseModel):
-    agent: Optional[AgentConfig] = None
-    smtp: Optional[SmtpConfig] = None
-
+# ============================================================
+# 全量配置
+# ============================================================
 
 @router.get("")
-async def get_config(
-    db: AsyncSession = Depends(get_db),
-):
-    """获取系统配置"""
-    from src.infra.config import get_settings
-    settings = get_settings()
+async def get_all_config():
+    """获取全量系统配置（敏感字段脱敏）"""
+    async with AsyncSessionLocal() as db:
+        data = await SystemConfigService.get_all_config(db)
+    return R.query_resp(data)
 
-    return R.query_resp({
-        "agent": {
-            "api_key": settings.QWEN3_API_KEY[:4] + "****" if settings.QWEN3_API_KEY else "",
-            "base_url": settings.QWEN_BASE_URL,
-            "chat_model": settings.QWEN_CHAT_MODEL,
-            "embedding_model": settings.QWEN_EMBEDDING_MODEL,
-        },
-        "smtp": {
-            "smtp_host": settings.SMTP_HOST,
-            "smtp_port": settings.SMTP_PORT,
-            "smtp_username": settings.SMTP_USERNAME,
-            "smtp_from": settings.SMTP_FROM,
-        },
-        "system_accounts": [acc.strip() for acc in settings.SYSTEM_ACCOUNTS.split(",") if acc.strip()],
-    })
 
+# ============================================================
+# RAG 配置
+# ============================================================
+
+@router.get("/rag")
+async def get_rag_config():
+    """获取 RAG 搜索配置（敏感字段脱敏）"""
+    async with AsyncSessionLocal() as db:
+        data = await SystemConfigService.get_rag_config(db)
+    return R.query_resp(data)
+
+
+@router.put("/rag")
+async def update_rag_config(req: RagSearchConfigRequest):
+    """更新 RAG 搜索配置"""
+    async with AsyncSessionLocal() as db:
+        data = await SystemConfigService.update_rag_config(db, req.model_dump(exclude_none=True))
+    return R.success_resp(data, msg="RAG 配置已更新")
+
+
+# ============================================================
+# LLM 配置
+# ============================================================
+
+@router.get("/llm")
+async def get_llm_config():
+    """获取 LLM 配置（敏感字段脱敏）"""
+    async with AsyncSessionLocal() as db:
+        data = await SystemConfigService.get_llm_config(db)
+    return R.query_resp(data)
+
+
+@router.put("/llm")
+async def update_llm_config(req: LlmConfigRequest):
+    """更新 LLM 配置（敏感字段以明文存储，GET 时脱敏返回）"""
+    async with AsyncSessionLocal() as db:
+        data = await SystemConfigService.update_llm_config(db, req.model_dump(exclude_none=True))
+    return R.success_resp(data, msg="LLM 配置已更新")
+
+
+# ============================================================
+# Agent（LLM + Embedding 合并，前端专用）
+# ============================================================
 
 @router.get("/agent")
-async def get_agent_config(
-    db: AsyncSession = Depends(get_db),
-):
-    """获取 Agent 配置"""
-    from src.infra.config import get_settings
-    settings = get_settings()
-
+async def get_agent_config():
+    """获取 Agent 配置（LLM + Embedding 合并，敏感字段脱敏）"""
+    async with AsyncSessionLocal() as db:
+        llm = await SystemConfigService.get_llm_config(db)
+        embed = await SystemConfigService.get_embed_config(db)
     return R.query_resp({
-        "api_key": settings.QWEN3_API_KEY[:4] + "****" if settings.QWEN3_API_KEY else "",
-        "base_url": settings.QWEN_BASE_URL,
-        "chat_model": settings.QWEN_CHAT_MODEL,
-        "embedding_model": settings.QWEN_EMBEDDING_MODEL,
+        "provider": llm.get("provider"),
+        "api_key": llm.get("api_key", ""),
+        "base_url": llm.get("base_url"),
+        "chat_model": llm.get("chat_model"),
+        "embedding_api_key": embed.get("api_key", ""),
+        "embedding_base_url": embed.get("base_url"),
+        "embedding_model": embed.get("model"),
+        "embedding_dim": embed.get("dim"),
     })
 
 
 @router.put("/agent")
-async def update_agent_config(
-    config: AgentConfig,
-    db: AsyncSession = Depends(get_db),
-):
-    """更新 Agent 配置"""
-    env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), ".env")
+async def update_agent_config(req: LlmEmbedConfigRequest):
+    """更新 Agent 配置（拆分到 LLM + Embedding）"""
+    async with AsyncSessionLocal() as db:
+        llm_data = req.model_dump(exclude_none=True)
+        embed_data = {
+            "api_key": llm_data.pop("embedding_api_key", None),
+            "base_url": llm_data.pop("embedding_base_url", None),
+            "model": llm_data.pop("embedding_model", None),
+            "dim": llm_data.pop("embedding_dim", None),
+        }
+        # 去掉空值
+        llm_data = {k: v for k, v in llm_data.items() if v is not None}
+        embed_data = {k: v for k, v in embed_data.items() if v is not None}
+        if llm_data:
+            await SystemConfigService.update_llm_config(db, llm_data)
+        if embed_data:
+            await SystemConfigService.update_embed_config(db, embed_data)
+    return R.success_resp(msg="Agent 配置已更新")
 
-    with open(env_path, "r") as f:
-        lines = f.readlines()
 
-    updates = {
-        "QWEN3_API_KEY": config.api_key,
-        "QWEN_BASE_URL": config.base_url,
-        "QWEN_CHAT_MODEL": config.chat_model,
-        "QWEN_EMBEDDING_MODEL": config.embedding_model,
-    }
+# ============================================================
+# Embedding 配置
+# ============================================================
 
-    new_lines = []
-    for line in lines:
-        updated = False
-        for key, value in updates.items():
-            if value is not None and line.startswith(f"{key}="):
-                new_lines.append(f"{key}={value}\n")
-                updated = True
-                break
-        if not updated:
-            new_lines.append(line)
+@router.get("/embed")
+async def get_embed_config():
+    """获取 Embedding 配置（敏感字段脱敏）"""
+    async with AsyncSessionLocal() as db:
+        data = await SystemConfigService.get_embed_config(db)
+    return R.query_resp(data)
 
-    with open(env_path, "w") as f:
-        f.writelines(new_lines)
 
-    return R.success_resp({"message": "Agent 配置已更新，请重启服务生效"}, msg="Agent 配置已更新")
+@router.put("/embed")
+async def update_embed_config(req: EmbedConfigRequest):
+    """更新 Embedding 配置（敏感字段以明文存储，GET 时脱敏返回）"""
+    async with AsyncSessionLocal() as db:
+        data = await SystemConfigService.update_embed_config(db, req.model_dump(exclude_none=True))
+    return R.success_resp(data, msg="Embedding 配置已更新")
 
+
+# ============================================================
+# SMTP 配置
+# ============================================================
 
 @router.get("/smtp")
-async def get_smtp_config(
-    db: AsyncSession = Depends(get_db),
-):
-    """获取 SMTP 配置"""
-    from src.infra.config import get_settings
-    settings = get_settings()
-
-    return R.query_resp({
-        "smtp_host": settings.SMTP_HOST,
-        "smtp_port": settings.SMTP_PORT,
-        "smtp_username": settings.SMTP_USERNAME,
-        "smtp_password": "****" if settings.SMTP_PASSWORD else "",
-        "smtp_from": settings.SMTP_FROM,
-    })
+async def get_smtp_config():
+    """获取 SMTP 配置（敏感字段脱敏）"""
+    async with AsyncSessionLocal() as db:
+        data = await SystemConfigService.get_smtp_config(db)
+    return R.query_resp(data)
 
 
 @router.put("/smtp")
-async def update_smtp_config(
-    config: SmtpConfig,
-    db: AsyncSession = Depends(get_db),
-):
-    """更新 SMTP 配置"""
-    env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), ".env")
+async def update_smtp_config(req: SmtpConfigRequest):
+    """更新 SMTP 配置（敏感字段以明文存储，GET 时脱敏返回）"""
+    async with AsyncSessionLocal() as db:
+        data = await SystemConfigService.update_smtp_config(db, req.model_dump(exclude_none=True))
+    return R.success_resp(data, msg="SMTP 配置已更新")
 
-    with open(env_path, "r") as f:
-        lines = f.readlines()
 
-    updates = {
-        "SMTP_HOST": config.smtp_host,
-        "SMTP_PORT": str(config.smtp_port) if config.smtp_port else None,
-        "SMTP_USERNAME": config.smtp_username,
-        "SMTP_PASSWORD": config.smtp_password,
-        "SMTP_FROM": config.smtp_from,
-    }
-
-    new_lines = []
-    for line in lines:
-        updated = False
-        for key, value in updates.items():
-            if value is not None and line.startswith(f"{key}="):
-                new_lines.append(f"{key}={value}\n")
-                updated = True
-                break
-        if not updated:
-            new_lines.append(line)
-
-    with open(env_path, "w") as f:
-        f.writelines(new_lines)
-
-    return R.success_resp({"message": "SMTP 配置已更新"}, msg="SMTP 配置已更新")
-
+# ============================================================
+# RBAC 重置
+# ============================================================
 
 @router.post("/rbac/reset")
-async def reset_rbac(
-    db: AsyncSession = Depends(get_db),
-):
-    """硬重置 RBAC：清空 role_permission / user_role + 删除 seed 维护的 role / permission → 重新 seed。
-
-    仅 super_admin 可调（依赖 rbac:reset 权限码 → super_admin 角色短路放行）。
-    业务侧新建的 role / permission 不会被删。
-
-    失效：调用 RbacService.invalidate_all_user_caches() 清除所有用户缓存。
-    """
+async def reset_rbac():
+    """硬重置 RBAC：清空 role_permission / user_role + 删除 seed 维护的 role / permission → 重新 seed。"""
     from src.scripts.init_rbac_data import reset_rbac_data
+    from src.services.rbac_service import RbacService
 
     stats = await reset_rbac_data()
-    # 清除所有用户缓存（role/permission 结构已大变，旧缓存全部失效）
     await RbacService.invalidate_all_user_caches()
     return R.success_resp({
         "message": "RBAC 已重置",

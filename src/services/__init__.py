@@ -10,6 +10,7 @@ from src.services.calculation_service import ScoreCalculationService
 from src.services.template_category_service import TemplateCategoryService
 from src.services.file_service import FileService
 from src.services.rbac_service import RbacService
+from src.services.ai_chat_service import AIChatService
 
 # ProofService、ApplicationOperationService 已废弃（已合并到 ApplicationService）
 # UserProfileService 已合并到 UserService
@@ -26,4 +27,5 @@ __all__ = [
     "TemplateCategoryService",
     "FileService",
     "RbacService",
+    "AIChatService",
 ]

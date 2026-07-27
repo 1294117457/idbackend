@@ -13,12 +13,24 @@
 """
 from typing import Any
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+
+
+def _serialize(data: Any) -> Any:
+    """递归把 Pydantic BaseModel 转为 dict，列表/元组里的也一并处理"""
+    if isinstance(data, BaseModel):
+        return _serialize(data.model_dump())
+    if isinstance(data, dict):
+        return {k: _serialize(v) for k, v in data.items()}
+    if isinstance(data, (list, tuple)):
+        return [_serialize(v) for v in data]
+    return data
 
 
 def _resp(status_code: int, code: int, msg: str, data: Any = None) -> JSONResponse:
     return JSONResponse(
         status_code=status_code,
-        content={"code": code, "msg": msg, "data": data},
+        content={"code": code, "msg": msg, "data": _serialize(data)},
     )
 
 

@@ -28,6 +28,16 @@ def _sync_schema_blocking() -> None:
 async def lifespan(app: FastAPI):
     print("[idpython] 启动中...")
 
+    # 填充运行时配置缓存（DB > .env）
+    try:
+        from src.infra.database import AsyncSessionLocal
+        from src.infra.config import refresh_cache
+        async with AsyncSessionLocal() as db:
+            await refresh_cache(db)
+        print("[idpython] 运行时配置缓存已加载")
+    except Exception as e:
+        print(f"[idpython] 运行时配置缓存加载失败（将使用 .env 默认值）: {e}")
+
     try:
         from src.infra.storage import create_storage
         storage = create_storage()

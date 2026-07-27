@@ -1,21 +1,43 @@
-"""环境配置"""
+"""环境配置
 
+分层策略：
+  1. 静态配置（DB/Redis/Minio/JWT 等）→ 仅从 .env 读取
+  2. 运行时配置（LLM/Embed/SMTP/RAG）→ DB 优先，.env 兜底
+
+缓存刷新：
+  - 启动时 lifespan 一次性填充
+  - PUT /api/system/config/* 后调用 await refresh_cache() 立即刷新
+
+使用方式：
+  from src.infra.config import get_settings           # 静态配置
+  from src.infra.config import get_llm_config         # LLM 配置
+  from src.infra.config import get_embed_config       # Embedding 配置
+  from src.infra.config import get_smtp_config        # SMTP 配置
+  from src.infra.config import get_rag_config         # RAG 参数
+  from src.infra.config import refresh_cache          # 手动刷新缓存（async）
+"""
+
+import threading
 from pathlib import Path
-from functools import lru_cache
-from typing import List
+from typing import Any, Dict, List
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 _ENV_FILE = Path(__file__).parent.parent.parent / ".env"
 
 
+# ════════════════════════════════════════════════════════════════
+# Layer 1: 静态配置（仅 .env，永不热更）
+# ════════════════════════════════════════════════════════════════
+
 class Settings(BaseSettings):
-    # 服务配置
+    # ── 服务 ────────────────────────────────────────────────────
     PORT: int = 8000
     HOST: str = "0.0.0.0"
     DEBUG: bool = False
 
-    # PostgreSQL
+    # ── PostgreSQL ──────────────────────────────────────────────
     DATABASE_URL: str = "postgresql://postgres:password@localhost:5432/idproject"
     PG_VECTOR_URL: str = "postgresql://postgres:password@localhost:5432/idproject"
 
@@ -24,52 +46,80 @@ class Settings(BaseSettings):
     DB_MAX_OVERFLOW: int = 50
     DB_POOL_TIMEOUT: int = 30
 
-    # Redis
+    # ── Redis ───────────────────────────────────────────────────
     REDIS_URL: str = "redis://localhost:6379/0"
 
-    # MinIO（S3 兼容对象存储）
-    # .env 字段名：MINIO_* （pydantic-settings 大小写不敏感，仍可用 S3_* 兼容老配置）
+    # ── MinIO（S3 兼容对象存储）─────────────────────────────────
     MINIO_ENDPOINT: str = "http://localhost:9000"
     MINIO_ACCESS_KEY: str = "admin"
     MINIO_SECRET_KEY: str = "password"
     MINIO_BUCKET: str = "idproject"
+    MINIO_MAX_POOL_CONNECTIONS: int = 50
+    MINIO_CONNECT_TIMEOUT: int = 5
+    MINIO_READ_TIMEOUT: int = 30
+    MINIO_MAX_RETRIES: int = 3
 
-    # 万能验证码 (已硬编码 0000, 性能测试直接用)
-    MINIO_MAX_POOL_CONNECTIONS: int = 50         # 单 client 最大连接数；总并发 = workers × 该值
-    MINIO_CONNECT_TIMEOUT: int = 5               # TCP 连接超时（秒）
-    MINIO_READ_TIMEOUT: int = 30                 # 读超时（秒）
-    MINIO_MAX_RETRIES: int = 3                   # 失败重试次数
+    storage_backend: str = "minio"
+    local_storage_dir: str = "./storage"
 
-    # 存储后端选择（minio / s3 / local）
-    # 兼容别名：s3 等价于 minio（老 .env STORAGE_BACKEND=s3 仍生效）
-    storage_backend: str = "minio"               # STORAGE_BACKEND=minio 或 =s3 或 =local
-    local_storage_dir: str = "./storage"         # LocalAdapter 的根目录
-
-    # JWT
+    # ── JWT ─────────────────────────────────────────────────────
     JWT_SECRET: str = "change-me-in-production"
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRE_HOURS: int = 24
     JWT_REFRESH_EXPIRE_DAYS: int = 7
 
-    # LLM
-    QWEN3_API_KEY: str = ""
-    QWEN_BASE_URL: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    QWEN_CHAT_MODEL: str = "qwen3-max"
-    QWEN_EMBEDDING_MODEL: str = "text-embedding-v3"
+    # ── LLM / Chat 模型（.env 默认值）────────────────────────────
+    LLM_PROVIDER: str = "openai"
+    LLM_API_KEY: str = ""
+    LLM_BASE_URL: str = "https://api.openai.com/v1"
+    LLM_CHAT_MODEL: str = "gpt-4o"
 
-    # 上下文
+    # ── Embedding / 向量模型（.env 默认值）──────────────────────
+    EMBEDDING_API_KEY: str = ""
+    EMBEDDING_BASE_URL: str = "https://api.openai.com/v1"
+    EMBEDDING_MODEL: str = "text-embedding-3-small"
+    EMBEDDING_DIM: int = 1536
+
+    # ── RAG 参数（.env 默认值，DB 优先覆盖）────────────────────
+    # 字段名与 system_config DB 表保持一致
+    # 召回参数
+    RAG_TOP_K: int = 5             # 最终返回条数
+    RAG_CANDIDATE_K: int = 0       # 候选池（0 = 自动公式 max(top_k*6, top_k+15)）
+    RAG_MIN_SCORE: float = 0.05    # 融合后最低分门槛，低于丢弃
+    # 融合权重
+    RAG_VECTOR_WEIGHT: float = 1.0            # 向量路权重
+    RAG_BM25_WEIGHT: float = 1.0              # BM25 路权重
+    RAG_SINGLE_SOURCE_PENALTY: float = 0.5    # 单路命中折扣（不乘 weight）
+    RAG_SAME_DOC_DECAY: float = 0.7           # 同文档第 n 个 chunk × decay^(n-1)
+    # 切块参数（text_splitter 使用）
+    RAG_CHUNK_SIZE: int = 400
+    RAG_CHUNK_OVERLAP: int = 100
+
+    # ── 上下文 ──────────────────────────────────────────────────
     CONTEXT_MAX_MESSAGES: int = 20
 
-    # 邮件
+    # ── 上下文压缩（summary merge 策略）──────────────────────────
+    # 累计多少条新消息触发一次 LLM 摘要
+    SUMMARY_COMPRESS_INTERVAL: int = 20
+    # 近期摘要最多保留几条（is_archived=false）
+    SUMMARY_RECENT_MAX_COUNT: int = 3
+    # 近期摘要字数上限 (LLM prompt 硬约束)
+    SUMMARY_RECENT_MAX_CHARS: int = 300
+    # 历史摘要字数上限 (再压缩触发阈值)
+    SUMMARY_ARCHIVED_MAX_CHARS: int = 800
+    # 历史摘要合并时, LLM 输出的目标字数
+    SUMMARY_MERGE_TARGET_CHARS: int = 800
+
+    # ── SMTP（.env 默认值）───────────────────────────────────────
     SMTP_HOST: str = "smtp.xmu.edu.cn"
     SMTP_PORT: int = 587
     SMTP_USERNAME: str = ""
     SMTP_PASSWORD: str = ""
     SMTP_FROM: str = ""
 
-    # 文件上传
-    MAX_FILE_SIZE: int = 50 * 1024 * 1024  # 50MB
-    MAX_PREVIEW_FILE_SIZE: int = 5 * 1024 * 1024  # 5MB，仅预览用
+    # ── 文件上传 ────────────────────────────────────────────────
+    MAX_FILE_SIZE: int = 50 * 1024 * 1024
+    MAX_PREVIEW_FILE_SIZE: int = 5 * 1024 * 1024
     SYSTEM_ACCOUNTS: str = "admin"
     ALLOWED_ORIGINS: List[str] = ["*"]
 
@@ -80,31 +130,128 @@ class Settings(BaseSettings):
     )
 
 
-@lru_cache
+_settings: Settings | None = None
+_settings_lock = threading.Lock()
+
+
 def get_settings() -> Settings:
-    return Settings()
+    global _settings
+    if _settings is None:
+        with _settings_lock:
+            if _settings is None:
+                _settings = Settings()
+    return _settings
 
 
-# ────── 数据库 URL 转换（统一实现，唯一一处） ──────
-def to_async_database_url(url: str) -> str:
-    """postgresql:// → postgresql+asyncpg://
+# ════════════════════════════════════════════════════════════════
+# Layer 2: 运行时配置缓存（DB 优先，.env 兜底）
+# ════════════════════════════════════════════════════════════════
+#
+# 缓存结构（与 SystemConfigService.get_all_config() 返回值一致）：
+#   {
+#     "llm":  {"provider": ..., "api_key": ..., ...},
+#     "embed": {"api_key": ..., "base_url": ..., ...},
+#     "smtp": {"host": ..., "port": ..., ...},
+#     "rag":  {"top_k": ..., "candidate_k": ..., "vector_weight": ..., ...},
+#   }
 
-    若已是 +asyncpg 或 +psycopg2 则原样返回（幂等）。
+_runtime_cache: Dict[str, Any] = {}
+_cache_lock = threading.Lock()
+
+
+async def refresh_cache(db) -> None:
+    """从 DB 加载运行时配置并覆盖缓存（异步，lifespan / update 后调用）。"""
+    from src.services.system_config_service import SystemConfigService
+
+    data = await SystemConfigService.get_all_config(db)
+    with _cache_lock:
+        _runtime_cache.clear()
+        _runtime_cache.update(data)
+
+
+def _coalesce(db_cfg: Dict[str, Any], defaults: Dict[str, Any]) -> Dict[str, Any]:
+    """DB 配置覆盖 .env 默认值，移除 None。"""
+    result = dict(defaults)
+    for k, v in db_cfg.items():
+        if v is not None:
+            result[k] = v
+    return {k: v for k, v in result.items() if v is not None}
+
+
+# ── LLM ───────────────────────────────────────────────────────────
+
+def get_llm_config() -> Dict[str, Any]:
+    defaults = {
+        "provider": get_settings().LLM_PROVIDER,
+        "api_key": get_settings().LLM_API_KEY,
+        "base_url": get_settings().LLM_BASE_URL,
+        "chat_model": get_settings().LLM_CHAT_MODEL,
+    }
+    return _coalesce(_runtime_cache.get("llm", {}), defaults)
+
+
+# ── Embedding ─────────────────────────────────────────────────────
+
+def get_embed_config() -> Dict[str, Any]:
+    defaults = {
+        "api_key": get_settings().EMBEDDING_API_KEY,
+        "base_url": get_settings().EMBEDDING_BASE_URL,
+        "model": get_settings().EMBEDDING_MODEL,
+        "dim": get_settings().EMBEDDING_DIM,
+    }
+    return _coalesce(_runtime_cache.get("embed", {}), defaults)
+
+
+# ── SMTP ──────────────────────────────────────────────────────────
+
+def get_smtp_config() -> Dict[str, Any]:
+    defaults = {
+        "host": get_settings().SMTP_HOST,
+        "port": get_settings().SMTP_PORT,
+        "username": get_settings().SMTP_USERNAME,
+        "password": get_settings().SMTP_PASSWORD,
+        "from_addr": get_settings().SMTP_FROM,
+    }
+    return _coalesce(_runtime_cache.get("smtp", {}), defaults)
+
+
+# ── RAG ───────────────────────────────────────────────────────────
+
+def get_rag_config() -> Dict[str, Any]:
+    """RAG 配置：DB 优先，.env 兜底，统一从 config.py 获取。
+
+    字段名与 system_config DB 表保持完全一致。
     """
-    if (
-        url.startswith("postgresql://")
-        and "+asyncpg" not in url
-        and "+psycopg2" not in url
-    ):
+    defaults = {
+        # 召回参数
+        "top_k": get_settings().RAG_TOP_K,
+        "candidate_k": get_settings().RAG_CANDIDATE_K,
+        "min_score": get_settings().RAG_MIN_SCORE,
+        # 融合权重
+        "vector_weight": get_settings().RAG_VECTOR_WEIGHT,
+        "bm25_weight": get_settings().RAG_BM25_WEIGHT,
+        "single_source_penalty": get_settings().RAG_SINGLE_SOURCE_PENALTY,
+        "same_doc_decay": get_settings().RAG_SAME_DOC_DECAY,
+        # 切块参数
+        "chunk_size": get_settings().RAG_CHUNK_SIZE,
+        "chunk_overlap": get_settings().RAG_CHUNK_OVERLAP,
+    }
+    return _coalesce(_runtime_cache.get("rag", {}), defaults)
+
+
+# ════════════════════════════════════════════════════════════════
+# Layer 3: 数据库 URL 转换（唯一实现）
+# ════════════════════════════════════════════════════════════════
+
+def to_async_database_url(url: str) -> str:
+    """postgresql:// → postgresql+asyncpg://（幂等）"""
+    if url.startswith("postgresql://") and "+asyncpg" not in url and "+psycopg2" not in url:
         return url.replace("postgresql://", "postgresql+asyncpg://", 1)
     return url
 
 
 def to_sync_database_url(url: str) -> str:
-    """postgresql[+asyncpg]:// → postgresql+psycopg2://
-
-    若已是 +psycopg2 则原样返回（幂等）。
-    """
+    """postgresql[+asyncpg]:// → postgresql+psycopg2://（幂等）"""
     if url.startswith("postgresql+asyncpg://"):
         return url.replace("postgresql+asyncpg://", "postgresql+psycopg2://", 1)
     if url.startswith("postgresql://") and "+psycopg2" not in url:
@@ -113,16 +260,13 @@ def to_sync_database_url(url: str) -> str:
 
 
 def get_async_database_url() -> str:
-    """应用运行时用的 DB URL（asyncpg）"""
     return to_async_database_url(get_settings().DATABASE_URL)
 
 
 def get_sync_database_url() -> str:
-    """同步脚本（`Base.metadata.create_all` / `init_rbac_data` 等）用的 DB URL（psycopg2）"""
     return to_sync_database_url(get_settings().DATABASE_URL)
 
 
 def is_system_account(username: str) -> bool:
-    """判断用户名是否在超管白名单中（白名单用户拥有全部权限）"""
     accounts = get_settings().SYSTEM_ACCOUNTS
     return username in {acc.strip() for acc in accounts.split(",") if acc.strip()}

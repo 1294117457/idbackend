@@ -15,6 +15,8 @@ from src.app.routes.proof import router as proof_router
 from src.app.routes.role import router as role_router
 from src.app.routes.permission import router as permission_router
 from src.app.routes.system_config import router as system_config_router
+from src.app.routes.embedding import router as embedding_router
+from src.app.routes.ai_chat import router as ai_chat_router
 
 
 # ============== 注册顺序（按业务分组） ==============
@@ -37,11 +39,15 @@ ROUTERS = [
     extra_info_field_router,
     file_router,
     proof_router,
+    # Embedding 管理
+    embedding_router,
     # 权限管理
     role_router,
     permission_router,
     # 系统配置
     system_config_router,
+    # AI Chat
+    ai_chat_router,
 ]
 
 
@@ -69,5 +75,7 @@ __all__ = [
     "role_router",
     "permission_router",
     "system_config_router",
+    "embedding_router",
+    "ai_chat_router",
     "register_all_routes",
 ]
