@@ -1,131 +1,106 @@
-# ID-Python 统一后端
+# idbackend
 
-FastAPI + LangGraph 实现的保研加分助手后端服务，统一管理用户认证、加分申请、审核流程和 AI 对话功能。
+厦门大学信息学院保研加分助手后端。FastAPI + LangGraph，提供认证、加分申请、审核、AI 对话、知识库 RAG。
 
 ## 技术栈
 
-- **Web 框架**: FastAPI 0.115+
-- **Agent 编排**: LangGraph 0.1+
-- **ORM**: SQLAlchemy 2.0 + asyncpg
-- **数据库**: PostgreSQL + pgvector
-- **缓存**: Redis
-- **文件存储**: SeaweedFS (S3兼容)
-- **认证**: JWT (python-jose) + bcrypt
+FastAPI · SQLAlchemy 2.0 + asyncpg · PostgreSQL + pgvector · Redis · MinIO（S3）· LangGraph · JWT
 
-## 项目结构
+## 目录结构
 
 ```
-idpython/
-├── src/
-│   ├── main.py              # 应用入口
-│   ├── app/                 # HTTP层
-│   │   ├── routes/         # FastAPI路由
-│   │   ├── schemas/        # Pydantic模型
-│   │   ├── deps.py         # 依赖注入
-│   │   └── response.py     # 响应工具
-│   ├── services/           # 业务逻辑层
-│   ├── models/            # SQLAlchemy模型
-│   ├── agent/             # LangGraph Agent
-│   │   ├── graph/         # 图定义
-│   │   ├── nodes/         # 节点
-│   │   └── tools/         # Agent工具 (直接调用services)
-│   ├── rag/               # 知识库RAG
-│   └── infra/             # 基础设施
-│       ├── config.py      # pydantic-settings
-│       ├── database.py    # PostgreSQL
-│       ├── redis.py       # Redis
-│       ├── s3.py          # SeaweedFS
-│       ├── jwt.py         # JWT工具
-│       └── email.py       # 邮件发送
-├── tests/                 # 测试
-├── requirements.txt       # 依赖
-├── .env                  # 环境变量
-├── Dockerfile
-└── README.md
+src/
+├── main.py              # 启动入口（uvicorn main:app）
+├── app/                 # HTTP 层（routes / schemas / middleware / deps）
+├── services/            # 业务逻辑
+├── repositories/        # 数据库访问
+├── models/              # SQLAlchemy ORM
+├── agent/               # LangGraph Agent（graph / nodes / tools / rag）
+└── infra/               # 配置 / DB / Redis / S3 / JWT / 邮件
+tests/                  # pytest
 ```
 
-## 快速开始
+分层：`router → service → repository → model`，Agent 工具直接调 service。
 
-### 1. 安装依赖
+## 快速启动
+
+### 0. 前置
+
+- Python 3.11+
+- 本地已起好 PostgreSQL（带 pgvector）、Redis、MinIO 三件套（基础设施不在本仓维护，由运维/SRE 提供）
+
+### 1. 装依赖
 
 ```bash
-cd idpython
 pip install -r requirements.txt
 ```
 
-### 2. 配置环境变量
+### 2. 改 .env
+
+仓库已带 `.env`，**默认连远端服务器**（`223.109.49.63`）。本地开发请改成你自己的环境：
 
 ```bash
-cp .env.example .env
-# 编辑 .env 填入配置
+DATABASE_URL=postgresql://<user>:<password>@localhost:5432/iddata
+PG_VECTOR_URL=postgresql://<user>:<password>@localhost:5432/iddata
+REDIS_URL=redis://:<password>@localhost:6379/1
+MINIO_ENDPOINT=http://localhost:9000
+MINIO_ACCESS_KEY=<your-access-key>
+MINIO_SECRET_KEY=<your-secret-key>
+MINIO_BUCKET=idbucket
 ```
 
-### 3. 运行服务
+并确保数据库 `iddata` 已建好（本地连上 PG 后 `CREATE DATABASE iddata;`）。
+
+### 3. 跑
 
 ```bash
-# 开发模式
-uvicorn main:app --reload --port 8000
-
-# 生产模式
-uvicorn main:app --host 0.0.0.0 --port 8000
+python main.py          # 推荐：自动同步 schema + uvicorn
+# 或
+uvicorn main:app --reload --port 8000   # 热重载
 ```
 
-### 4. 运行测试
+访问 `http://localhost:8000/docs` 看 Swagger。
+
+### 4. 测试
 
 ```bash
 pytest tests/ -v
 ```
 
-## API 路由
+## API 路由速查
 
 | 前缀 | 说明 |
 |------|------|
-| `/api/auth` | 认证 (登录/注册/验证码) |
+| `/api/auth` | 登录 / 注册 / 验证码 |
 | `/api/users` | 用户管理 |
 | `/api/applications` | 加分申请 |
 | `/api/templates` | 模板管理 |
 | `/api/files` | 文件管理 |
 | `/health` | 健康检查 |
 
-## Docker 部署
+## 常见问题
 
-```bash
-docker build -t idpython .
-docker run -p 8000:8000 --env-file .env idpython
-```
+**Q: 启动报 `connection refused` / 连不上 Postgres**
+A: 检查 `.env` 的 `DATABASE_URL` 是否指向正确的地址 + 端口；本地 PG 默认端口 5432，需 PG 本身在运行；`psql -U <user> -h localhost -d iddata` 验证能直连。
 
-## 环境变量
+**Q: schema 没建 / 表不存在**
+A: `Base.metadata.create_all` 启动时自动建——前提是能连上 PG，且 `iddata` 数据库已存在。
+手工建：`psql -U <user> -h localhost -c "CREATE DATABASE iddata;"`
 
-```bash
-# 数据库
-DATABASE_URL=postgresql://user:pass@localhost:5432/idproject
+**Q: pgvector 报错 `type "vector" does not exist`**
+A: 本地装的 PG 镜像必须是带 pgvector 扩展的版本（如 `postgres:17` + 手动 `CREATE EXTENSION vector;`，或 `eyeix/postgres-zh:v17` 内置）。
 
-# Redis
-REDIS_URL=redis://localhost:6379/0
+**Q: MinIO 上传 403 / 连接超时**
+A: 检查 `.env` 的 `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` 与 MinIO 服务端的 access/secret 一致；`MINIO_ENDPOINT` 用 `localhost:9000`（容器外部端口）而非内网 IP。
 
-# SeaweedFS (S3)
-S3_ENDPOINT=http://localhost:8333
-S3_ACCESS_KEY=your_key
-S3_SECRET_KEY=your_secret
-S3_BUCKET=idproject
+**Q: imports 报错 `src.xxx`**
+A: 用 `python main.py` 启动（main.py 已设置 `PYTHONPATH` 并做 schema 同步）。若 IDE 飘红，安装完依赖后重启 IDE / reload 解释器。
 
-# JWT
-JWT_SECRET=your-secret-key
-JWT_ALGORITHM=HS256
-JWT_EXPIRE_HOURS=24
+**Q: LLM / Embedding 报错**
+A: 检查 `.env` 的 `LLM_API_KEY` / `EMBEDDING_API_KEY` 与 `*_BASE_URL` / `*_MODEL` 是否填写完整。
 
-# LLM
-QWEN3_API_KEY=your-api-key
-QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-```
+**Q: 端口 8000 被占用**
+A: 改 `.env` 的 `PORT=8001`，前端相应改 `vite.config.ts` 的 `proxy['/api'].target`。
 
-## License
-
-MIT
-
-
-部署
-    docker-compose.yml部署基础设施，同步配置好docker network和挂在卷路径
-    github action集成部署前后端
-    后端env在服务器用服务名，基于docker network通信
-    本地测试直连服务器
+**Q: 想要干净的本地默认配置**
+A: 拷贝 `.env.example`（如果未来添加）作为本地模板；当前 `.env` 是带远端 IP 的实例值，必须手动改。
