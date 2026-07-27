@@ -84,6 +84,7 @@ class EmbeddingService:
             db.add(embedding)
 
         await db.flush()
+        await db.commit()
 
         logger.info(f"入库: source_id={source_id}, title={title}, chunks={len(chunks)}")
         return source_id, len(chunks)
@@ -120,6 +121,7 @@ class EmbeddingService:
     ) -> int:
         """按 source_id 删除某来源的所有 chunks。"""
         count = await EmbeddingRepository.delete_by_source_id(db, source_id)
+        await EmbeddingRepository.commit(db)
         return count
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -299,6 +301,7 @@ class EmbeddingService:
             embedding.embedding = vector
 
         await EmbeddingRepository.update(db, embedding)
+        await EmbeddingRepository.commit(db)
 
         return EmbeddingVO.from_orm_to_vo(embedding)
 
@@ -309,6 +312,7 @@ class EmbeddingService:
     ) -> EmbeddingDeleteResultVO:
         """批量删除 embedding（按 ID）"""
         deleted_count = await EmbeddingRepository.delete_by_ids(db, request.ids)
+        await EmbeddingRepository.commit(db)
 
         return EmbeddingDeleteResultVO(
             deletedCount=deleted_count,

@@ -197,32 +197,7 @@ class AIChatService:
         recent_summaries_limit: Optional[int] = None,
         recent_messages_limit: int = 20,
     ) -> List[dict]:
-        """组装 LLM context（供 LangGraph 节点和 stream_chat 使用）
 
-        组装顺序（重要）:
-        1. system prompt
-        2. 历史摘要 (最多 1 个) → 长期记忆
-        3. 近期摘要 (按 end_seq 升序) → 中期记忆
-        4. 最近 N 条原始消息 (按 seq 升序) → 短期记忆
-        5. 当前用户输入
-
-        Args:
-            db: 数据库 session
-            session_id: 会话 ID
-            user_input: 当前用户输入
-            system_prompt: 系统提示词（可选）
-            include_archived: 是否包含历史摘要（classify=False, chat=True）
-            recent_summaries_limit: 近期摘要上限
-                - None: 使用默认 SUMMARY_RECENT_MAX_COUNT
-                - 0: 不包含近期摘要
-                - N>0: 最多 N 条
-            recent_messages_limit: 近期原始消息上限
-                - 0: 不包含历史消息
-                - N>0: 最多 N 条
-
-        Returns:
-            List[dict]: 适配 LLM 的 messages 列表
-        """
         cfg = get_settings()
         messages: List[dict] = []
 
