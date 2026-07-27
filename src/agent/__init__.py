@@ -1,6 +1,17 @@
-"""AI Agent 模块
+"""Agent 模块
 
-包含 LangGraph 定义和节点实现。
+LangGraph Agent 实现：
+- 意图分类 (classify)
+- 闲聊 (chat)
 """
+from .state import AgentState, Message
+from .graph.builder import AgentGraph, get_agent_graph, GraphConfig, create_checkpointer
 
-__all__ = []
+__all__ = [
+    "AgentState",
+    "Message",
+    "AgentGraph",
+    "get_agent_graph",
+    "GraphConfig",
+    "create_checkpointer",
+]

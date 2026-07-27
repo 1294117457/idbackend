@@ -180,8 +180,6 @@ class RbacService:
             raise ConflictError(f'角色代码已存在: {req.roleCode}')
         role = req.to_orm()
         db.add(role)
-        await db.commit()
-        await db.refresh(role)
         return role
 
     @staticmethod
@@ -193,8 +191,6 @@ class RbacService:
         modified = req.apply_to(role)
         if not modified:
             return role
-        await db.commit()
-        await db.refresh(role)
         await RbacService._clear_role_users_cache(db, req.id)
         return role
 
@@ -218,7 +214,6 @@ class RbacService:
         await db.execute(delete(UserRole).where(UserRole.role_id == role_id))
         await db.execute(delete(RolePermission).where(RolePermission.role_id == role_id))
         await db.delete(role)
-        await db.commit()
         return True
 
     @staticmethod
@@ -269,8 +264,6 @@ class RbacService:
             raise ConflictError(f'权限代码已存在: {req.permissionCode}')
         permission = req.to_orm()
         db.add(permission)
-        await db.commit()
-        await db.refresh(permission)
         if permission.api_path:
             await RbacService.clear_api_cache(permission.api_path)
         return permission
@@ -287,8 +280,6 @@ class RbacService:
         api_path_before = permission.api_path
         if not req.apply_to(permission):
             return permission
-        await db.commit()
-        await db.refresh(permission)
         await RbacService._clear_permission_users_cache(db, req.id)
         if api_path_before:
             await RbacService.clear_api_cache(api_path_before)
@@ -314,7 +305,6 @@ class RbacService:
         await RbacService._clear_permission_users_cache(db, permission_id)
         await db.execute(delete(RolePermission).where(RolePermission.permission_id == permission_id))
         await db.delete(permission)
-        await db.commit()
         if api_path:
             await RbacService.clear_api_cache(api_path)
         return True
@@ -343,7 +333,6 @@ class RbacService:
         for permission_id in req.permissionIds:
             role_permission = RolePermission(role_id=req.roleId, permission_id=permission_id)
             db.add(role_permission)
-        await db.commit()
         await RbacService._clear_role_users_cache(db, req.roleId)
         return True
 
@@ -361,7 +350,6 @@ class RbacService:
         for role_id in role_ids:
             user_role = UserRole(user_id=user_id, role_id=role_id)
             db.add(user_role)
-        await db.commit()
         await RbacService.clear_user_cache(user_id)
         return True
 

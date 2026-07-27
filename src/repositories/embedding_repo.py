@@ -342,15 +342,8 @@ class EmbeddingRepository:
             for row in result.mappings().all()
         ]
 
-    # ---------- 事务辅助 ----------
 
-    @staticmethod
-    async def commit(db: AsyncSession) -> None:
-        await db.commit()
 
-    @staticmethod
-    async def refresh(db: AsyncSession, obj: Embedding) -> None:
-        await db.refresh(obj)
 
 
 __all__ = ["EmbeddingRepository"]

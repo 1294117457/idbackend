@@ -261,8 +261,6 @@ class ScoreDataService:
         }
         user.score_info = db_result_dict
 
-        await db.commit()
-        await db.refresh(user)
 
         # 接口返回：精简字段 + 内存组装的展示树（前端 /score 页面用）
         tree = ScoreDataService._build_tree(roots, scores_dict, include_applications=False)

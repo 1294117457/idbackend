@@ -89,8 +89,6 @@ class ExtraInfoFieldService:
 
         orm = req.to_orm()
         db.add(orm)
-        await ExtraInfoFieldRepository.commit(db)
-        await ExtraInfoFieldRepository.refresh(db, orm)
         return orm
 
     @staticmethod
@@ -123,8 +121,7 @@ class ExtraInfoFieldService:
 
         modified = req.apply_to(field)
         if modified:
-            await ExtraInfoFieldRepository.commit(db)
-            await ExtraInfoFieldRepository.refresh(db, field)
+            return field
         return field
 
     @staticmethod
@@ -138,7 +135,6 @@ class ExtraInfoFieldService:
             raise NotFoundError(f"字段(id={field_id})不存在")
 
         await ExtraInfoFieldRepository.delete_by_id(db, field_id)
-        await ExtraInfoFieldRepository.commit(db)
 
 
 # ===================== 内部辅助 =====================

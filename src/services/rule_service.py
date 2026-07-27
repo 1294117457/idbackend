@@ -136,13 +136,10 @@ class RuleService:
 
         rule = req.rule.to_orm()
         db.add(rule)
-        await RuleRepository.commit(db)
-        await RuleRepository.refresh(db, rule)
 
         rule_id = rule.id
         if req.attributeIds:
             await RuleRepository.replace_bound_attributes(db, rule_id, req.attributeIds)
-            await RuleRepository.commit(db)
 
         return await RuleService._build_save_response(db, rule_id)
 
@@ -171,7 +168,6 @@ class RuleService:
 
         req.rule.apply_to(rule)
         await RuleRepository.replace_bound_attributes(db, req.ruleId, req.attributeIds)
-        await RuleRepository.commit(db)
 
         return await RuleService._build_save_response(db, req.ruleId)
 
@@ -194,7 +190,6 @@ class RuleService:
             )
 
         await RuleRepository.delete(db, req.ruleId)
-        await RuleRepository.commit(db)
 
     # ---------- 内部辅助 ----------
 

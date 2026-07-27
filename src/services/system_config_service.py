@@ -178,7 +178,6 @@ class SystemConfigService:
                     value_type=value_type,
                     description=f"RAG 搜索参数: {field}",
                 )
-        await db.commit()
         result = await SystemConfigService.get_rag_config(db)
         from src.infra.config import refresh_cache
         await refresh_cache(db)
@@ -206,7 +205,6 @@ class SystemConfigService:
                     is_sensitive=is_sensitive,
                     description=f"LLM 配置: {field}",
                 )
-        await db.commit()
         result = await SystemConfigService.get_llm_config(db)
         from src.infra.config import refresh_cache
         await refresh_cache(db)
@@ -234,7 +232,6 @@ class SystemConfigService:
                     is_sensitive=is_sensitive,
                     description=f"Embedding 配置: {field}",
                 )
-        await db.commit()
         result = await SystemConfigService.get_embed_config(db)
         from src.infra.config import refresh_cache
         await refresh_cache(db)
@@ -263,7 +260,6 @@ class SystemConfigService:
                     is_sensitive=is_sensitive,
                     description=f"SMTP 配置: {field}",
                 )
-        await db.commit()
         result = await SystemConfigService.get_smtp_config(db)
         from src.infra.config import refresh_cache
         await refresh_cache(db)

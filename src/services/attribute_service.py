@@ -177,8 +177,6 @@ class AttributeService:
 
         attribute = req.to_orm()
         db.add(attribute)
-        await AttributeRepository.commit(db)
-        await AttributeRepository.refresh(db, attribute)
         return attribute
 
     @staticmethod
@@ -209,8 +207,7 @@ class AttributeService:
 
         modified = req.apply_to(attribute)
         if modified:
-            await AttributeRepository.commit(db)
-            await AttributeRepository.refresh(db, attribute)
+            return attribute
         return attribute
 
     @staticmethod
@@ -225,7 +222,6 @@ class AttributeService:
         """
         await AttributeService.get_by_id(db, attribute_id)  # 校验存在
         await AttributeRepository.delete(db, attribute_id)
-        await AttributeRepository.commit(db)
 
 
 __all__ = ["AttributeService"]

@@ -124,8 +124,6 @@ class TemplateCategoryService:
         await _ensure_name_unique(db, name=orm.name, parent_id=orm.parent_id)
 
         db.add(orm)
-        await TemplateCategoryRepository.commit(db)
-        await TemplateCategoryRepository.refresh(db, orm)
         return orm
 
     @staticmethod
@@ -163,8 +161,7 @@ class TemplateCategoryService:
 
         modified = req.apply_to(category)
         if modified:
-            await TemplateCategoryRepository.commit(db)
-            await TemplateCategoryRepository.refresh(db, category)
+            return category
         return category
 
     @staticmethod
@@ -183,8 +180,6 @@ class TemplateCategoryService:
                 f"分类(id={category_id})下已有 {child_count} 个子分类，不可绑定 template"
             )
         await TemplateCategoryRepository.set_bind_template(category, value=True)
-        await TemplateCategoryRepository.commit(db)
-        await TemplateCategoryRepository.refresh(db, category)
         return category
 
     @staticmethod
@@ -197,8 +192,6 @@ class TemplateCategoryService:
             raise NotFoundError(f"分类(id={category_id})不存在")
         await TemplateCategoryRepository.unbind_templates(db, category_id)
         await TemplateCategoryRepository.set_bind_template(category, value=False)
-        await TemplateCategoryRepository.commit(db)
-        await TemplateCategoryRepository.refresh(db, category)
         return category
 
     @staticmethod
@@ -215,7 +208,6 @@ class TemplateCategoryService:
         descendant_ids = [c.id for c in descendants]
 
         deleted_count = await TemplateCategoryRepository.soft_delete_many(db, descendant_ids)
-        await TemplateCategoryRepository.commit(db)
         return deleted_count
 
     @staticmethod

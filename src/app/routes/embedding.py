@@ -15,6 +15,7 @@ from src.app.schemas.embedding import (
     EmbeddingQueryRequest,
     EmbeddingDeleteRequest,
     EmbeddingSearchRequest,
+    EmbeddingSearchListVO,
 )
 
 router = APIRouter(prefix="/api/admin/embedding", tags=["Embedding 管理"])
@@ -186,10 +187,17 @@ async def search_embeddings(
     request: EmbeddingSearchRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """向量语义搜索"""
+    """向量语义搜索（混合检索：向量 + BM25 → RRF 融合）
+
+    service 返回 FusionResult；前端 VO 包装由 schema 工厂方法完成。
+    """
     service = get_embedding_service()
-    result = await service.search_(db, request)
-    return R.query_resp(result)
+    fusion = await service.rrf_search(
+        db,
+        query=request.query,
+        category=request.category,
+    )
+    return R.query_resp(EmbeddingSearchListVO.from_fusion_result(fusion))
 
 
 __all__ = ["router"]

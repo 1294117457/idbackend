@@ -198,15 +198,8 @@ class RuleRepository:
         )
         return int(result.scalar_one_or_none() or 0)
 
-    # ---------- 事务辅助 ----------
 
-    @staticmethod
-    async def commit(db: AsyncSession) -> None:
-        await db.commit()
 
-    @staticmethod
-    async def refresh(db: AsyncSession, obj) -> None:
-        await db.refresh(obj)
 
 
 __all__ = ["RuleRepository"]

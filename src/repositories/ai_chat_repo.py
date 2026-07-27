@@ -473,17 +473,8 @@ class AIChatRepository:
     # 事务辅助
     # ─────────────────────────────────────────────────────────────────────────
 
-    @staticmethod
-    async def commit(db: AsyncSession) -> None:
-        await db.commit()
+    # 事务由 src/infra/database.py:get_db 统一管理（Step 2 重构）
 
-    @staticmethod
-    async def rollback(db: AsyncSession) -> None:
-        await db.rollback()
-
-    @staticmethod
-    async def refresh(db: AsyncSession, obj) -> None:
-        await db.refresh(obj)
 
 
 __all__ = ["AIChatRepository"]

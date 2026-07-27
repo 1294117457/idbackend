@@ -1,16 +1,20 @@
 """AI Chat 服务层
 
-职责：
-- 会话管理（创建、删除）
+职责:
+- 会话管理（创建、删除、查询）
 - 消息管理（创建、查询）
-- 上下文组装（供 LangGraph 使用）
+- 对话入口（stream_chat）
+- LangGraph 工具方法（build_context / maybe_compress）
+- 上下文压缩（私有 LLM 摘要方法）
 """
 import logging
-from typing import Optional, List, AsyncIterator
+from datetime import datetime, timezone
+from typing import List, Optional, AsyncIterator
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.ai_chat import (
+    AgentMessage,
     AgentSession,
     MessageRole,
     MessageType,
@@ -24,16 +28,71 @@ from src.app.schemas.ai_chat import (
     SessionListRequest,
 )
 from src.app.schemas.page import Page
+from src.infra.config import get_settings
 
 logger = logging.getLogger(__name__)
 
 
-class AIChatService:
-    """AI Chat 服务层"""
+# ────────────────────────────────────────────────────────────────────────
+# 压缩相关 Prompt 模板（硬约束字数）
+# ────────────────────────────────────────────────────────────────────────
 
-    # ─────────────────────────────────────────────────────────────────────────
+SUMMARY_PROMPT = """请将以下对话历史压缩为简洁摘要。
+
+要求：
+- 总字数不超过 {max_chars} 字
+- 必须保留：用户意图、已获取的事实、已做出的决定、待办事项
+- 舍弃：寒暄、重复确认、礼貌用语
+
+对话历史：
+{messages_text}
+
+摘要："""
+
+MERGE_PROMPT = """将以下两段历史摘要合并为一段（{target_chars} 字以内），
+保留所有关键信息:
+- 用户意图、事实、决定、待办
+- 去除重复描述、舍弃次要细节
+
+摘要 A (较早):
+{old_text}
+
+摘要 B (较新):
+{new_text}
+
+合并后的摘要:"""
+
+RESUMMARIZE_PROMPT = """以下历史摘要过长，请重新压缩到 {target_chars} 字以内。
+保留所有关键信息，舍弃次要细节。
+
+当前摘要:
+{text}
+
+压缩后的摘要:"""
+
+
+def _format_messages(messages: List[AgentMessage]) -> str:
+    return "\n".join(f"[{m.role.value}] {m.content}" for m in messages)
+
+
+class AIChatService:
+    """AI Chat 服务层
+
+    入口（业务层）:
+      - stream_chat(db, user_id, user_input, session_id)  # SSE 流式对话
+
+    LangGraph 工具方法:
+      - build_context(...)              # 灵活组装 context
+      - maybe_compress(db, session_id)  # 触发压缩判断
+
+    基础 CRUD:
+      - get_or_create_session / list_sessions / delete_session
+      - list_messages / get_recent_messages
+    """
+
+    # ────────────────────────────────────────────────────────────────────────
     # Session 管理
-    # ─────────────────────────────────────────────────────────────────────────
+    # ────────────────────────────────────────────────────────────────────────
 
     async def get_or_create_session(
         self,
@@ -58,7 +117,6 @@ class AIChatService:
             title = first_message[:20] if len(first_message) > 20 else first_message
 
         session = await AIChatRepository.create_session(db, user_id, title=title)
-        await AIChatRepository.commit(db)
         return session
 
     async def list_sessions(
@@ -89,12 +147,12 @@ class AIChatService:
         """删除会话"""
         result = await AIChatRepository.delete_session(db, session_id)
         if result:
-            await AIChatRepository.commit(db)
+            return result
         return result
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # ────────────────────────────────────────────────────────────────────────
     # Message 管理
-    # ─────────────────────────────────────────────────────────────────────────
+    # ────────────────────────────────────────────────────────────────────────
 
     async def list_messages(
         self,
@@ -124,29 +182,47 @@ class AIChatService:
         messages = await AIChatRepository.list_recent_messages(db, session_id, limit)
         return [MessageVO.from_orm(m) for m in reversed(messages)]
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # 对话核心
-    # ─────────────────────────────────────────────────────────────────────────
+    # ────────────────────────────────────────────────────────────────────────
+    # LangGraph 工具方法：组装 context
+    # ────────────────────────────────────────────────────────────────────────
 
-    async def build_llm_messages(
+    async def build_context(
         self,
         db: AsyncSession,
         session_id: int,
         user_input: str,
         system_prompt: Optional[str] = None,
-        context_window: int = 20,
+        *,
+        include_archived: bool = True,
+        recent_summaries_limit: Optional[int] = None,
+        recent_messages_limit: int = 20,
     ) -> List[dict]:
-        """构建 LLM 消息列表（含历史摘要 + 最近消息）
+        """组装 LLM context（供 LangGraph 节点和 stream_chat 使用）
 
         组装顺序（重要）:
         1. system prompt
-        2. 历史摘要 (1 个) → 长期记忆
-        3. 近期摘要 (最多 N 个, 按 end_seq 升序) → 中期记忆
-        4. 最近 context_window 条原始消息 (按 seq 升序) → 短期记忆
+        2. 历史摘要 (最多 1 个) → 长期记忆
+        3. 近期摘要 (按 end_seq 升序) → 中期记忆
+        4. 最近 N 条原始消息 (按 seq 升序) → 短期记忆
         5. 当前用户输入
-        """
-        from src.infra.config import get_settings
 
+        Args:
+            db: 数据库 session
+            session_id: 会话 ID
+            user_input: 当前用户输入
+            system_prompt: 系统提示词（可选）
+            include_archived: 是否包含历史摘要（classify=False, chat=True）
+            recent_summaries_limit: 近期摘要上限
+                - None: 使用默认 SUMMARY_RECENT_MAX_COUNT
+                - 0: 不包含近期摘要
+                - N>0: 最多 N 条
+            recent_messages_limit: 近期原始消息上限
+                - 0: 不包含历史消息
+                - N>0: 最多 N 条
+
+        Returns:
+            List[dict]: 适配 LLM 的 messages 列表
+        """
         cfg = get_settings()
         messages: List[dict] = []
 
@@ -155,41 +231,269 @@ class AIChatService:
             messages.append({"role": "system", "content": system_prompt})
 
         # 2. 历史摘要（最多 1 个）
-        archived = await AIChatRepository.list_summaries(
-            db, session_id, is_archived=True, order_by="end_seq DESC", limit=1
-        )
-        if archived:
-            s = archived[0]
-            messages.append({
-                "role": "system",
-                "content": f"[历史背景 seq={s.start_seq}-{s.end_seq}] {s.summary}",
-            })
+        if include_archived:
+            archived = await AIChatRepository.list_summaries(
+                db, session_id, is_archived=True, order_by="end_seq DESC", limit=1
+            )
+            for s in archived:
+                messages.append({
+                    "role": "system",
+                    "content": f"[历史背景 seq={s.start_seq}-{s.end_seq}] {s.summary}",
+                })
 
-        # 3. 近期摘要（按 end_seq ASC）
-        recent_summaries = await AIChatRepository.list_summaries(
-            db, session_id,
-            is_archived=False,
-            order_by="end_seq ASC",
-            limit=cfg.SUMMARY_RECENT_MAX_COUNT,
-        )
-        for s in recent_summaries:
-            messages.append({
-                "role": "system",
-                "content": f"[近期摘要 seq={s.start_seq}-{s.end_seq}] {s.summary}",
-            })
+        # 3. 近期摘要
+        if recent_summaries_limit is None:
+            recent_limit = cfg.SUMMARY_RECENT_MAX_COUNT
+        else:
+            recent_limit = recent_summaries_limit
 
-        # 4. 最近 N 条原始消息
-        recent_msgs = await AIChatRepository.list_recent_messages(
-            db, session_id, limit=context_window
-        )
-        recent_msgs.reverse()  # 倒序 → 升序
-        for msg in recent_msgs:
-            role = "user" if msg.role == MessageRole.USER.value else "assistant"
-            messages.append({"role": role, "content": msg.content})
+        if recent_limit > 0:
+            recent_summaries = await AIChatRepository.list_summaries(
+                db, session_id,
+                is_archived=False,
+                order_by="end_seq ASC",
+                limit=recent_limit,
+            )
+            for s in recent_summaries:
+                messages.append({
+                    "role": "system",
+                    "content": f"[近期摘要 seq={s.start_seq}-{s.end_seq}] {s.summary}",
+                })
+
+        # 4. 近期原始消息
+        if recent_messages_limit > 0:
+            recent_msgs = await AIChatRepository.list_recent_messages(
+                db, session_id, limit=recent_messages_limit
+            )
+            recent_msgs.reverse()  # 倒序 → 升序
+            for msg in recent_msgs:
+                role = "user" if msg.role == MessageRole.USER.value else "assistant"
+                messages.append({"role": role, "content": msg.content})
 
         # 5. 当前用户输入
         messages.append({"role": "user", "content": user_input})
         return messages
+
+    # ────────────────────────────────────────────────────────────────────────
+    # LangGraph 工具方法：压缩触发
+    # ────────────────────────────────────────────────────────────────────────
+
+    async def should_compress(self, db: AsyncSession, session_id: int) -> bool:
+        """判断是否应该触发压缩
+
+        - 首次: 总消息数 >= compress_interval 触发
+        - 非首次: MAX(seq) - last_summary_end_seq >= compress_interval 触发
+        """
+        cfg = get_settings()
+        snapshot = await AIChatRepository.get_snapshot(db, session_id)
+        latest_seq = await AIChatRepository.get_latest_seq(db, session_id)
+        if latest_seq is None:
+            return False
+
+        if snapshot is None:
+            return latest_seq >= cfg.SUMMARY_COMPRESS_INTERVAL
+
+        diff = latest_seq - snapshot.last_summary_end_seq
+        return diff >= cfg.SUMMARY_COMPRESS_INTERVAL
+
+    async def maybe_compress(self, db: AsyncSession, session_id: int) -> Optional[int]:
+        """判断并触发压缩
+
+        Returns:
+            - 新生成的近期摘要 ID
+            - None 不需要压缩
+        """
+        if not await self.should_compress(db, session_id):
+            return None
+        return await self.do_compress(db, session_id)
+
+    async def do_compress(self, db: AsyncSession, session_id: int) -> Optional[int]:
+        """执行压缩 (强制)
+
+        流程:
+        1. 计算压缩范围 (start_seq ~ end_seq)
+        2. 拉取消息, 调用 LLM 生成摘要 (近期)
+        3. 检查近期数量, 超 RECENT_MAX_COUNT 触发合并
+        4. upsert snapshot
+        """
+        cfg = get_settings()
+        snapshot = await AIChatRepository.get_snapshot(db, session_id)
+        latest_seq = await AIChatRepository.get_latest_seq(db, session_id)
+        if latest_seq is None:
+            return None
+
+        # 1. 计算范围
+        if snapshot:
+            start_seq = snapshot.last_summary_end_seq + 1
+        else:
+            start_seq = 1
+        end_seq = latest_seq
+
+        # 不够触发区间, 跳过
+        if end_seq - start_seq + 1 < cfg.SUMMARY_COMPRESS_INTERVAL:
+            return None
+
+        # 2. 拉取消息 + LLM 摘要
+        messages = await AIChatRepository.get_messages_range(
+            db, session_id, start_seq, end_seq
+        )
+        if not messages:
+            return None
+        summary_text = await self._generate_summary(messages)
+
+        # 3. 写入近期摘要
+        new_summary = await AIChatRepository.create_summary(
+            db,
+            session_id=session_id,
+            summary=summary_text,
+            start_seq=start_seq,
+            end_seq=end_seq,
+            is_archived=False,
+        )
+        await db.flush()
+
+        # 4. 近期超出 -> 合并最旧到历史
+        recent = await AIChatRepository.list_summaries(
+            db, session_id, is_archived=False, order_by="end_seq ASC"
+        )
+        merged = False
+        if len(recent) > cfg.SUMMARY_RECENT_MAX_COUNT:
+            await self._merge_oldest_to_archive(db, session_id)
+            merged = True
+
+        # 5. 重新读近期用于 snapshot 计数
+        recent = await AIChatRepository.list_summaries(
+            db, session_id, is_archived=False, order_by="end_seq ASC"
+        )
+        archived_count = len(
+            await AIChatRepository.list_summaries(
+                db, session_id, is_archived=True
+            )
+        )
+
+        # 6. upsert snapshot
+        await AIChatRepository.upsert_snapshot(
+            db,
+            session_id=session_id,
+            last_summary_end_seq=end_seq,
+            recent_summary_count=len(recent),
+            last_summary_at=datetime.now(timezone.utc),
+            total_summary_count=len(recent) + archived_count,
+        )
+        await db.flush()
+
+        if merged:
+            logger.info(
+                f"[compress] session={session_id} merged oldest summary "
+                f"(recent now={len(recent)})"
+            )
+        return new_summary.id
+
+    # ────────────────────────────────────────────────────────────────────────
+    # 私有方法：摘要合并 / 再压缩 / LLM 调用
+    # ────────────────────────────────────────────────────────────────────────
+
+    async def _merge_oldest_to_archive(
+        self, db: AsyncSession, session_id: int
+    ) -> None:
+        """把最旧的近期摘要合并到历史摘要
+
+        1. 取最旧近期 (end_seq ASC, limit 1)
+        2. 找现有历史
+           - 有: LLM 合并 -> 扩展 seq -> 删除被合并的近期
+           - 无: 直接把最旧近期升级为历史
+        3. 防御性: 历史超阈值触发再压缩
+        """
+        cfg = get_settings()
+        recent = await AIChatRepository.list_summaries(
+            db, session_id, is_archived=False, order_by="end_seq ASC", limit=1
+        )
+        if not recent:
+            return
+        oldest = recent[0]
+
+        archived = await AIChatRepository.list_summaries(
+            db, session_id, is_archived=True, limit=1
+        )
+
+        if archived:
+            archive = archived[0]
+            merged_text = await self._merge_summary_texts(
+                old_text=archive.summary,
+                new_text=oldest.summary,
+                target_chars=cfg.SUMMARY_MERGE_TARGET_CHARS,
+            )
+            await AIChatRepository.update_summary(
+                db,
+                archive.id,
+                summary_text=merged_text,
+                start_seq=min(archive.start_seq, oldest.start_seq),
+                end_seq=oldest.end_seq,
+            )
+            await AIChatRepository.delete_summary(db, oldest.id)
+        else:
+            await AIChatRepository.update_summary(
+                db, oldest.id, is_archived=True
+            )
+
+        # 防御性: 历史摘要超过阈值, 触发再压缩
+        archived_after = await AIChatRepository.list_summaries(
+            db, session_id, is_archived=True, limit=1
+        )
+        if archived_after:
+            ar = archived_after[0]
+            if len(ar.summary) > cfg.SUMMARY_ARCHIVED_MAX_CHARS:
+                new_text = await self._resummarize_text(
+                    text=ar.summary,
+                    target_chars=cfg.SUMMARY_ARCHIVED_MAX_CHARS,
+                )
+                await AIChatRepository.update_summary(
+                    db, ar.id, summary_text=new_text
+                )
+
+    async def _generate_summary(self, messages: List[AgentMessage]) -> str:
+        """生成近期摘要 (字数硬约束 = SUMMARY_RECENT_MAX_CHARS)"""
+        from src.infra.ai.model import get_chat_model
+
+        cfg = get_settings()
+        text = _format_messages(messages)
+        prompt = SUMMARY_PROMPT.format(
+            max_chars=cfg.SUMMARY_RECENT_MAX_CHARS,
+            messages_text=text,
+        )
+        llm = get_chat_model()
+        resp = await llm.ainvoke(prompt)
+        return resp.content
+
+    async def _merge_summary_texts(
+        self, old_text: str, new_text: str, target_chars: int
+    ) -> str:
+        """合并两段摘要 (调用 LLM)"""
+        from src.infra.ai.model import get_chat_model
+
+        prompt = MERGE_PROMPT.format(
+            target_chars=target_chars,
+            old_text=old_text,
+            new_text=new_text,
+        )
+        llm = get_chat_model()
+        resp = await llm.ainvoke(prompt)
+        return resp.content
+
+    async def _resummarize_text(self, text: str, target_chars: int) -> str:
+        """历史超阈值时, 重新压缩"""
+        from src.infra.ai.model import get_chat_model
+
+        prompt = RESUMMARIZE_PROMPT.format(
+            target_chars=target_chars, text=text
+        )
+        llm = get_chat_model()
+        resp = await llm.ainvoke(prompt)
+        return resp.content
+
+    # ────────────────────────────────────────────────────────────────────────
+    # 对话入口（业务层）
+    # ────────────────────────────────────────────────────────────────────────
 
     async def stream_chat(
         self,
@@ -198,45 +502,66 @@ class AIChatService:
         user_input: str,
         session_id: Optional[int] = None,
     ) -> AsyncIterator[dict]:
-        """流式对话
+        """流式对话（Step 6 改造后：拆短事务）
 
-        1. 获取或创建会话
-        2. 保存用户消息
-        3. 触发压缩（如需要, 同步阻塞, <3s 感知不明显）
-        4. 构建 LLM 上下文（含摘要）
-        5. 流式调用 LLM
-        6. 返回 SSE 事件
+        事务边界：
+        - 事务 1：准备（创建 session + user_msg + 压缩 + build_context）
+        - [LLM 调用（不持锁 db 连接）]
+        - 事务 2：完成（assistant_msg）
 
-        事件类型：
-        - session: 新建会话信息（仅新建时）
-        - content: LLM 回复片段
-        - context_compressed: 触发了压缩
-        - done: 完成
-        - error: 错误
+        收益：
+        - LLM 期间不持锁连接 → 连接池不被阻塞
+        - 客户端断开时事务状态清晰
         """
         from src.infra.ai.model import get_chat_model
-        from src.services.compress_service import get_compress_service
+        from src.infra.config import get_llm_config
+        from src.infra.database import get_db_context
 
-        # 获取或创建会话
-        session = await self.get_or_create_session(
-            db, user_id, session_id, first_message=user_input
-        )
-        current_session_id = session.id
+        llm = get_chat_model()
+        cfg = get_llm_config()
 
-        # 检查是否新建了会话
-        is_new_session = session_id is None or session_id == 0
+        # ===== 事务 1：准备阶段 =====
+        async with get_db_context() as db:
+            # 获取或创建会话
+            session = await self.get_or_create_session(
+                db, user_id, session_id, first_message=user_input
+            )
+            current_session_id = session.id
 
-        # 保存用户消息
-        user_msg = await AIChatRepository.create_message(
-            db,
-            session_id=current_session_id,
-            role=MessageRole.USER,
-            content=user_input,
-            msg_type=MessageType.TEXT,
-        )
-        await db.flush()
+            # 检查是否新建了会话
+            is_new_session = session_id is None or session_id == 0
 
-        # 新建会话时返回会话信息
+            # 保存用户消息
+            user_msg = await AIChatRepository.create_message(
+                db,
+                session_id=current_session_id,
+                role=MessageRole.USER,
+                content=user_input,
+                msg_type=MessageType.TEXT,
+            )
+            await db.flush()
+
+            # 触发压缩（如需要）
+            compressed_id = await self.maybe_compress(db, current_session_id)
+
+            # 构建消息列表（含历史/近期摘要）—— 在事务 1 里查完
+            system_prompt = (
+                "你是一个智能助手，帮助用户解答关于学生资助申请相关的问题。"
+                "请用简洁、友好的语言回答。"
+            )
+            messages = await self.build_context(
+                db,
+                current_session_id,
+                user_input,
+                system_prompt,
+                include_archived=True,
+                recent_summaries_limit=None,  # 使用默认 SUMMARY_RECENT_MAX_COUNT
+                recent_messages_limit=20,
+            )
+
+        # ↑ 事务 1 commit：user_msg + compressed_id 落盘
+
+        # ===== 准备完成事件 =====
         if is_new_session:
             yield {
                 "event": "session",
@@ -245,14 +570,7 @@ class AIChatService:
                     "title": session.title,
                 }
             }
-
-        # 触发压缩（如需要）
-        compress_service = get_compress_service()
-        compressed_id = await compress_service.maybe_compress(
-            db, current_session_id
-        )
         if compressed_id is not None:
-            await db.commit()
             yield {
                 "event": "context_compressed",
                 "data": {
@@ -261,21 +579,9 @@ class AIChatService:
                 }
             }
 
-        # 构建消息列表（含历史/近期摘要）
-        system_prompt = (
-            "你是一个智能助手，帮助用户解答关于学生资助申请相关的问题。"
-            "请用简洁、友好的语言回答。"
-        )
-        messages = await self.build_llm_messages(
-            db, current_session_id, user_input, system_prompt
-        )
-
-        # 流式调用 LLM
-        from src.infra.config import get_llm_config
-        llm = get_chat_model()
-        cfg = get_llm_config()
+        # ===== LLM 调用（无 db 持锁）=====
+        full_content = ""
         try:
-            full_content = ""
             async for chunk in llm.astream(messages):
                 if chunk.content:
                     full_content += chunk.content
@@ -286,28 +592,10 @@ class AIChatService:
                             "messageId": user_msg.id,
                         }
                     }
-
-            await db.commit()
-
-            # 保存 LLM 回复
-            assistant_msg = await AIChatRepository.create_message(
-                db,
-                session_id=current_session_id,
-                role=MessageRole.ASSISTANT,
-                content=full_content,
-                msg_type=MessageType.TEXT,
-            )
-            await db.commit()
-
-            yield {
-                "event": "done",
-                "data": {
-                    "messageId": assistant_msg.id,
-                    "content": full_content,
-                }
-            }
-
         except Exception as e:
+            # ↑ LLM 调用失败 → 异常处理
+            # ↑ user_msg 已落盘（事务 1 commit），assistant_msg 不写
+            # ↑ 客户端看到部分 content 但 assistant_msg 不在历史里（流式响应固有缺陷）
             import traceback
             logger.error(f"LLM 调用失败: {e}")
             logger.error(f"LLM 配置: base_url={cfg.get('base_url')}, model={cfg.get('chat_model')}")
@@ -316,6 +604,28 @@ class AIChatService:
                 "event": "error",
                 "data": {"message": str(e)}
             }
+            return
+
+        # ===== 事务 2：完成阶段 =====
+        async with get_db_context() as db:
+            # 保存 LLM 回复
+            assistant_msg = await AIChatRepository.create_message(
+                db,
+                session_id=current_session_id,
+                role=MessageRole.ASSISTANT,
+                content=full_content,
+                msg_type=MessageType.TEXT,
+            )
+
+        # ↑ 事务 2 commit：assistant_msg 落盘
+
+        yield {
+            "event": "done",
+            "data": {
+                "messageId": assistant_msg.id,
+                "content": full_content,
+            }
+        }
 
 
 # 全局单例

@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field, ConfigDict
 
 from src.models.embedding import EmbeddingCategory, Embedding as EmbeddingModel
 from src.app.schemas.page import Page
+from src.infra.ai.retrieval_processor import SearchHit, FusionResult
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -200,23 +201,27 @@ class EmbeddingSearchResultVO(BaseModel):
     isBm25Hit: bool = False
 
     @classmethod
-    def from_search_hit(cls, hit: dict) -> "EmbeddingSearchResultVO":
-        """SearchHit dict → VO（最终返回给前端的结构）"""
+    def from_search_hit(cls, hit: SearchHit) -> "EmbeddingSearchResultVO":
+        """SearchHit → VO（统一字段映射的唯一入口）
+
+        所有 SearchHit → 前端响应的字段映射必须经过此方法。
+        LangGraph / 路由 / 任何上层都从这里拿 VO。
+        """
         return cls(
-            id=int(hit.get("id", 0)),
-            sourceId=hit.get("source_id"),
-            chunkIndex=hit.get("chunk_index"),
-            title=hit.get("title"),
-            content=hit.get("content", ""),
-            category=hit.get("category", ""),
-            categoryText=_category_text(hit.get("category", "")),
-            vectorScore=round(hit.get("vectorScore", 0.0), 6),
-            bm25Score=round(hit.get("bm25Score", 0.0), 6),
-            normVectorScore=round(hit.get("normVectorScore", 0.0), 6),
-            normBm25Score=round(hit.get("normBm25Score", 0.0), 6),
-            fusedScore=round(hit.get("fusedScore", 0.0), 6),
-            isVectorHit=hit.get("isVectorHit", False),
-            isBm25Hit=hit.get("isBm25Hit", False),
+            id=int(hit.chunk_id) if hit.chunk_id.isdigit() else 0,
+            sourceId=hit.source_id,
+            chunkIndex=hit.metadata.get("chunk_index"),
+            title=hit.metadata.get("title"),
+            content=hit.content,
+            category=hit.metadata.get("category", ""),
+            categoryText=hit.metadata.get("category_text", ""),
+            vectorScore=round(hit.vector_score, 6),
+            bm25Score=round(hit.bm25_score, 6),
+            normVectorScore=round(hit.norm_vector_score, 6),
+            normBm25Score=round(hit.norm_bm25_score, 6),
+            fusedScore=round(hit.fused_score, 6),
+            isVectorHit=hit.is_vector_hit,
+            isBm25Hit=hit.is_bm25_hit,
         )
 
 
@@ -226,6 +231,20 @@ class EmbeddingSearchListVO(BaseModel):
     config: Dict[str, Any] = Field(default_factory=dict, description="本次搜索使用的配置")
     query: str = ""
     totalTimeMs: float = 0.0
+
+    @classmethod
+    def from_fusion_result(cls, fusion: "FusionResult") -> "EmbeddingSearchListVO":
+        """FusionResult → 列表 VO（路由层唯一调用入口）
+
+        service.rrf_search 直接返回 FusionResult；
+        路由拿到后再走此方法做 VO 包装，前端拿到的就是 camelCase 字段。
+        """
+        return cls(
+            list=[EmbeddingSearchResultVO.from_search_hit(hit) for hit in fusion.hits],
+            config=fusion.config,
+            query=fusion.query,
+            totalTimeMs=fusion.total_time_ms,
+        )
 
 
 class EmbeddingUploadResultVO(BaseModel):

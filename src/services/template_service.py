@@ -185,8 +185,6 @@ class TemplateService:
         template = req.to_orm()
 
         db.add(template)
-        await TemplateRepository.commit(db)
-        await TemplateRepository.refresh(db, template)
 
         # v10：占位迁移 temp->最终路径
         template.description = rich_text_service.process_html(
@@ -194,7 +192,6 @@ class TemplateService:
             entity_type="template",
             entity_id=template.id,
         )
-        await TemplateRepository.commit(db)
 
         # 翻分类 is_bind_template = TRUE（幂等）
         from src.services.template_category_service import TemplateCategoryService
@@ -229,8 +226,6 @@ class TemplateService:
                 entity_type="template",
                 entity_id=template_id,
             )
-            await TemplateRepository.commit(db)
-            await TemplateRepository.refresh(db, template)
         return template
 
     @staticmethod
@@ -258,7 +253,7 @@ class TemplateService:
         # 绑定（幂等）
         link = await TemplateRepository.bind_rule(db, template_id, rule_id)
         if link is not None:
-            await TemplateRepository.commit(db)
+            pass  # Step 3 后无 commit；旧代码有 commit 在此已删除
 
         # 计算 is_mixed_type（每次实时算）
         types = await TemplateRepository.get_rule_types(db, template_id)
@@ -286,7 +281,6 @@ class TemplateService:
             db, storage, rich_text_service, template_id,
         )
         await TemplateRepository.unbind_rule(db, template_id, rule_id)
-        await TemplateRepository.commit(db)
 
     @staticmethod
     async def delete(
@@ -310,7 +304,6 @@ class TemplateService:
 
         category_id = template.category_id
         await TemplateRepository.delete(db, template_id)
-        await TemplateRepository.commit(db)
 
         # 删除富文本文件（MinIO，按 prefix 清理）
         rich_text_service.delete_by_entity(entity_type="template", entity_id=template_id)
@@ -349,8 +342,6 @@ class TemplateService:
 
         template = req.template.to_orm()
         await TemplateRepository.insert(db, template)
-        await TemplateRepository.commit(db)
-        await TemplateRepository.refresh(db, template)
 
         template_id = template.id
 
@@ -360,10 +351,8 @@ class TemplateService:
             entity_type="template",
             entity_id=template_id,
         )
-        await TemplateRepository.commit(db)
         if req.ruleIds:
             await TemplateRepository.replace_bound_rules(db, template_id, req.ruleIds)
-            await TemplateRepository.commit(db)
 
         # 翻分类 is_bind_template = TRUE（幂等）
         from src.services.template_category_service import TemplateCategoryService
@@ -399,7 +388,6 @@ class TemplateService:
         )
 
         await TemplateRepository.replace_bound_rules(db, req.templateId, req.ruleIds)
-        await TemplateRepository.commit(db)
 
         # category 切换 → 维护 is_bind_template 字段
         if old_category_id != req.template.categoryId:

@@ -96,8 +96,6 @@ class ApplicationService:
             for proof in payload.build_proofs(application.id):
                 await ApplicationRepository.insert_proof(db, proof)
 
-            await ApplicationRepository.commit(db)
-            await ApplicationRepository.refresh(db, application)
         else:
             application = await ApplicationRepository.get_with_details(
                 db, payload.applicationId, for_update=True,
@@ -112,8 +110,6 @@ class ApplicationService:
             payload.apply_to_model(application)
 
             await ApplicationService._replace_proofs(db, application.id, payload.proofList)
-            await ApplicationRepository.commit(db)
-            await ApplicationRepository.refresh(db, application)
 
         app_with_details = await ApplicationRepository.get_with_details_by_id(db, application.id)
         return ApplicationVO.from_orm_to_vo(app_with_details)
@@ -151,8 +147,6 @@ class ApplicationService:
         )
         await ApplicationRepository.insert_operation(db, ApplicationService._event_to_operation(event))
 
-        await ApplicationRepository.commit(db)
-        await ApplicationRepository.refresh(db, application)
 
         app_with_details = await ApplicationRepository.get_with_details_by_id(db, application.id)
         return ApplicationVO.from_orm_to_vo(app_with_details)
@@ -189,8 +183,6 @@ class ApplicationService:
 
         await ApplicationRepository.insert_operation(db, ApplicationService._event_to_operation(event))
 
-        await ApplicationRepository.commit(db)
-        await ApplicationRepository.refresh(db, application)
 
         app_with_details = await ApplicationRepository.get_with_details_by_id(db, application.id)
         return ApplicationVO.from_orm_to_vo(app_with_details)
@@ -213,8 +205,6 @@ class ApplicationService:
         event = application.cancel(operator_id=user_id, operator_name=operator_name, remark=remark)  # 领域方法
         await ApplicationRepository.insert_operation(db, ApplicationService._event_to_operation(event))
 
-        await ApplicationRepository.commit(db)
-        await ApplicationRepository.refresh(db, application)
         return CancelResultVO.from_orm_to_vo(application)
 
     @staticmethod
@@ -231,7 +221,6 @@ class ApplicationService:
         if not application.can_be_edited():          # 领域方法：校验 DRAFT 状态
             raise ConflictError(f"申请当前状态 {application.status}，仅 DRAFT 可操作")
 
-        await ApplicationRepository.commit(db)
 
         app_with_details = await ApplicationRepository.get_with_details_by_id(db, application.id)
         return ApplicationVO.from_orm_to_vo(app_with_details)
@@ -353,8 +342,6 @@ class ApplicationService:
         event.remark = payload.remark
         await ApplicationRepository.insert_operation(db, ApplicationService._event_to_operation(event))
 
-        await ApplicationRepository.commit(db)
-        await ApplicationRepository.refresh(db, application)
         return PassResultVO.from_orm_to_vo(application)
 
     @staticmethod
@@ -383,8 +370,6 @@ class ApplicationService:
         )  # 领域方法
         await ApplicationRepository.insert_operation(db, ApplicationService._event_to_operation(event))
 
-        await ApplicationRepository.commit(db)
-        await ApplicationRepository.refresh(db, application)
         return RejectResultVO.from_orm_to_vo(application)
 
     @staticmethod
@@ -414,7 +399,6 @@ class ApplicationService:
 
         await ScoreDataService.revoke(db, application.user_id, application.id)
 
-        await ApplicationRepository.commit(db)
         return {"id": application.id, "status": application.status}
 
     # ── 审核员端：列表查询 ───────────────────────────────────────────────

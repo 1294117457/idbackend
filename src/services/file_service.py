@@ -65,26 +65,38 @@ class FileService:
     # ---- 上传 ----
 
     async def upload_file(self, req: FileUploadRequest) -> Tuple[FileMetadata, str]:
+        """上传文件到 MinIO + 写入 DB 元数据。
 
+        事务边界（Step 5 后）：
+        - DB 提交：由 get_db 框架统一管理
+        - MinIO 上传：在 DB 提交前完成（顺序不可换）
+        - 失败补偿：
+            * MinIO 上传失败：直接抛异常，不污染 DB（理想路径）
+            * DB 写入失败（框架 commit 时）：产生 MinIO 孤儿对象
+              → 由定期清理任务处理（见 docs/docs-backend/dbremake/minio-orphans.md）
+
+        为什么不再 service 内做 MinIO 补偿？
+        - 框架 commit 在路由 return 后才发生，service 无法精确捕获失败点
+        - 分布式两阶段提交无法完美解决，业界方案是"接受孤儿 + 定期清理"
+        """
         user_id = get_user_id()
         metadata = req.to_metadata(user_id)
         key = metadata.object_name
 
+        # 第 1 步：上传 MinIO（失败直接抛异常，不影响 DB）
         await self._storage.upload(
             file_obj=io.BytesIO(req.content),
             key=key,
             content_type=metadata.content_type,
         )
 
+        # 第 2 步：标记 DB 对象（框架 commit 在路由 return 时发生）
         self._db.add(metadata)
-        try:
-            await self._db.commit()
-        except Exception:
-            # 补偿删除：失败要 raise，外层需要感知（避免孤儿 MinIO 对象）
-            await self._safe_delete(key, ignore_error=False)
-            await self._db.rollback()
-            raise
-        await self._db.refresh(metadata)
+
+        # ↑ 如果框架 commit 失败：
+        #    - DB rollback（数据不写入）
+        #    - MinIO 对象留下孤儿
+        #    - 定期清理任务处理（最终一致性）
 
         # 返回下载签名 URL（带 attachment），1 小时有效
         return metadata, self._storage.get_presigned_download_url(
@@ -98,7 +110,13 @@ class FileService:
         self,
         req: FileAvatarUploadRequest,
     ) -> Tuple[FileMetadata, str]:
+        """上传头像 + 清理旧头像。
 
+        事务边界（Step 5 后）：
+        - 新旧头像处理在同一个事务（框架 commit）
+        - MinIO 上传新头像：在 DB 提交前
+        - MinIO 删除旧头像：不在 service 内做（接受孤儿 + 定期清理）
+        """
         user_id = get_user_id()
 
         # 用 Model 的工厂方法创建元数据（包含路径生成逻辑）
@@ -119,33 +137,23 @@ class FileService:
             )
         )).scalar_one_or_none()
 
-        # 2. 上传到 MinIO
+        # 第 1 步：上传新头像到 MinIO
         await self._storage.upload(
             file_obj=io.BytesIO(req.content),
             key=new_meta.object_name,
             content_type=new_meta.content_type,
         )
 
-        # 3. 事务 1：写新记录
+        # 第 2 步：DB 标记新头像
         self._db.add(new_meta)
-        try:
-            await self._db.commit()
-        except Exception:
-            await self._safe_delete(new_meta.object_name, ignore_error=False)
-            await self._db.rollback()
-            raise
-        await self._db.refresh(new_meta)
 
-        # 4. 事务 2：清理旧头像（独立事务，不阻塞主流程）
+        # 第 3 步：DB 标记旧头像为删除
+        # ↑ 同一个事务里，框架 commit 一次性 commit
         if old and old.object_name != new_meta.object_name:
             old.mark_deleted()
-            try:
-                await self._db.commit()
-                await self._safe_delete(old.object_name, ignore_error=True)
-            except Exception:
-                await self._db.rollback()
+            # ↑ 旧头像 MinIO 对象不在本次删除（接受孤儿 + 定期清理）
 
-        # 5. 返回公开直链（Policy 已设置 avatar/ 公开）
+        # 第 4 步：返回公开直链（Policy 已设置 avatar/ 公开）
         return new_meta, self._storage.get_public_url(new_meta.object_name)
 
     # ---- 查询 ----
@@ -206,8 +214,7 @@ class FileService:
 
         if not req.apply_to(meta):
             return FileVO.from_orm_to_vo(meta)
-        await self._db.commit()
-        await self._db.refresh(meta)
+        # ↑ dirty 状态保留 → 框架 commit 时一起更新
         return FileVO.from_orm_to_vo(meta)
 
     async def get_download_data(self, file_id: int, expiry_minutes: int = 60) -> FileDataVO:
@@ -233,4 +240,5 @@ class FileService:
             raise BadRequestError("富文本图片不应通过此接口删除")
 
         meta.mark_deleted()
-        await self._db.commit()
+        # ↑ dirty 状态保留 → 框架 commit 时更新
+        # MinIO 物理删除不在 service 内做（接受孤儿 + 定期清理）

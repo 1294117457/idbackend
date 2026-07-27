@@ -142,9 +142,8 @@ class UserService:
         """
         user = await UserService.get_user_by_id_or_raise(db, user_id)
         modified = req.apply_to(user)
-        if modified:
-            await db.commit()
-            await db.refresh(user)
+        if not modified:
+            return user
         return user
 
     @staticmethod
@@ -247,8 +246,6 @@ class UserService:
             status=UserStatus.ACTIVE.value,
         )
         db.add(user)
-        await db.commit()
-        await db.refresh(user)
         return user
 
     @staticmethod
@@ -261,7 +258,6 @@ class UserService:
         if not user:
             return False
         await db.delete(user)
-        await db.commit()
         await RbacService.clear_user_cache(user_id)
         return True
 
@@ -274,8 +270,6 @@ class UserService:
         """更新用户状态"""
         user = await UserService.get_user_by_id_or_raise(db, user_id)
         user.status = status
-        await db.commit()
-        await db.refresh(user)
         await RbacService.clear_user_status_cache(user_id)
         return user
 
@@ -431,10 +425,6 @@ class UserService:
                     setattr(user, key, value)
                     modified = True
 
-        if modified:
-            await db.commit()
-            await db.refresh(user)
-
         return modified
 
     @staticmethod
@@ -455,8 +445,6 @@ class UserService:
         current.update(extra_info)
         user.extra_info = current
 
-        await db.commit()
-        await db.refresh(user)
         return True
 
     @staticmethod
@@ -546,5 +534,4 @@ class UserService:
             raise NotFoundError(f"用户不存在: id={user_id}")
 
         await db.delete(user)
-        await db.commit()
         await RbacService.clear_user_cache(user_id)

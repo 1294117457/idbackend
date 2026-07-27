@@ -165,15 +165,8 @@ class AttributeRepository:
         result = await db.execute(stmt)
         return int(result.rowcount or 0)
 
-    # ---------- 事务辅助 ----------
 
-    @staticmethod
-    async def commit(db: AsyncSession) -> None:
-        await db.commit()
 
-    @staticmethod
-    async def refresh(db: AsyncSession, obj) -> None:
-        await db.refresh(obj)
 
 
 __all__ = ["AttributeRepository"]

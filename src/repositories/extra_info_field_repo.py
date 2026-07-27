@@ -123,13 +123,7 @@ class ExtraInfoFieldRepository:
         result = await db.execute(stmt)
         return (result.rowcount or 0) > 0
 
-    @staticmethod
-    async def commit(db: AsyncSession) -> None:
-        await db.commit()
 
-    @staticmethod
-    async def refresh(db: AsyncSession, obj: ExtraInfoField) -> None:
-        await db.refresh(obj)
 
 
 __all__ = ["ExtraInfoFieldRepository"]

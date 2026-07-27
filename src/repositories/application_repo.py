@@ -415,20 +415,5 @@ class ApplicationRepository:
         await db.flush()
         return application
 
-    @staticmethod
-    async def commit(
-        db: AsyncSession,
-    ) -> None:
-        """提交事务"""
-        await db.commit()
-
-    @staticmethod
-    async def refresh(
-        db: AsyncSession,
-        obj,
-    ) -> None:
-        """刷新对象"""
-        await db.refresh(obj)
-
 
 __all__ = ["ApplicationRepository"]

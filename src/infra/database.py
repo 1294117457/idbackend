@@ -2,8 +2,8 @@
 from sqlalchemy import create_engine
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import sessionmaker, Session
-from contextlib import contextmanager
-from typing import Generator
+from contextlib import asynccontextmanager, contextmanager
+from typing import AsyncGenerator, Generator
 import logging
 
 from .config import (
@@ -58,10 +58,53 @@ SyncSessionLocal = sessionmaker(
 )
 
 
-async def get_db() -> AsyncSession:
-    """获取数据库会话（async with 自动 close，无需手动 await close）"""
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
+    """获取数据库会话（FastAPI Depends 用）。
+
+    ★ Step 1 改造（2026-07-27）：
+        get_db 成为全项目唯一的事务边界。
+        - 业务正常 return → 框架自动 commit
+        - 业务抛异常 → 框架自动 rollback + 异常继续抛出
+
+    安全保证：
+        - 业务代码已显式 commit 后，框架 commit 幂等（SQLAlchemy 2.0 行为）
+        - GeneratorExit / CancelledError 不被 except 吞，FastAPI 走单独清理路径
+    """
     async with AsyncSessionLocal() as session:
-        yield session
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+
+
+@asynccontextmanager
+async def get_db_context() -> AsyncGenerator[AsyncSession, None]:
+    """独立事务的 context manager（用于 stream_chat 等长流程）。
+
+    ★ Step 6 改造（2026-07-27）：
+        用法：
+            async with get_db_context() as db:
+                db.add(obj)
+                # 离开 with 时自动 commit
+
+    与 get_db 的区别：
+        - get_db：FastAPI Depends 注入，一个 HTTP 请求一个 session
+        - get_db_context：service 内部使用，一次调用一个 session
+
+    适用场景：
+        - stream_chat：需要多个短事务（LLM 期间不持锁）
+        - 后台任务
+        - 任何需要在同一调用栈内独立事务的场景
+    """
+    async with AsyncSessionLocal() as session:
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
 
 
 @contextmanager

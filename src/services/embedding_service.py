@@ -25,15 +25,11 @@ from src.app.schemas.embedding import (
     EmbeddingUpdateRequest,
     EmbeddingQueryRequest,
     EmbeddingDeleteRequest,
-    EmbeddingSearchRequest,
     EmbeddingVO,
     EmbeddingDetailVO,
-    EmbeddingSearchResultVO,
     EmbeddingUploadResultVO,
     EmbeddingDeleteResultVO,
     EmbeddingStatsVO,
-    EmbeddingListVO,
-    EmbeddingSearchListVO,
     Page,
 )
 
@@ -88,7 +84,6 @@ class EmbeddingService:
             db.add(embedding)
 
         await db.flush()
-        await db.commit()
 
         logger.info(f"入库: source_id={source_id}, title={title}, chunks={len(chunks)}")
         return source_id, len(chunks)
@@ -125,7 +120,6 @@ class EmbeddingService:
     ) -> int:
         """按 source_id 删除某来源的所有 chunks。"""
         count = await EmbeddingRepository.delete_by_source_id(db, source_id)
-        await EmbeddingRepository.commit(db)
         return count
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -189,9 +183,14 @@ class EmbeddingService:
         category: Optional[str] = None,
         top_k: Optional[int] = None,
     ):
-        """混合检索（向量 + BM25 → RFF 融合），返回 FusionResult。"""
+        """混合检索（向量 + BM25 → RRF 融合），返回 FusionResult。
+
+        设计：service 层不打包 VO，保持数据层职责单一。
+        - 上层（路由）需要前端 VO 时调 schema 的 EmbeddingSearchListVO.from_fusion_result
+        - 上层（LangGraph 节点）需要上下文时直接用 fusion.hits 拼 prompt
+        """
         from src.infra.config import get_rag_config
-        from src.infra.ai.retrieval_processor import RetrievalProcessor, SearchHit
+        from src.infra.ai.retrieval_processor import RetrievalProcessor
 
         rag_cfg = get_rag_config()
 
@@ -300,7 +299,6 @@ class EmbeddingService:
             embedding.embedding = vector
 
         await EmbeddingRepository.update(db, embedding)
-        await EmbeddingRepository.commit(db)
 
         return EmbeddingVO.from_orm_to_vo(embedding)
 
@@ -311,7 +309,6 @@ class EmbeddingService:
     ) -> EmbeddingDeleteResultVO:
         """批量删除 embedding（按 ID）"""
         deleted_count = await EmbeddingRepository.delete_by_ids(db, request.ids)
-        await EmbeddingRepository.commit(db)
 
         return EmbeddingDeleteResultVO(
             deletedCount=deleted_count,
@@ -363,46 +360,6 @@ class EmbeddingService:
         if not embedding:
             return None
         return EmbeddingDetailVO.from_orm_to_vo(embedding, include_vector=True)
-
-    async def search_(
-        self,
-        db: AsyncSession,
-        request: EmbeddingSearchRequest,
-    ) -> EmbeddingSearchListVO:
-        """混合检索（向量 + BM25 → RFF 融合）"""
-        fusion_result = await self.rrf_search(
-            db,
-            query=request.query,
-            category=request.category,
-        )
-
-        # SearchHit → EmbeddingSearchResultVO
-        hits_vo = [
-            EmbeddingSearchResultVO(
-                id=int(hit.chunk_id) if hit.chunk_id.isdigit() else 0,
-                sourceId=hit.source_id,
-                chunkIndex=hit.metadata.get("chunk_index"),
-                title=hit.metadata.get("title"),
-                content=hit.content,
-                category=hit.metadata.get("category", ""),
-                categoryText=hit.metadata.get("category_text", ""),
-                vectorScore=round(hit.vector_score, 6),
-                bm25Score=round(hit.bm25_score, 6),
-                normVectorScore=round(hit.norm_vector_score, 6),
-                normBm25Score=round(hit.norm_bm25_score, 6),
-                fusedScore=round(hit.fused_score, 6),
-                isVectorHit=hit.is_vector_hit,
-                isBm25Hit=hit.is_bm25_hit,
-            )
-            for hit in fusion_result.hits
-        ]
-
-        return EmbeddingSearchListVO(
-            list=hits_vo,
-            config=fusion_result.config,
-            query=fusion_result.query,
-            totalTimeMs=fusion_result.total_time_ms,
-        )
 
     async def get_stats(self, db: AsyncSession) -> EmbeddingStatsVO:
         """获取统计信息"""

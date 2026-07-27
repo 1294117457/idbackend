@@ -1,31 +1,37 @@
 """意图分类节点"""
 from typing import Dict, Any
-from langchain_core.messages import HumanMessage
 
-from agent.state import MainState
+from agent.state import AgentState
+from agent.prompts.classify_prompt import INTENT_CLASSIFY_PROMPT
+from src.infra.ai.model import get_chat_model
 
 
-async def classify_node(state: MainState) -> Dict[str, Any]:
-    """分类用户意图"""
+INTENT_OPTIONS = ["chat"]
+
+
+async def classify_node(state: AgentState) -> Dict[str, Any]:
+    """
+    意图分类节点
+
+    接收用户最新消息，使用 LLM 判断意图
+    """
     messages = state.get("messages", [])
     if not messages:
-        return {"intent": None, "result": {"message": "请输入您的问题"}}
+        return {"intent": None}
 
     last_message = messages[-1]
-    content = last_message.get("content", "")
+    user_content = last_message.get("content", "")
 
-    # 简单的关键词分类
-    consult_keywords = ["怎么", "如何", "规则", "政策", "是什么", "多少", "查询"]
-    apply_keywords = ["申请", "加分", "提交", "要什么", "证明"]
+    if not user_content:
+        return {"intent": "chat"}
 
-    if any(k in content for k in consult_keywords):
-        intent = "consult"
-    elif any(k in content for k in apply_keywords):
-        intent = "apply"
-    else:
-        intent = "consult"
+    prompt = INTENT_CLASSIFY_PROMPT.format(content=user_content)
 
-    return {
-        "intent": intent,
-        "messages": messages + [{"role": "assistant", "content": f"我理解您想要{intent}"}],
-    }
+    llm = get_chat_model()
+    response = await llm.ainvoke(prompt)
+    intent = response.content.strip().lower()
+
+    if intent not in INTENT_OPTIONS:
+        intent = "chat"
+
+    return {"intent": intent}

@@ -69,8 +69,6 @@ class AuthService:
             user_role_link = UserRole(user_id=user.id, role_id=user_role.id)
             db.add(user_role_link)
 
-        await db.commit()
-        await db.refresh(user)
         return UserCreateResultVO.from_user(user)
 
     @staticmethod
@@ -108,7 +106,6 @@ class AuthService:
             raise ForbiddenError("账户已被禁用")
 
         user.last_login_at = datetime.now(timezone.utc).isoformat()
-        await db.commit()
 
         access_token = create_token(user_id=user.id, username=user.username)
         refresh_token = create_refresh_token(user_id=user.id, username=user.username)
@@ -157,7 +154,6 @@ class AuthService:
             raise ForbiddenError("无管理端登录权限")
 
         user.last_login_at = datetime.now(timezone.utc).isoformat()
-        await db.commit()
 
         access_token = create_token(user_id=user.id, username=user.username)
         refresh_token = create_refresh_token(user_id=user.id, username=user.username)
@@ -291,7 +287,6 @@ class AuthService:
             raise NotFoundError(f"用户不存在: {req.username}")
 
         req.apply_to(user)
-        await db.commit()
         return True
 
     @staticmethod
