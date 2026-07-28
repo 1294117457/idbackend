@@ -6,6 +6,9 @@ from src.repositories.attribute_repo import AttributeRepository
 from src.repositories.application_repo import ApplicationRepository
 from src.repositories.embedding_repo import EmbeddingRepository
 from src.repositories.ai_chat_repo import AIChatRepository
+from src.repositories.user_repo import UserRepository
+from src.repositories.role_repo import RoleRepository
+from src.repositories.permission_repo import PermissionRepository
 
 __all__ = [
     "TemplateCategoryRepository",
@@ -15,4 +18,7 @@ __all__ = [
     "ApplicationRepository",
     "EmbeddingRepository",
     "AIChatRepository",
+    "UserRepository",
+    "RoleRepository",
+    "PermissionRepository",
 ]

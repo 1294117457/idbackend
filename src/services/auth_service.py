@@ -1,5 +1,4 @@
 """认证服务"""
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
 from datetime import datetime, timezone
@@ -15,6 +14,8 @@ from src.infra.redis import RedisCache, get_redis
 from src.infra.config import is_system_account
 from src.models import User, Role, UserRole
 from src.models.user import UserStatus
+from src.repositories.user_repo import UserRepository
+from src.repositories.role_repo import RoleRepository
 from src.app.schemas.errors import (
     NotFoundError,
     BadRequestError,
@@ -50,24 +51,18 @@ class AuthService:
         if not ok:
             raise BadRequestError(err)
 
-        result = await db.execute(
-            select(User).where(User.username == req.username)
-        )
-        if result.scalar_one_or_none():
+        existing = await UserRepository.get_by_username(db, req.username)
+        if existing:
             raise ConflictError(f"用户名已存在: {req.username}")
 
         user = req.to_create_orm()
-        db.add(user)
-        await db.flush()
+        user = await UserRepository.insert(db, user)
 
         # 自动分配 user 角色
-        result = await db.execute(
-            select(Role).where(Role.role_code == "user")
-        )
-        user_role = result.scalar_one_or_none()
+        user_role = await RoleRepository.get_by_code(db, "user")
         if user_role:
-            user_role_link = UserRole(user_id=user.id, role_id=user_role.id)
-            db.add(user_role_link)
+            db.add(UserRole(user_id=user.id, role_id=user_role.id))
+            await db.flush()
 
         return UserCreateResultVO.from_user(user)
 
@@ -91,10 +86,7 @@ class AuthService:
             if not is_valid:
                 raise BadRequestError(err)
 
-        result = await db.execute(
-            select(User).where(User.username == username)
-        )
-        user = result.scalar_one_or_none()
+        user = await UserRepository.get_by_username(db, username)
 
         if not user:
             raise BadRequestError("用户名或密码错误")
@@ -106,6 +98,7 @@ class AuthService:
             raise ForbiddenError("账户已被禁用")
 
         user.last_login_at = datetime.now(timezone.utc).isoformat()
+        await db.flush()
 
         access_token = create_token(user_id=user.id, username=user.username)
         refresh_token = create_refresh_token(user_id=user.id, username=user.username)
@@ -133,10 +126,7 @@ class AuthService:
             if not is_valid:
                 raise BadRequestError(err)
 
-        result = await db.execute(
-            select(User).where(User.username == username)
-        )
-        user = result.scalar_one_or_none()
+        user = await UserRepository.get_by_username(db, username)
 
         if not user:
             raise BadRequestError("用户名或密码错误")
@@ -154,6 +144,7 @@ class AuthService:
             raise ForbiddenError("无管理端登录权限")
 
         user.last_login_at = datetime.now(timezone.utc).isoformat()
+        await db.flush()
 
         access_token = create_token(user_id=user.id, username=user.username)
         refresh_token = create_refresh_token(user_id=user.id, username=user.username)
@@ -168,24 +159,13 @@ class AuthService:
         """刷新 token，返回 (新的 access_token, 新的 refresh_token)
 
         不再查询角色/权限，新 token 只含身份信息。
-
-        异常细分（被 exception_handler 按 body_code 映射）：
-        - RefreshTokenExpiredError → HTTP 401 + body.code=10002（refresh 过期，业务异常）
-        - InvalidTokenError        → 重新 throw BadRequest（业务路由层）
-        - AccountDisabledError     → HTTP 401 + body.code=10003（账号被禁用，msg 区分）
-
-        设计：verify_token 直接透传 jose 原生异常（ExpiredSignatureError / JWTError），
-        本服务按"refresh 上下文"把 ExpiredSignatureError 翻译为业务异常 RefreshTokenExpiredError，
-        把其余 JWTError 翻译为 InvalidTokenError。
         """
-        # 1. 解析 refresh token（jose 层抛原生异常；本服务按上下文翻译为业务异常）
+        # 1. 解析 refresh token
         try:
             payload = verify_token(refresh_token, expected_type="refresh")
         except jose_jwt.ExpiredSignatureError:
-            # refresh 过期 → 10002
             raise RefreshTokenExpiredError()
         except JWTError as e:
-            # refresh 本身就是个 token，无效就是"身份不可信"，映射到 10003（与 access 篡改同号）
             raise InvalidTokenError(f"refresh_token 无效: {e}")
 
         if payload.get("type") != "refresh":
@@ -203,19 +183,17 @@ class AuthService:
 
         # 3. 检查用户是否仍然有效
         user_id = payload.get("userId")
-        result = await db.execute(select(User).where(User.id == user_id))
-        user = result.scalar_one_or_none()
+        user = await UserRepository.get_by_id(db, user_id)
         if not user:
             raise NotFoundError(f"用户不存在: id={user_id}")
         if user.status != UserStatus.ACTIVE.value:
-            # 用户中途被禁用 → 撤销所有 refresh token（防止继续 rotate）
             await cache.revoke_all_user_refresh_tokens(user_id)
-            raise AccountDisabledError()  # HTTP 401 + body.code=10003
+            raise AccountDisabledError()
 
         # 4. 撤销旧 refresh token (rotation)
         await cache.revoke_refresh_token(jti)
 
-        # 5. 签发新 token 对（仅身份信息）
+        # 5. 签发新 token 对
         new_access_token = create_token(user_id=user.id, username=user.username)
         new_refresh_token = create_refresh_token(user_id=user.id, username=user.username)
         return new_access_token, new_refresh_token
@@ -226,7 +204,7 @@ class AuthService:
         try:
             payload = verify_token(refresh_token, expected_type="refresh")
         except JWTError:
-            return  # token 无效或过期，忽略
+            return
         if payload.get("type") != "refresh":
             return
         jti = payload.get("jti")
@@ -243,11 +221,7 @@ class AuthService:
         captcha_id: str | None = None,
         captcha_code: str | None = None,
     ) -> bool:
-        """发送邮箱验证码
-
-        - 可选的图形验证码校验
-        - 返回 True 表示发送成功，False 表示频率限制
-        """
+        """发送邮箱验证码"""
         from src.infra.captcha import Captcha
 
         if captcha_id and captcha_code:
@@ -261,7 +235,7 @@ class AuthService:
 
     @staticmethod
     async def revoke_all_user_tokens(user_id: int) -> int:
-        """撤销用户所有 refresh tokens（密码修改/账户禁用时调用）"""
+        """撤销用户所有 refresh tokens"""
         redis = await get_redis()
         cache = RedisCache(redis)
         return await cache.revoke_all_user_refresh_tokens(user_id)
@@ -271,22 +245,19 @@ class AuthService:
         db: AsyncSession,
         req,
     ) -> bool:
-        """重置密码（req: ForgotPasswordRequest —— apply_to 内部 hash + 写回）"""
+        """重置密码"""
         from src.infra.email import EmailCode
 
         ok, err = await EmailCode.verify(req.username, "reset", req.code)
         if not ok:
             raise BadRequestError(err)
 
-        result = await db.execute(
-            select(User).where(User.username == req.username)
-        )
-        user = result.scalar_one_or_none()
-
+        user = await UserRepository.get_by_username(db, req.username)
         if not user:
             raise NotFoundError(f"用户不存在: {req.username}")
 
         req.apply_to(user)
+        await db.flush()
         return True
 
     @staticmethod
@@ -295,10 +266,7 @@ class AuthService:
         user_id: int,
     ) -> Optional[User]:
         """根据ID获取用户"""
-        result = await db.execute(
-            select(User).where(User.id == user_id)
-        )
-        return result.scalar_one_or_none()
+        return await UserRepository.get_by_id(db, user_id)
 
     @staticmethod
     async def verify_refresh_token(token: str) -> dict:

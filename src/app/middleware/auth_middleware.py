@@ -23,13 +23,14 @@ from jose import jwt as jose_jwt, JWTError
 
 from src.app.context import set_user, clear_user
 from src.app.response import (
-    unauthorized_resp,            # HTTP 401 + body.code=401
-    access_token_expired_resp,    # HTTP 401 + body.code=10001
-    refresh_token_expired_resp,   # HTTP 401 + body.code=10002（防御性兜底）
-    invalid_token_resp,           # HTTP 401 + body.code=10003（token 篡改/签错）
-    account_disabled_resp,        # HTTP 401 + body.code=10003（账号被禁用，msg 区分）
+    unauthorized_resp,
+    access_token_expired_resp,
+    refresh_token_expired_resp,
+    invalid_token_resp,
+    account_disabled_resp,
 )
 from src.infra.jwt import verify_token
+from src.infra.database import get_db
 from src.services.user_service import UserService
 
 
@@ -79,31 +80,32 @@ class AuthMiddleware(BaseHTTPMiddleware):
         auth_header = request.headers.get("Authorization", "")
 
         if not auth_header.startswith("Bearer "):
-            return unauthorized_resp("请先登录")  # HTTP 401 + body.code=401
+            return unauthorized_resp("请先登录")
 
         token = auth_header[7:]
 
-        # 3. 解析 JWT（直接捕获 jose 原生异常，按访问上下文决定 body_code）
+        # 3. 解析 JWT
         try:
             payload = verify_token(token, expected_type="access")
         except jose_jwt.ExpiredSignatureError:
-            # 中间件永远期望 access → 过期统一映射 10001
-            # （refresh 过期在本中间件几乎不会发生，但理论存在：用 refresh 当 access 调接口）
-            return access_token_expired_resp()   # HTTP 401 + body.code=10001
+            return access_token_expired_resp()
         except JWTError:
-            return invalid_token_resp()          # HTTP 401 + body.code=10003
+            return invalid_token_resp()
 
-        # 4. 校验 token 类型（拿到 payload 后再校验 type==access）
+        # 4. 校验 token 类型
         if payload.get("type") != "access":
             return invalid_token_resp("Token 类型错误，期望 access")
 
         user_id = payload.get("userId")
 
-        # 5. 校验账号状态（DB 一次 SELECT，仅查 status）
-        if not await UserService.verify_account_active(user_id):
-            return account_disabled_resp()        # HTTP 401 + body.code=10003
+        # 5. 校验账号状态（通过 get_db 获取 session）
+        async for db in get_db():
+            is_active = await UserService.verify_account_active(db, user_id)
+            if not is_active:
+                return account_disabled_resp()
+            break
 
-        # 6. 构建用户对象（仅身份信息；权限/角色由 PermissionMiddleware 实时判定）
+        # 6. 构建用户对象
         user = {
             "user_id": user_id,
             "username": payload.get("username"),
