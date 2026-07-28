@@ -7,6 +7,7 @@
 - GET    /messages?session_id={id}  # 消息历史
 """
 import json
+import logging
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
@@ -21,6 +22,7 @@ from src.app.schemas.ai_chat import (
     ChatRequest,
 )
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/ai/chat", tags=["AI Chat"])
 
 
@@ -94,14 +96,22 @@ async def chat_stream(
     - event: done, data: {"messageId": 456, "content": "..."}
     - event: error, data: {"message": "错误信息"}
     """
+    logger.info(f"[ChatStream] 收到请求: message={request.message!r}, session_id={request.session_id}")
     user_id = get_user_id()
     service = get_ai_chat_service()
 
     async def event_generator():
-        async for event in service.stream_chat(
-            db, user_id, request.message, request.session_id
-        ):
-            yield f"event: {event['event']}\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
+        try:
+            logger.info(f"[ChatStream] 开始生成事件流, user_id={user_id}")
+            async for event in service.stream_chat(
+                db, user_id, request.message, request.session_id
+            ):
+                logger.info(f"[ChatStream] 发送事件: event={event['event']}, data={event['data']}")
+                yield f"event: {event['event']}\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
+            logger.info("[ChatStream] 事件流结束")
+        except Exception as e:
+            logger.error(f"[ChatStream] 生成事件时出错: {e}", exc_info=True)
+            yield f"event: error\ndata: {json.dumps({'message': str(e)}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
         event_generator(),

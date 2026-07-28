@@ -477,23 +477,26 @@ class AIChatService:
         user_input: str,
         session_id: Optional[int] = None,
     ) -> AsyncIterator[dict]:
-        """流式对话（Step 6 改造后：拆短事务）
+        """流式对话（Step 6 改造后：拆短事务 + LangGraph）
 
         事务边界：
         - 事务 1：准备（创建 session + user_msg + 压缩 + build_context）
-        - [LLM 调用（不持锁 db 连接）]
+        - [Graph 调用（不持锁 db 连接）]
         - 事务 2：完成（assistant_msg）
+
+        LangGraph 流程：
+        - classify（意图识别）
+        - router（路由判断）
+        - chat（闲聊）
 
         收益：
         - LLM 期间不持锁连接 → 连接池不被阻塞
         - 客户端断开时事务状态清晰
+        - 支持意图路由、节点扩展
         """
-        from src.infra.ai.model import get_chat_model
-        from src.infra.config import get_llm_config
         from src.infra.database import get_db_context
 
-        llm = get_chat_model()
-        cfg = get_llm_config()
+        logger.info(f"[stream_chat] user_id={user_id}, session_id={session_id}, user_input={user_input!r}")
 
         # ===== 事务 1：准备阶段 =====
         async with get_db_context() as db:
@@ -502,6 +505,7 @@ class AIChatService:
                 db, user_id, session_id, first_message=user_input
             )
             current_session_id = session.id
+            logger.info(f"[stream_chat] 会话: current_session_id={current_session_id}")
 
             # 检查是否新建了会话
             is_new_session = session_id is None or session_id == 0
@@ -515,6 +519,7 @@ class AIChatService:
                 msg_type=MessageType.TEXT,
             )
             await db.flush()
+            logger.info(f"[stream_chat] 用户消息已保存: user_msg.id={user_msg.id}")
 
             # 触发压缩（如需要）
             compressed_id = await self.maybe_compress(db, current_session_id)
@@ -533,11 +538,13 @@ class AIChatService:
                 recent_summaries_limit=None,  # 使用默认 SUMMARY_RECENT_MAX_COUNT
                 recent_messages_limit=20,
             )
+            logger.info(f"[stream_chat] 构建上下文完成: {len(messages)} 条消息")
 
         # ↑ 事务 1 commit：user_msg + compressed_id 落盘
 
         # ===== 准备完成事件 =====
         if is_new_session:
+            logger.info(f"[stream_chat] 发送 session 事件: id={session.id}, title={session.title}")
             yield {
                 "event": "session",
                 "data": {
@@ -546,6 +553,7 @@ class AIChatService:
                 }
             }
         if compressed_id is not None:
+            logger.info(f"[stream_chat] 发送 context_compressed 事件")
             yield {
                 "event": "context_compressed",
                 "data": {
@@ -555,26 +563,46 @@ class AIChatService:
             }
 
         # ===== LLM 调用（无 db 持锁）=====
+        # 方式：调用 LangGraph
         full_content = ""
+
+        # 导入 Graph
+        from src.agent.graph.builder import get_compiled_graph
+
+        graph = get_compiled_graph()
+        state = {
+            "messages": messages,
+            "user_id": user_id,
+            "session_id": str(current_session_id),
+        }
+        logger.info(f"[stream_chat] 开始调用 LangGraph, state={state}")
+
         try:
-            async for chunk in llm.astream(messages):
-                if chunk.content:
-                    full_content += chunk.content
-                    yield {
-                        "event": "content",
-                        "data": {
-                            "content": chunk.content,
-                            "messageId": user_msg.id,
+            # 使用 astream 获取节点输出
+            async for node_output in graph.astream(
+                state,
+                config={"configurable": {"thread_id": str(current_session_id)}}
+            ):
+                logger.info(f"[stream_chat] 收到节点输出: {node_output}")
+                # node_output 格式: {"classify": {"intent": "chat"}} 或 {"chat": {"generated_text": "..."}}
+                for node_name, node_result in node_output.items():
+                    if isinstance(node_result, dict) and "generated_text" in node_result:
+                        content = node_result["generated_text"]
+                        full_content += content
+                        yield {
+                            "event": "content",
+                            "data": {
+                                "content": content,
+                                "messageId": user_msg.id,
+                            }
                         }
-                    }
         except Exception as e:
             # ↑ LLM 调用失败 → 异常处理
             # ↑ user_msg 已落盘（事务 1 commit），assistant_msg 不写
             # ↑ 客户端看到部分 content 但 assistant_msg 不在历史里（流式响应固有缺陷）
             import traceback
-            logger.error(f"LLM 调用失败: {e}")
-            logger.error(f"LLM 配置: base_url={cfg.get('base_url')}, model={cfg.get('chat_model')}")
-            logger.error(f"LLM 错误详情: {traceback.format_exc()}")
+            logger.error(f"Graph 调用失败: {e}")
+            logger.error(f"错误详情: {traceback.format_exc()}")
             yield {
                 "event": "error",
                 "data": {"message": str(e)}
@@ -591,6 +619,7 @@ class AIChatService:
                 content=full_content,
                 msg_type=MessageType.TEXT,
             )
+            logger.info(f"[stream_chat] assistant_msg 已保存: id={assistant_msg.id}")
 
         # ↑ 事务 2 commit：assistant_msg 落盘
 
@@ -601,6 +630,7 @@ class AIChatService:
                 "content": full_content,
             }
         }
+        logger.info(f"[stream_chat] 完成: full_content长度={len(full_content)}")
 
 
 # 全局单例

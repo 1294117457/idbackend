@@ -6,64 +6,90 @@ from typing import Literal, Optional
 from dataclasses import dataclass
 
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.postgres import PostgresSaver
-from langgraph.types import Checkpointer
+from langgraph.checkpoint.memory import MemorySaver
 
-from agent.state import AgentState
-from agent.nodes.classify import classify_node
-from agent.nodes.chat import chat_node
-
-
-@dataclass
-class GraphConfig:
-    """图配置"""
-    checkpointer: Optional[Checkpointer] = None
+from src.agent.state import AgentState
+from src.agent.nodes.classify import classify_node_with_fallback as classify_node
+from src.agent.nodes.chat import chat_node
+from src.agent.nodes.consult import consult_node
+from src.agent.graph.routers import route_after_classify, route_after_consult
 
 
-def create_agent_graph(config: Optional[GraphConfig] = None) -> StateGraph:
+def create_graph() -> StateGraph:
     """
-    创建 Agent 图
+    创建 Agent Graph
 
-    流程：
-    classify → chat → END
+    流程：classify → router → chat/consult → END
     """
     graph = StateGraph(AgentState)
 
     # 添加节点
     graph.add_node("classify", classify_node)
     graph.add_node("chat", chat_node)
+    graph.add_node("consult", consult_node)
 
     # 设置入口
     graph.set_entry_point("classify")
 
-    # 条件路由：classify → chat
-    def route_after_classify(state: AgentState) -> Literal["chat", END]:
-        intent = state.get("intent")
-        if intent == "chat":
-            return "chat"
-        return END
-
+    # 条件路由：classify → chat / consult
     graph.add_conditional_edges(
         "classify",
         route_after_classify,
         {
             "chat": "chat",
+            "consult": "consult",
         }
     )
+
+    # consult 结束后 → END
+    graph.add_edge("consult", END)
 
     # chat 结束后 → END
     graph.add_edge("chat", END)
 
-    cfg = config or GraphConfig()
-
-    if cfg.checkpointer:
-        return graph.compile(checkpointer=cfg.checkpointer)
-
     return graph.compile()
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 全局单例 Graph
+# ─────────────────────────────────────────────────────────────────────────────
+
+_compiled_graph = None
+
+
+def get_compiled_graph() -> StateGraph:
+    """获取编译后的 Graph 单例
+
+    使用单例避免重复编译，线程安全
+    """
+    global _compiled_graph
+    if _compiled_graph is None:
+        _compiled_graph = create_graph()
+    return _compiled_graph
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 保留旧版 AgentGraph（向后兼容，后续可删除）
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class GraphConfig:
+    """图配置"""
+    checkpointer: Optional[MemorySaver] = None
+
+
+def create_agent_graph(config: Optional[GraphConfig] = None) -> StateGraph:
+    """
+    创建 Agent 图（兼容旧版）
+
+    流程：
+    classify → chat → END
+    """
+    return create_graph()
+
+
 class AgentGraph:
-    """Agent 图管理器"""
+    """Agent 图管理器（兼容旧版，后续可删除）"""
 
     def __init__(self, config: Optional[GraphConfig] = None):
         self.config = config
@@ -72,7 +98,7 @@ class AgentGraph:
     @property
     def graph(self):
         if self._graph is None:
-            self._graph = create_agent_graph(self.config)
+            self._graph = create_graph()
         return self._graph
 
     async def invoke(
@@ -108,18 +134,13 @@ class AgentGraph:
             yield event
 
 
-# 全局单例
+# 全局单例（兼容旧版）
 _agent_graph: Optional[AgentGraph] = None
 
 
 def get_agent_graph(config: Optional[GraphConfig] = None) -> AgentGraph:
-    """获取 AgentGraph 单例"""
+    """获取 AgentGraph 单例（兼容旧版）"""
     global _agent_graph
     if _agent_graph is None or config is not None:
         _agent_graph = AgentGraph(config)
     return _agent_graph
-
-
-def create_checkpointer(connection_string: str) -> PostgresSaver:
-    """便捷方法：创建 Checkpointer"""
-    return PostgresSaver.from_conn_string(connection_string)
