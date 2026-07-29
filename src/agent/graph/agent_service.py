@@ -2,8 +2,8 @@
 from typing import Optional, AsyncGenerator, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from agent.graph.builder import AgentGraph
-from agent.tools import (
+from src.agent.graph.builder import AgentGraph
+from src.agent.tools import (
     get_user_info_tool,
     get_user_scores_tool,
     get_templates_tool,

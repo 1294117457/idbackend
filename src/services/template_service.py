@@ -203,6 +203,12 @@ class TemplateService:
             entity_type="template",
             entity_id=template.id,
         )
+
+        # v2.1：同步到向量库（独立事务；create 后 template 已 flush 但尚未提交，
+        # _sync_template_to_embedding 内部调 upsert_by_template 会独立 commit，
+        # 与 template 主流程解耦）
+        await _sync_template_to_embedding(db, template)
+
         return template
 
     @staticmethod
@@ -226,6 +232,15 @@ class TemplateService:
                 entity_type="template",
                 entity_id=template_id,
             )
+
+        # v2.1：同步到向量库（reload 含 rules 关系，确保 rules_text 完整）
+        template_with_rules = await TemplateRepository.get_with_rules(
+            db, template_id,
+        )
+        if template_with_rules is not None:
+            template_with_rules.description = template.description
+            await _sync_template_to_embedding(db, template_with_rules)
+
         return template
 
     @staticmethod
@@ -303,6 +318,13 @@ class TemplateService:
         )
 
         category_id = template.category_id
+
+        # v2.1：先删 embedding（必须在 TemplateRepository.delete 之前——
+        # delete_by_source_id 依赖 source_id = f"tpl_{template_id}"，
+        # template 删除后无法再访问 id）
+        from src.services.embedding_service import get_embedding_service
+        await get_embedding_service().delete_by_template(db, template_id)
+
         await TemplateRepository.delete(db, template_id)
 
         # 删除富文本文件（MinIO，按 prefix 清理）
@@ -358,6 +380,13 @@ class TemplateService:
         from src.services.template_category_service import TemplateCategoryService
         await TemplateCategoryService.bind_template(db, req.template.categoryId)
 
+        # v2.1：同步到向量库（独立事务；save_template 后 template + rule 绑定已完成，
+        # reload 含 rules 关系，确保 _build_rules_text 取到最新绑定）
+        template_with_rules = await TemplateRepository.get_with_rules(db, template_id)
+        if template_with_rules is not None:
+            template_with_rules.description = template.description
+            await _sync_template_to_embedding(db, template_with_rules)
+
         return await TemplateService._build_save_response(
             db, storage, rich_text_service, template_id,
         )
@@ -400,6 +429,15 @@ class TemplateService:
                 await TemplateCategoryService.unbind_template(db, old_category_id)
             # 新的：翻 TRUE（幂等）
             await TemplateCategoryService.bind_template(db, req.template.categoryId)
+
+        # v2.1：同步到向量库（独立事务；update_template 后 description + rule 绑定都已更新，
+        # reload 含 rules 关系，确保 _build_rules_text 取到最新绑定）
+        template_with_rules = await TemplateRepository.get_with_rules(
+            db, req.templateId,
+        )
+        if template_with_rules is not None:
+            template_with_rules.description = template.description
+            await _sync_template_to_embedding(db, template_with_rules)
 
         return await TemplateService._build_save_response(
             db, storage, rich_text_service, req.templateId,
@@ -526,3 +564,123 @@ class TemplateService:
 def _ensure_max_score_non_negative(max_score: Decimal) -> None:
     if max_score < 0:
         raise BadRequestError(f"max_score 必须 >= 0，当前值: {max_score}")
+
+
+# ============================================================
+# v2.1：Template 自动同步向量库（详见 docs/docs-backend/step2/graph/v2/template_sync.md）
+# ============================================================
+
+
+def _build_rules_text(template: Template) -> str:
+    """将 template.rules 拼接为可检索的结构化文本。
+
+    按 rule.sort_order 升序遍历 rule，再按 attribute.sort_order 升序遍历 attribute。
+
+    输出示例：
+        规则：学业成绩
+         说明：按 GPA 加分
+
+        规则：家庭经济状况
+         说明：户籍类型加分
+          - 建档立卡户
+            公式/值：+12 分
+    """
+    if not template.rules:
+        return ""
+
+    parts = []
+    sorted_rules = sorted(template.rules, key=lambda r: r.sort_order)
+
+    for rule in sorted_rules:
+        parts.append(f"规则：{rule.name}")
+        if rule.description:
+            parts.append(f"  说明：{rule.description}")
+
+        sorted_attrs = sorted(rule.attributes, key=lambda a: a.sort_order)
+        for attr in sorted_attrs:
+            parts.append(f"  - {attr.group_name}：{attr.name}")
+            if attr.value:
+                parts.append(f"    公式/值：{attr.value}")
+            if (
+                attr.type == "TRANSFORM"
+                and (attr.input_min is not None or attr.input_max is not None)
+            ):
+                lo = attr.input_min if attr.input_min is not None else "-∞"
+                hi = attr.input_max if attr.input_max is not None else "+∞"
+                parts.append(f"    输入范围：[{lo}, {hi})")
+
+    return "\n".join(parts)
+
+
+async def _sync_template_to_embedding(
+    db: AsyncSession,
+    template: Template,
+) -> None:
+    """将 Template 内容同步到向量库（独立事务，失败不阻断主流程）。
+
+    入口：
+    - create / update / save_template / update_template 提交后调用
+    - template 需已 flush（有 id，且 rules 关系已 reload）
+
+    失败处理：
+    - 同步失败 → 记录 error log
+    - 不抛异常，不影响 template 主流程
+    """
+    # 局部 import 避免循环依赖（embedding_service 也可能被模板路由间接引用）
+    from src.infra.rich_text import RichText
+    from src.services.embedding_service import get_embedding_service
+
+    try:
+        # 1. 清理 description
+        plain_description = RichText.strip_html(template.description)
+
+        # 2. 组装 rules 结构化文本
+        rules_text = _build_rules_text(template)
+
+        # 3. 拼接
+        content_parts = []
+        if plain_description:
+            content_parts.append(plain_description)
+        if rules_text:
+            content_parts.append(rules_text)
+
+        if not content_parts:
+            logger.info(
+                "[template_sync] template(id=%s) 无可检索内容，跳过",
+                template.id,
+            )
+            return
+
+        content = "\n\n".join(content_parts)
+
+        # 5. 最小长度预检（> 20 字符才入库；description 和 rules_text 均短时跳过，
+        #    避免 upsert_by_template 抛 ValueError 后被 catch 成 ERROR log）
+        _MIN_CONTENT_LEN = 20
+        if len(content) < _MIN_CONTENT_LEN:
+            logger.info(
+                "[template_sync] template(id=%s) 内容过短（%d < %d），跳过向量入库",
+                template.id,
+                len(content),
+                _MIN_CONTENT_LEN,
+            )
+            return
+
+        # 6. 入库（幂等：同一 source_id 覆盖写入）
+        await get_embedding_service().upsert_by_template(
+            db,
+            title=template.name,
+            content=content,
+            template_id=template.id,
+        )
+        logger.info(
+            "[template_sync] template(id=%s) 同步成功，title=%s",
+            template.id,
+            template.name,
+        )
+    except Exception as e:
+        logger.error(
+            "[template_sync] template(id=%s) 同步失败: %s",
+            getattr(template, "id", "?"),
+            e,
+            exc_info=True,
+        )

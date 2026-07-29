@@ -1,4 +1,6 @@
 from contextlib import asynccontextmanager
+import logging
+import sys
 
 import uvicorn
 from fastapi import FastAPI
@@ -10,6 +12,14 @@ from src.infra.config import get_settings
 from src.infra.database import close_db, sync_engine
 from src.infra.redis import close_redis
 from src.models.base import Base
+
+# 配置根日志：输出到 stderr（uvicorn 会收集）
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+    datefmt="%H:%M:%S",
+    stream=sys.stdout,
+)
 
 
 # ============ Schema 同步（幂等） ============

@@ -1,8 +1,8 @@
 """聊天节点"""
 from typing import Dict, Any
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 
-from agent.state import AgentState
+from src.agent.state import AgentState
 from src.infra.ai.model import get_chat_model
 
 

@@ -32,7 +32,8 @@ class ChatRequest(BaseModel):
     """
     model_config = ConfigDict(populate_by_name=True)
 
-    session_id: Optional[int] = Field(default=None, description="会话ID，null/0 表示新建")
+    session_id: Optional[int | str] = Field(default=None, description="会话ID，null/0 表示新建")
+    sessionId: Optional[int | str] = Field(default=None, description="会话ID（别名）")
     message: str = Field(..., min_length=1, description="用户输入内容")
 
 
