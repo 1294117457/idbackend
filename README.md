@@ -1,5 +1,5 @@
 # idbackend
-
+test -2222
 厦门大学信息学院保研加分助手后端。FastAPI + LangGraph，提供认证、加分申请、审核、AI 对话、知识库 RAG。
 
 ## 技术栈
