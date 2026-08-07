@@ -15,7 +15,7 @@
 """
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Path, Query
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.dependencies import get_db
@@ -64,13 +64,13 @@ async def list_rules(
     return R.query_resp(vo.model_dump())
 
 
-@router.get("/{rule_id}")
+@router.get("/detail")
 async def get_rule_detail(
-    rule_id: int = Path(..., ge=1),
+    id: int = Query(..., ge=1),
     db: AsyncSession = Depends(get_db),
 ):
     """规则详情（含 attribute 列表）"""
-    rule = await RuleService.get_with_attributes(db, rule_id)
+    rule = await RuleService.get_with_attributes(db, id)
     attr_vos = [
         AttributeVO.from_orm_to_vo(a)
         for a in sorted(rule.attributes, key=lambda a: a.sort_order)

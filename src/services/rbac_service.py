@@ -50,26 +50,12 @@ class RbacService:
 
     @staticmethod
     async def get_path_permission(db: AsyncSession, path: str) -> Optional[str]:
-        """查询路径所需权限码（精确匹配优先，回退动态路由前缀匹配）"""
-        # 精确匹配
-        code = await PermissionRepository.get_path_permission(db, path)
-        if code:
-            return code
+        """查询路径所需权限码（精确匹配）
 
-        # 动态路由匹配
-        all_permissions = await PermissionRepository.get_all(db, status=True)
-        req_parts = [p for p in path.split('/') if p]
-
-        for perm in all_permissions:
-            if not perm.api_path or '{' not in perm.api_path:
-                continue
-            tmpl_parts = [p for p in perm.api_path.split('/') if p]
-            if len(tmpl_parts) != len(req_parts):
-                continue
-            if all((t.startswith('{') or t == r for t, r in zip(tmpl_parts, req_parts))):
-                return perm.permission_code
-
-        return None
+        所有路由已统一为 action-style（无路径参数），
+        不再需要动态路由匹配。
+        """
+        return await PermissionRepository.get_path_permission(db, path)
 
     @staticmethod
     async def has_any_role(db: AsyncSession, user_id: int, *required_roles: str) -> bool:

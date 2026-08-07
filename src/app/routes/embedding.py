@@ -2,7 +2,7 @@
 
 提供管理端的 embedding 上传、删除、查询等功能。
 """
-from fastapi import APIRouter, Depends, UploadFile, File, Form
+from fastapi import APIRouter, Depends, Query, UploadFile, File, Form
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.dependencies import get_db
@@ -14,6 +14,7 @@ from src.app.schemas.embedding import (
     EmbeddingUpdateRequest,
     EmbeddingQueryRequest,
     EmbeddingDeleteRequest,
+    EmbeddingDeleteBySourceRequest,
     EmbeddingSearchRequest,
     EmbeddingSearchListVO,
 )
@@ -88,15 +89,14 @@ async def upload_file_and_index(
     return R.success_resp(result, msg="上传并入库成功")
 
 
-@router.put("/{embedding_id}")
+@router.post("/update")
 async def update_embedding(
-    embedding_id: int,
     request: EmbeddingUpdateRequest,
     db: AsyncSession = Depends(get_db),
 ):
     """更新单个 chunk（文本变化时向量自动重新生成）"""
     service = get_embedding_service()
-    result = await service.update(db, embedding_id, request)
+    result = await service.update(db, request.id, request)
     if result is None:
         return R.not_found_resp("Embedding 不存在")
     return R.query_resp(result)
@@ -118,14 +118,14 @@ async def delete_embeddings(
     return R.query_resp(result)
 
 
-@router.delete("/source/{source_id}")
+@router.post("/delete-by-source")
 async def delete_by_source(
-    source_id: str,
+    request: EmbeddingDeleteBySourceRequest,
     db: AsyncSession = Depends(get_db),
 ):
     """按 source_id 删除某来源的所有 chunks"""
     service = get_embedding_service()
-    count = await service.delete_by_source(db, source_id)
+    count = await service.delete_by_source(db, request.sourceId)
     return R.success_resp({"deletedCount": count}, msg=f"已删除 {count} 个 chunk")
 
 
@@ -154,14 +154,14 @@ async def list_embeddings(
     return R.query_resp(result)
 
 
-@router.get("/{embedding_id}")
+@router.get("/detail")
 async def get_embedding_detail(
-    embedding_id: int,
+    id: int = Query(..., ge=1),
     db: AsyncSession = Depends(get_db),
 ):
     """获取 embedding 详情（含向量）"""
     service = get_embedding_service()
-    result = await service.get_detail(db, embedding_id)
+    result = await service.get_detail(db, id)
     if result is None:
         return R.not_found_resp("Embedding 不存在")
     return R.query_resp(result)

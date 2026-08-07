@@ -15,7 +15,8 @@ from src.app.schemas.page import Page
 # ========== 请求 DTO ==========
 
 class UpdateUserStatusRequest(BaseModel):
-    """管理员修改用户状态"""
+    """管理员修改用户状态（POST /admin/update-status）"""
+    userId: int = Field(..., ge=1)
     status: str = Field(..., description="active / inactive / banned")
 
 
@@ -63,8 +64,14 @@ class UpdateUserExtraInfoRequest(BaseModel):
     extra_info: dict = Field(..., description="扩展信息字典")
 
 
+class UserDeleteRequest(BaseModel):
+    """管理员删除用户（POST /admin/delete）"""
+    userId: int = Field(..., ge=1)
+
+
 class AssignUserRolesRequest(BaseModel):
-    """分配用户角色（POST /api/user/{user_id}/roles）"""
+    """分配用户角色（POST /assign-roles）"""
+    userId: int = Field(..., ge=1)
     roleIds: List[int] = Field(default_factory=list, description="角色 ID 列表")
 
 
@@ -194,6 +201,7 @@ __all__ = [
     "UserQueryRequest",
     "UpdateUserMeRequest",
     "UpdateUserExtraInfoRequest",
+    "UserDeleteRequest",
     "AssignUserRolesRequest",
     "CurrentUserInfoVO",
     "UserAdminListItemVO",

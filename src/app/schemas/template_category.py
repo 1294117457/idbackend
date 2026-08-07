@@ -59,13 +59,11 @@ class TemplateCategoryCreateRequest(BaseModel):
 
 
 class TemplateCategoryUpdateRequest(BaseModel):
-    """修改分类请求体（所有字段可选）
-
-    不允许修改 parentId / isBindTemplate / id（service 端校验）。
-    """
+    """修改分类请求体（POST /update，id 必填，其余可选）"""
 
     model_config = ConfigDict(extra="forbid")
 
+    id: int = Field(..., ge=1, description="分类 ID")
     name: Optional[str] = Field(None, min_length=1, max_length=100, description="新名称")
     maxScore: Optional[condecimal(ge=0, max_digits=5, decimal_places=2)] = Field(
         None, description="新分数上限"
@@ -106,6 +104,12 @@ class TemplateCategoryUpdateRequest(BaseModel):
             and self.isActive is None
             and self.description is None
         )
+
+
+class TemplateCategoryDeleteRequest(BaseModel):
+    """删除分类请求（POST /delete）"""
+
+    id: int = Field(..., ge=1)
 
 
 class TemplateCategoryListQueryRequest(BaseModel):
@@ -205,6 +209,7 @@ class TemplateCategoryListVO(Page[TemplateCategoryVO]):
 __all__ = [
     "TemplateCategoryCreateRequest",
     "TemplateCategoryUpdateRequest",
+    "TemplateCategoryDeleteRequest",
     "TemplateCategoryListQueryRequest",
     "TemplateCategoryPageQueryRequest",
     "TemplateCategoryVO",

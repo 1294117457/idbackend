@@ -37,9 +37,10 @@ class EmbeddingUploadRequest(BaseModel):
 
 
 class EmbeddingUpdateRequest(BaseModel):
-    """Embedding 更新请求 DTO"""
+    """Embedding 更新请求 DTO（POST /update，id 必填）"""
     model_config = ConfigDict(populate_by_name=True)
 
+    id: int = Field(..., ge=1, description="Embedding ID")
     title: Optional[str] = Field(default=None, max_length=200, description="标题")
     content: Optional[str] = Field(default=None, min_length=1, description="内容原文")
 
@@ -59,6 +60,13 @@ class EmbeddingDeleteRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     ids: List[int] = Field(..., min_length=1, description="待删除的 embedding ID 列表")
+
+
+class EmbeddingDeleteBySourceRequest(BaseModel):
+    """按 source_id 删除请求（POST /delete-by-source）"""
+    model_config = ConfigDict(populate_by_name=True)
+
+    sourceId: str = Field(..., min_length=1, description="来源 ID")
 
 
 class EmbeddingSearchRequest(BaseModel):

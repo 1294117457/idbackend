@@ -378,7 +378,7 @@ class UserService:
         role_ids: List[int],
     ) -> None:
         """分配用户角色"""
-        await RoleRepository.assign_roles(db, user_id, role_ids)
+        await UserRepository.assign_roles(db, user_id, role_ids)
         await UserService.clear_user_cache(user_id)
 
     @staticmethod

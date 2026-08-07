@@ -14,7 +14,7 @@ v4.7 设计变更：
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.dependencies import get_db
@@ -28,9 +28,9 @@ from src.models import ProofStatus
 router = APIRouter(prefix="/api/proof", tags=["证明材料"])
 
 
-@router.get("/list/{application_id}")
+@router.get("/list")
 async def list_proofs(
-    application_id: int,
+    applicationId: int = Query(..., ge=1),
     db: AsyncSession = Depends(get_db),
 ):
     """获取申请的 proof 列表"""
@@ -38,7 +38,7 @@ async def list_proofs(
     if not user_id:
         return R.unauthorized_resp("未登录")
 
-    application = await ApplicationService.get_by_id(db, application_id)
+    application = await ApplicationService.get_by_id(db, applicationId)
     if not application:
         return R.not_found_resp("申请不存在")
     if application.user_id != user_id:

@@ -90,13 +90,9 @@ class FileService:
             content_type=metadata.content_type,
         )
 
-        # 第 2 步：标记 DB 对象（框架 commit 在路由 return 时发生）
+        # 第 2 步：写入 DB 元数据
         self._db.add(metadata)
-
-        # ↑ 如果框架 commit 失败：
-        #    - DB rollback（数据不写入）
-        #    - MinIO 对象留下孤儿
-        #    - 定期清理任务处理（最终一致性）
+        await self._db.flush()
 
         # 返回下载签名 URL（带 attachment），1 小时有效
         return metadata, self._storage.get_presigned_download_url(

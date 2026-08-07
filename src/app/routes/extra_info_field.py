@@ -1,20 +1,21 @@
 """学生扩展字段管理路由
 
-REST 接口约定：
+接口约定：
 - 前缀：/api/extra-info-field
 - 鉴权：PermissionMiddleware 已按权限码校验
 - 路由层只做三件事：接 DTO → 调 service → 包 R 响应
 - 零 try/except：业务异常由全局 exception_handlers 自动翻译
 
-权限码：
-  extra_info_field:read    - GET 全部接口
-  extra_info_field:create  - POST
-  extra_info_field:update  - PUT
-  extra_info_field:delete  - DELETE
+权限码（init_rbac_data.py 中注册）：
+  extra_info:list    - GET /list, /active
+  extra_info:detail  - GET /detail
+  extra_info:create  - POST (create)
+  extra_info:update  - POST /update
+  extra_info:delete  - POST /delete
 """
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Path, Query
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.dependencies import get_db
@@ -22,6 +23,7 @@ from src.app import response as R
 from src.app.schemas.extra_info_field import (
     ExtraInfoFieldCreateRequest,
     ExtraInfoFieldUpdateRequest,
+    ExtraInfoFieldDeleteRequest,
     ExtraInfoFieldPageQueryRequest,
     ExtraInfoFieldVO,
 )
@@ -54,13 +56,13 @@ async def get_active_fields(
     ])
 
 
-@router.get("/{field_id}")
+@router.get("/detail")
 async def get_field_detail(
-    field_id: int = Path(..., ge=1),
+    id: int = Query(..., ge=1),
     db: AsyncSession = Depends(get_db),
 ):
     """字段详情"""
-    field = await ExtraInfoFieldService.get_by_id(db, field_id)
+    field = await ExtraInfoFieldService.get_by_id(db, id)
     return R.query_resp(ExtraInfoFieldVO.from_orm_to_vo(field).model_dump())
 
 
@@ -79,25 +81,24 @@ async def create_field(
     )
 
 
-@router.put("/{field_id}")
+@router.post("/update")
 async def update_field(
-    field_id: int = Path(..., ge=1),
-    req: ExtraInfoFieldUpdateRequest = ...,
+    req: ExtraInfoFieldUpdateRequest,
     db: AsyncSession = Depends(get_db),
 ):
     """修改字段"""
-    field = await ExtraInfoFieldService.update(db, field_id, req)
+    field = await ExtraInfoFieldService.update(db, req.id, req)
     return R.success_resp(
         ExtraInfoFieldVO.from_orm_to_vo(field).model_dump(),
         msg="更新成功",
     )
 
 
-@router.delete("/{field_id}")
+@router.post("/delete")
 async def delete_field(
-    field_id: int = Path(..., ge=1),
+    req: ExtraInfoFieldDeleteRequest,
     db: AsyncSession = Depends(get_db),
 ):
     """删除字段"""
-    await ExtraInfoFieldService.delete(db, field_id)
+    await ExtraInfoFieldService.delete(db, req.id)
     return R.success_resp(msg="删除成功")

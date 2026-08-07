@@ -1,21 +1,23 @@
 """模板分类管理路由（Layer 1）
 
-REST 接口约定：
+接口约定：
 - 前缀：/api/template-category
 - 鉴权：PermissionMiddleware 已按权限码校验
 - 路由层只做三件事：接 DTO → 调 service → 包 R 响应。
   **零 try/except**：业务异常由全局 exception_handlers 自动翻译。
 - DTO ↔ ORM 转换由 schema 完成，service 拿到的就是 ORM
 
-权限码（seed_permissions.py 中注册）：
-  template_category:read    - GET 全部接口
-  template_category:create  - POST
-  template_category:update  - PUT
-  template_category:delete  - DELETE
+权限码（init_rbac_data.py 中注册）：
+  template_category:list            - GET /list
+  template_category:detail          - GET /detail
+  template_category:delete_preview  - GET /delete-preview
+  template_category:create          - POST (create)
+  template_category:update          - POST /update
+  template_category:delete          - POST /delete
 """
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Path, Query
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.dependencies import get_db
@@ -23,6 +25,7 @@ from src.app import response as R
 from src.app.schemas.template_category import (
     TemplateCategoryCreateRequest,
     TemplateCategoryUpdateRequest,
+    TemplateCategoryDeleteRequest,
     TemplateCategoryListQueryRequest,
     TemplateCategoryPageQueryRequest,
     TemplateCategoryVO,
@@ -64,25 +67,25 @@ async def get_leaf_categories(
     )
 
 
-@router.get("/{category_id}")
+@router.get("/detail")
 async def get_category_detail(
-    category_id: int = Path(..., ge=1),
+    id: int = Query(..., ge=1),
     db: AsyncSession = Depends(get_db),
 ):
     """分类详情（含完整路径）。"""
-    category = await TemplateCategoryService.get_by_id(db, category_id)
-    path = await TemplateCategoryService.get_category_path(db, category_id)
+    category = await TemplateCategoryService.get_by_id(db, id)
+    path = await TemplateCategoryService.get_category_path(db, id)
     vo = TemplateCategoryDetailVO.from_orm_to_vo(category, path)
     return R.query_resp(vo.model_dump())
 
 
-@router.get("/{category_id}/delete-preview")
+@router.get("/delete-preview")
 async def get_delete_preview(
-    category_id: int = Path(..., ge=1),
+    id: int = Query(..., ge=1),
     db: AsyncSession = Depends(get_db),
 ):
     """删除预览（强提醒对话窗数据源）。"""
-    payload = await TemplateCategoryService.get_delete_preview(db, category_id)
+    payload = await TemplateCategoryService.get_delete_preview(db, id)
     vo = TemplateCategoryDeletePreviewVO.from_service_payload(payload)
     return R.query_resp(vo.model_dump())
 
@@ -102,27 +105,26 @@ async def create_category(
     )
 
 
-@router.put("/{category_id}")
+@router.post("/update")
 async def update_category(
-    category_id: int = Path(..., ge=1),
-    req: TemplateCategoryUpdateRequest = ...,
+    req: TemplateCategoryUpdateRequest,
     db: AsyncSession = Depends(get_db),
 ):
     """修改分类。DTO 整体交给 service：apply_to() 处理非空字段。"""
-    category = await TemplateCategoryService.update(db, category_id, req)
+    category = await TemplateCategoryService.update(db, req.id, req)
     return R.success_resp(
         TemplateCategoryVO.from_orm_to_vo(category).model_dump(),
         msg="更新成功",
     )
 
 
-@router.delete("/{category_id}")
+@router.post("/delete")
 async def delete_category(
-    category_id: int = Path(..., ge=1),
+    req: TemplateCategoryDeleteRequest,
     db: AsyncSession = Depends(get_db),
 ):
     """删除分类（级联）。"""
-    deleted_count = await TemplateCategoryService.delete(db, category_id)
+    deleted_count = await TemplateCategoryService.delete(db, req.id)
     return R.success_resp(
         {"deletedCount": deleted_count},
         msg=f"成功删除 {deleted_count} 个分类节点（含级联）",

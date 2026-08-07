@@ -4,7 +4,7 @@
 - /api/system/permission/list - 获取权限列表
 - /api/system/permission/create - 创建权限
 - /api/system/permission/update - 更新权限
-- /api/system/permission/{id} - 删除权限
+- /api/system/permission/delete - 删除权限
 - /api/system/permission/interfaces - 获取可绑定的接口列表
 
 架构约定（与 file/template_category 一致）：
@@ -13,7 +13,7 @@
 - VO 由 schema.from_orm_to_vo 生成
 """
 
-from fastapi import APIRouter, Depends, Path, Request
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.dependencies import get_db
@@ -21,6 +21,7 @@ from src.app import response as R
 from src.app.schemas.permission import (
     PermissionCreateRequest,
     PermissionUpdateRequest,
+    PermissionDeleteRequest,
     PermissionVO,
     ApiInterfaceVO,
 )
@@ -67,15 +68,15 @@ async def update_permission(
     return R.success_resp(msg="权限更新成功")
 
 
-@router.delete("/{permission_id}")
+@router.post("/delete")
 async def delete_permission(
-    permission_id: int = Path(..., ge=1),
+    req: PermissionDeleteRequest,
     db: AsyncSession = Depends(get_db),
 ):
     """删除权限"""
-    ok = await RbacService.delete_permission(db, permission_id)
+    ok = await RbacService.delete_permission(db, req.id)
     if not ok:
-        raise NotFoundError(f"权限不存在: id={permission_id}")
+        raise NotFoundError(f"权限不存在: id={req.id}")
     return R.success_resp(msg="权限删除成功")
 
 

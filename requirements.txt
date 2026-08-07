@@ -3,59 +3,44 @@ uvicorn[standard]>=0.30.0
 
 # ORM & Database
 sqlalchemy>=2.0.0
-asyncpg>=0.29.0
-psycopg2-binary>=2.9.0
-
-# Schema 同步改用 SQLAlchemy `Base.metadata.create_all()`（幂等建表），不再用 alembic。
-# 如未来需要 schema diff 管理，可重新引入 alembic>=1.13.0。
+asyncpg>=0.29.0              # SQLAlchemy 异步驱动（postgresql+asyncpg://）
+psycopg2-binary>=2.9.0       # SQLAlchemy 同步驱动（建表迁移用）
 
 # Redis
 redis>=5.0.0
 
 # Auth
 python-jose[cryptography]>=3.3.0
-passlib[bcrypt]>=1.7.4
-python-multipart>=0.0.9
+bcrypt>=4.1.0                # 密码哈希（jwt.py 直接 import）
+python-multipart>=0.0.9      # FastAPI UploadFile / Form 运行时依赖
 
 # File Storage (S3)
 boto3>=1.34.0
 
 # LLM & Agent
 langgraph>=0.1.0
-langchain>=0.3.0
-langchain-community>=0.3.0
 langchain-openai>=0.2.0
 langchain-text-splitters>=0.3.0
 
-# Vector (pgvector)
+# Vector (pgvector) & Numeric
 pgvector>=0.3.0
-
-# Text Processing
-tiktoken>=0.7.0
-
-# HTTP Client
-httpx>=0.27.0
+numpy>=1.26.0                # 向量 L2 归一化（embedding_service / models）
 
 # Utils
 pydantic>=2.9.0
 pydantic-settings>=2.6.0
-python-dotenv>=1.0.0
-aiofiles>=24.0.0
+python-dotenv>=1.0.0         # pydantic-settings 读 .env
 pillow>=10.0.0
 
-# Email
-aiosmtplib>=3.0.0
-
 # File Parsing（本地解析，不依赖 unstructured / torch）
-# 各格式独立轻量库，总计 ~25MB，对比 unstructured[all-docs] 省 ~3GB
-python-docx>=1.1.0       # .docx
-python-pptx>=1.0.0       # .pptx
-openpyxl>=3.1.5          # .xlsx
-xlrd>=2.0.2              # .xls（旧格式）
-beautifulsoup4>=4.12.0   # .html / .htm
-markdown>=3.6.0          # .md
-pytesseract>=0.3.10      # OCR 占位（暂未调用，未来接云 OCR）
-pdfplumber>=0.11.0       # .pdf
+python-docx>=1.1.0           # .docx
+python-pptx>=1.0.0           # .pptx
+openpyxl>=3.1.5              # .xlsx
+xlrd>=2.0.2                  # .xls（旧格式）
+beautifulsoup4>=4.12.0       # .html / .htm
+lxml>=5.0.0                  # BeautifulSoup 解析器后端
+markdown>=3.6.0              # .md
+pdfplumber>=0.11.0           # .pdf
 
 # Safe formula evaluation（ScoreCalculationService 计算引擎，禁止任意代码执行）
 simpleeval>=1.0.0

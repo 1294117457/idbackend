@@ -48,12 +48,13 @@ async def list_sessions(
     return R.query_resp(result)
 
 
-@router.delete("/sessions/{session_id}")
+@router.post("/sessions/delete")
 async def delete_session(
-    session_id: int,
+    req: dict,
     db: AsyncSession = Depends(get_db),
 ):
     """删除会话"""
+    session_id = req.get("id") or req.get("sessionId")
     user_id = get_user_id()
     service = get_ai_chat_service()
     result = await service.delete_session(db, session_id)

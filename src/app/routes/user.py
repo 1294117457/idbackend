@@ -14,6 +14,7 @@ from src.app.schemas.user import (
     CreateUserRequest,
     BatchCreateUserRequest,
     UserQueryRequest,
+    UserDeleteRequest,
     UserAdminListItemVO,
     UserAdminListVO,
     CurrentUserInfoVO,
@@ -78,22 +79,21 @@ async def get_my_roles():
     return R.query_resp(get_user_roles())
 
 
-@router.get("/{user_id}/roles")
+@router.get("/roles")
 async def get_user_roles_admin(
-    user_id: int,
+    userId: int = Query(..., ge=1),
     db: AsyncSession = Depends(get_db),
 ):
-    role_ids = await UserService.get_user_roles(db, user_id)
+    role_ids = await UserService.get_user_roles(db, userId)
     return R.query_resp(role_ids)
 
 
-@router.post("/{user_id}/roles")
+@router.post("/assign-roles")
 async def assign_user_roles(
-    user_id: int,
     req: AssignUserRolesRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    await UserService.assign_user_roles(db, user_id, req.roleIds)
+    await UserService.assign_user_roles(db, req.userId, req.roleIds)
     return R.success_resp(msg="角色分配成功")
 
 
@@ -117,22 +117,21 @@ async def list_users(
     return R.query_resp(page.model_dump())
 
 
-@router.delete("/admin/{user_id}")
+@router.post("/admin/delete")
 async def delete_user_admin(
-    user_id: int,
+    req: UserDeleteRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    await UserService.delete_user_with_raise(db, user_id)
+    await UserService.delete_user_with_raise(db, req.userId)
     return R.success_resp(msg="删除成功")
 
 
-@router.put("/admin/{user_id}/status")
+@router.post("/admin/update-status")
 async def update_user_status_admin(
-    user_id: int,
     req: UpdateUserStatusRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    await UserService.update_user_status(db, user_id, req.status)
+    await UserService.update_user_status(db, req.userId, req.status)
     return R.success_resp(msg="状态更新成功")
 
 

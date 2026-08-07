@@ -35,6 +35,7 @@ from src.app.schemas.file import (  # noqa: E402, F401
     FileUploadRequest,
     FileAvatarUploadRequest,
     FileUpdateRequest,
+    FileDeleteRequest,
     FileQueryRequest,
     FileVO,
     FileListVO,

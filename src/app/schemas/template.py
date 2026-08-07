@@ -166,10 +166,11 @@ class AttributeCreateRequest(BaseModel):
 
 
 class AttributeUpdateRequest(BaseModel):
-    """修改属性请求（所有字段可选）"""
+    """修改属性请求（POST /update，id 必填，其余可选）"""
 
     model_config = ConfigDict(extra="forbid")
 
+    id: int = Field(..., ge=1, description="属性 ID")
     name: Optional[str] = Field(None, min_length=1, max_length=100)
     groupCode: Optional[str] = Field(None, min_length=1, max_length=50)
     groupName: Optional[str] = Field(None, min_length=1, max_length=100)
@@ -240,6 +241,12 @@ class AttributeVO(BaseModel):
             description=obj.description,
             isActive=obj.is_active,
         )
+
+
+class AttributeDeleteRequest(BaseModel):
+    """删除属性请求（POST /delete）"""
+
+    id: int = Field(..., ge=1)
 
 
 class AttributeListVO(Page[AttributeVO]):
@@ -435,8 +442,16 @@ class TemplateCategoryListQueryRequest(BaseModel):
 # ============================================================
 
 class TemplateBindRuleRequest(BaseModel):
-    """template ↔ rule 绑定请求"""
+    """template ↔ rule 绑定请求（POST /bind-rule）"""
 
+    templateId: int = Field(..., ge=1, description="template ID")
+    ruleId: int = Field(..., ge=1, description="rule ID")
+
+
+class TemplateUnbindRuleRequest(BaseModel):
+    """template ↔ rule 解绑请求（POST /unbind-rule）"""
+
+    templateId: int = Field(..., ge=1, description="template ID")
     ruleId: int = Field(..., ge=1, description="rule ID")
 
 

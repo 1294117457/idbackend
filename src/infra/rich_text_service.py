@@ -103,23 +103,32 @@ class RichTextService:
     ) -> Optional[str]:
         """保存时：将 HTML 中的签名 URL 替换为占位符。
 
-        处理 /editor/{path}?签名 格式，将其替换为 editor://{path} 格式。
-        对于 /editor/temp/ 开头的文件，同时迁移到最终路径。
+        同时处理两种 URL 格式（兼容不同时期的签名输出）：
+        - /{bucket}/editor/{path}?签名  （MinIO 标准格式）
+        - /editor/{path}?签名          （旧版格式）
+        对于 editor/temp/ 开头的文件，同时迁移到最终路径。
+
+        查询参数中的 & 在 HTML 属性里可能被编码为 &amp;，
+        正则用 (?:&amp;|&) 兼容两种写法，避免全局替换破坏正文。
 
         输出格式: <img src="editor://{path}" ...>
         """
         if not html:
             return html
 
-        # 匹配所有 /editor/{path}?签名 格式
+        bucket = re.escape(self._storage._bucket)
+
+        # 查询参数部分：允许 & 或 &amp; 作为分隔符
+        _QS = r"""(?:\?(?:[^"'\s]|&amp;)*)?"""
+
+        # 匹配两种格式：/{bucket}/editor/... 或 /editor/...
         pattern = re.compile(
-            r'(src=["\'])/editor/([^"\'?\s&]+)(?:\?[^"\']*?)?(["\'])',
+            rf'(src=["\'])(?:/{bucket})?/editor/([^"\'?\s&]+){_QS}(["\'])',
             flags=re.IGNORECASE,
         )
 
-        # 去重处理
         seen: set[str] = set()
-        replacements: list[tuple[str, str]] = []  # (src_pattern, dst_placeholder)
+        replacements: list[tuple[str, str]] = []
 
         for match in pattern.finditer(html):
             path = match.group(2)
@@ -128,34 +137,28 @@ class RichTextService:
             seen.add(path)
 
             if path.startswith("temp/"):
-                # temp 文件：迁移到最终路径
-                filename = path[5:]  # 去掉 "temp/"
+                filename = path[5:]
                 src_key = f"editor/{path}"
                 dst_key = f"editor/{entity_type}/{entity_id}/{filename}"
 
-                # 复制到最终路径
                 ok = self._storage.copy_object(src_key, dst_key)
                 if not ok:
                     logger.warning(
                         "RichTextService.process_html: 复制文件失败 src=%s dst=%s",
                         src_key, dst_key,
                     )
-                    # 即使复制失败，也替换占位符（用最终路径的占位符）
                 else:
-                    # 删除临时文件
                     self._storage.delete(src_key)
 
                 dst_placeholder = f"editor://{entity_type}/{entity_id}/{filename}"
             else:
-                # 非 temp 文件：直接替换为占位符
                 dst_placeholder = f"editor://{path}"
 
             replacements.append((path, dst_placeholder))
 
-        # 执行替换
         for path, dst_placeholder in replacements:
             replace_pattern = re.compile(
-                rf'(src=["\'])/editor/{re.escape(path)}(?:\?[^"\']*?)?(["\'])',
+                rf'(src=["\'])(?:/{bucket})?/editor/{re.escape(path)}{_QS}(["\'])',
                 flags=re.IGNORECASE,
             )
             html = replace_pattern.sub(rf'\1{dst_placeholder}\2', html)

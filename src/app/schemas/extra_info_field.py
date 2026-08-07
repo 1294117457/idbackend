@@ -48,9 +48,10 @@ class ExtraInfoFieldCreateRequest(BaseModel):
 
 
 class ExtraInfoFieldUpdateRequest(BaseModel):
-    """修改字段请求体（所有字段可选）"""
+    """修改字段请求体（POST /update，id 必填，其余可选）"""
     model_config = ConfigDict(extra="forbid")
 
+    id: int = Field(..., ge=1, description="字段 ID")
     name: Optional[str] = Field(None, min_length=1, max_length=128)
     type: Optional[FIELD_TYPES] = Field(None)
     options: Optional[List[str]] = Field(None)
@@ -91,6 +92,12 @@ class ExtraInfoFieldUpdateRequest(BaseModel):
             and self.is_active is None
             and self.description is None
         )
+
+
+class ExtraInfoFieldDeleteRequest(BaseModel):
+    """删除字段请求（POST /delete）"""
+
+    id: int = Field(..., ge=1)
 
 
 class ExtraInfoFieldListQueryRequest(BaseModel):
@@ -143,6 +150,7 @@ __all__ = [
     "FIELD_TYPES",
     "ExtraInfoFieldCreateRequest",
     "ExtraInfoFieldUpdateRequest",
+    "ExtraInfoFieldDeleteRequest",
     "ExtraInfoFieldListQueryRequest",
     "ExtraInfoFieldPageQueryRequest",
     "ExtraInfoFieldVO",

@@ -5,7 +5,7 @@
 - 业务异常 → 由全局 exception_handlers 自动翻译为 HTTP 响应
 - VO 由 schema.from_orm_to_vo 生成
 """
-from fastapi import APIRouter, Depends, Path
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.dependencies import get_db
@@ -13,6 +13,7 @@ from src.app import response as R
 from src.app.schemas.role import (
     RoleCreateRequest,
     RoleUpdateRequest,
+    RoleDeleteRequest,
     RolePermissionAssignRequest,
     RoleVO,
     RoleDetailVO,
@@ -34,16 +35,16 @@ async def get_role_list(db: AsyncSession = Depends(get_db)):
     )
 
 
-@router.get("/{role_id}")
+@router.get("/detail")
 async def get_role_detail(
-    role_id: int = Path(..., ge=1),
+    id: int = Query(..., ge=1),
     db: AsyncSession = Depends(get_db),
 ):
     """获取角色详情"""
-    role = await RbacService.get_role_by_id(db, role_id)
+    role = await RbacService.get_role_by_id(db, id)
     if not role:
-        raise NotFoundError(f"角色不存在: id={role_id}")
-    permissions = await RbacService.get_role_permissions(db, role_id)
+        raise NotFoundError(f"角色不存在: id={id}")
+    permissions = await RbacService.get_role_permissions(db, id)
     return R.query_resp(RoleDetailVO.from_orm_to_vo(role, permissions).model_dump())
 
 
@@ -72,27 +73,25 @@ async def update_role(
     return R.success_resp(msg="角色更新成功")
 
 
-@router.delete("/{role_id}")
+@router.post("/delete")
 async def delete_role(
-    role_id: int = Path(..., ge=1),
+    req: RoleDeleteRequest,
     db: AsyncSession = Depends(get_db),
 ):
     """删除角色"""
-    ok = await RbacService.delete_role(db, role_id)
+    ok = await RbacService.delete_role(db, req.id)
     if not ok:
-        raise NotFoundError(f"角色不存在: id={role_id}")
+        raise NotFoundError(f"角色不存在: id={req.id}")
     return R.success_resp(msg="角色删除成功")
 
 
-@router.get("/{role_id}/permissions")
+@router.get("/permissions")
 async def get_role_permissions(
-    role_id: int = Path(..., ge=1),
+    roleId: int = Query(..., ge=1),
     db: AsyncSession = Depends(get_db),
 ):
     """获取角色的权限列表"""
-    from src.app.schemas.permission import PermissionVO
-
-    permissions = await RbacService.get_role_permissions(db, role_id)
+    permissions = await RbacService.get_role_permissions(db, roleId)
     return R.query_resp(
         [PermissionInRoleVO.from_orm_to_vo(p).model_dump() for p in permissions]
     )

@@ -70,6 +70,12 @@ class RoleUpdateRequest(BaseModel):
         return modified
 
 
+class RoleDeleteRequest(BaseModel):
+    """删除角色请求（POST /delete）"""
+
+    id: int = Field(..., ge=1)
+
+
 class RolePermissionAssignRequest(BaseModel):
     """为角色分配权限"""
 
@@ -147,6 +153,7 @@ class RoleListVO(Page[RoleVO]):
 __all__ = [
     "RoleCreateRequest",
     "RoleUpdateRequest",
+    "RoleDeleteRequest",
     "RolePermissionAssignRequest",
     "RoleVO",
     "RoleDetailVO",

@@ -1,19 +1,20 @@
-"""Attribute 管理路由（v4 设计）
+"""Attribute 管理路由
 
-REST 接口约定（与 file.py 一致）：
+接口约定：
 - 前缀：/api/rule-attribute
 - 路由层只做三件事：接 DTO → 调 service → 包 R 响应
 - **零 try/except**：业务异常由全局 exception_handlers 自动翻译
 """
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Path, Query
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 
 from src.app import response as R
 from src.app.schemas.template import (
     AttributeCreateRequest,
     AttributeUpdateRequest,
+    AttributeDeleteRequest,
     AttributeVO,
     AttributeListVO,
 )
@@ -65,12 +66,12 @@ async def list_attributes(
     return R.query_resp(vo.model_dump())
 
 
-@router.get("/{attribute_id}")
+@router.get("/detail")
 async def get_attribute_detail(
-    attribute_id: int = Path(..., ge=1),
+    id: int = Query(..., ge=1),
 ):
     """属性详情"""
-    attribute = await AttributeService.get_by_id( attribute_id)
+    attribute = await AttributeService.get_by_id(id)
     return R.query_resp(AttributeVO.from_orm_to_vo(attribute).model_dump())
 
 
@@ -83,30 +84,29 @@ async def create_attribute(
     req: AttributeCreateRequest,
 ):
     """创建属性（service 内部校验 type / formula / group_name）"""
-    attribute = await AttributeService.create( req)
+    attribute = await AttributeService.create(req)
     return R.created_resp(
         AttributeVO.from_orm_to_vo(attribute).model_dump(),
         msg="属性创建成功",
     )
 
 
-@router.put("/{attribute_id}")
+@router.post("/update")
 async def update_attribute(
-    attribute_id: int = Path(..., ge=1),
-    req: AttributeUpdateRequest = ...,
+    req: AttributeUpdateRequest,
 ):
     """修改属性（service 校验 type 变化时的 value / 区间）"""
-    attribute = await AttributeService.update( attribute_id, req)
+    attribute = await AttributeService.update(req.id, req)
     return R.success_resp(
         AttributeVO.from_orm_to_vo(attribute).model_dump(),
         msg="更新成功",
     )
 
 
-@router.delete("/{attribute_id}")
+@router.post("/delete")
 async def delete_attribute(
-    attribute_id: int = Path(..., ge=1),
+    req: AttributeDeleteRequest,
 ):
     """删除属性（FK CASCADE 自动清理 rule_attribute 行，不影响 application 历史）"""
-    await AttributeService.delete( attribute_id)
+    await AttributeService.delete(req.id)
     return R.success_resp(msg="删除成功")

@@ -69,10 +69,9 @@ class FileAvatarUploadRequest(BaseModel):
 
 
 class FileUpdateRequest(BaseModel):
-    """文件元信息更新请求——目前仅支持重命名
+    """文件元信息更新请求（POST /update，id 必填）"""
 
-    DTO 承担"非空字段写回 ORM"职责，service 不再判断字段是否非空。
-    """
+    id: int = Field(..., ge=1, description="文件 ID")
     originalName: Optional[str] = Field(default=None, description="新文件名")
 
     def apply_to(self, meta: FileMetadata) -> bool:
@@ -85,6 +84,12 @@ class FileUpdateRequest(BaseModel):
             meta.original_name = self.originalName
             modified = True
         return modified
+
+
+class FileDeleteRequest(BaseModel):
+    """删除文件请求（POST /delete）"""
+
+    id: int = Field(..., ge=1)
 
 
 class FileQueryRequest(BaseModel):

@@ -15,6 +15,7 @@ from src.app.schemas import (
     FileUploadRequest,
     FileAvatarUploadRequest,
     FileUpdateRequest,
+    FileDeleteRequest,
     FileQueryRequest,
     FileVO,
     FileDataVO,
@@ -136,20 +137,14 @@ async def search_files(
 # ============ 3. 预览 / 下载（v8.0 统一接口）============
 
 
-@router.get("/{file_id}/preview")
+@router.get("/preview")
 async def get_preview(
-    file_id: int,
+    id: int = Query(..., ge=1),
     service: FileService = Depends(get_file_service),
 ):
-    """直接预览文件——支持 PDF、图片、Word(docx)
-
-    行为：
-    - 支持类型：PDF、图片、Word(docx)，直接返回原字节
-    - 不支持类型：抛 UnsupportedMediaTypeError
-    - 超过大小阈值：413
-    """
+    """直接预览文件——支持 PDF、图片、Word(docx)"""
     try:
-        meta, data = await service.get_preview_for_inline(file_id)
+        meta, data = await service.get_preview_for_inline(id)
     except UnsupportedMediaTypeError:
         return R.success_resp({"unsupported": True})
 
@@ -166,9 +161,9 @@ async def get_preview(
     )
 
 
-@router.get("/{file_id}/download-url")
+@router.get("/download-url")
 async def get_download_url(
-    file_id: int,
+    id: int = Query(..., ge=1),
     expiryMinutes: int = Query(
         60,
         ge=1,
@@ -177,28 +172,27 @@ async def get_download_url(
     ),
     service: FileService = Depends(get_file_service),
 ):
-    vo = await service.get_download_data(file_id, expiryMinutes)
+    vo = await service.get_download_data(id, expiryMinutes)
     return R.query_resp(vo.model_dump())
 
 
 # ============ 4. 更新 / 删除 ============
 
-@router.put("/{file_id}")
+@router.post("/update")
 async def update_file(
-    file_id: int,
     req: FileUpdateRequest,
     service: FileService = Depends(get_file_service),
 ):
     """更新文件元信息（仅支持更新 originalName）"""
-    vo = await service.update_file(req, file_id)
+    vo = await service.update_file(req, req.id)
     return R.success_resp(vo.model_dump(), msg="文件信息已更新")
 
 
-@router.delete("/{file_id}")
+@router.post("/delete")
 async def delete_file(
-    file_id: int,
+    req: FileDeleteRequest,
     service: FileService = Depends(get_file_service),
 ):
     """软删除文件"""
-    await service.delete_file(file_id)
+    await service.delete_file(req.id)
     return R.success_resp(msg="删除成功")

@@ -154,6 +154,12 @@ class PermissionUpdateRequest(BaseModel):
         return modified
 
 
+class PermissionDeleteRequest(BaseModel):
+    """删除权限请求（POST /delete）"""
+
+    id: int = Field(..., ge=1)
+
+
 # ========== 响应 VO ==========
 
 class PermissionVO(BaseModel):
@@ -222,6 +228,7 @@ class ApiInterfaceVO(BaseModel):
 __all__ = [
     "PermissionCreateRequest",
     "PermissionUpdateRequest",
+    "PermissionDeleteRequest",
     "PermissionVO",
     "PermissionListVO",
     "ApiInterfaceVO",
