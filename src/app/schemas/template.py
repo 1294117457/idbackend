@@ -344,6 +344,8 @@ class TemplateVO(BaseModel):
 
     @classmethod
     def from_orm_to_vo(cls, obj) -> "TemplateVO":
+        # ★FIX: 优先用 ORM 的 _signed_description（list 等只读接口在 service 内
+        # 已经签名，但不写回 ORM.description），否则用 ORM.description。
         return cls(
             id=obj.id,
             name=obj.name,
@@ -351,7 +353,7 @@ class TemplateVO(BaseModel):
             maxScore=_format_decimal(obj.max_score),
             reviewCount=obj.review_count,
             sortOrder=obj.sort_order,
-            description=obj.description,
+            description=getattr(obj, "_signed_description", None) or obj.description,
             isActive=obj.is_active,
             isRepeated=obj.is_repeated,
         )

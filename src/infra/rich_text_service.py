@@ -54,48 +54,77 @@ class RichTextService:
         entity_id: int,
         expiry: int = 3600,
     ) -> Optional[str]:
-        """渲染时：将 HTML 中的占位符替换为预签名 URL。
+        """渲染时：将 HTML 中的占位符 + 脏 URL 统一替换为新的预签名 URL。
 
-        返回格式: /editor/{path}?签名参数
+        返回格式: /{bucket}/editor/{path}?签名参数
         供 Vite 代理到 MinIO。
 
-        占位符格式：
-        - editor://temp/{filename} -> 签名 /editor/temp/{filename}?签名
-        - editor://{entity}/{id}/{filename} -> 签名 /editor/{entity}/{id}/{filename}?签名
+        正常路径：
+        - editor://temp/{filename} -> 签名 /{bucket}/editor/temp/{filename}?签名
+        - editor://{entity}/{id}/{filename} -> 签名 /{bucket}/editor/{entity}/{id}/{filename}?签名
+
+        兜底路径（脏数据兼容）：
+        - /{bucket}/editor/{path}?X-Amz-... -> 重新签发 /{bucket}/editor/{path}?新签名
+        - /editor/{path}?X-Amz-...          -> 重新签发 /{bucket}/editor/{path}?新签名
         """
         if not html:
             return html
 
-        paths = RichText.extract_filenames(html)
-        if not paths:
+        # 1. 解析所有需要签名的路径（包括占位符与脏 URL）
+        placeholder_paths = RichText.extract_filenames(html)
+        dirty_paths = RichText.extract_paths_from_dirty_urls(html)
+        all_paths = set(placeholder_paths) | set(dirty_paths)
+        if not all_paths:
             return html
 
-        bucket = self._storage._bucket
-        url_map = {}
-        for path in paths:
+        # 2. 为每个 path 重新签发 URL
+        url_map: dict[str, str] = {}
+        for path in all_paths:
             object_name = f"editor/{path}"
-            # 获取带签名的相对路径：/{bucket}/editor/{path}?sig...
             signed_path = self._storage.get_presigned_download_url(
                 key=object_name,
                 original_name=None,
                 expiry=expiry,
                 as_attachment=False,
             )
-            # 去掉 /{bucket} 前缀，只保留 /editor/{path}?sig 格式
-            # MinIO 返回格式: /{bucket}/editor/{path}?sig
-            # bucket_prefix = f"/{bucket}/"
-            # if signed_path.startswith(bucket_prefix):
-                # signed_path = signed_path[len(bucket_prefix):]  # 去掉 /{bucket}/
-            # 确保以 /editor/ 开头
-            # if not signed_path.startswith("/editor/"):
-            #     signed_path = "/" + signed_path
             url_map[path] = signed_path
 
-        return RichText.replace_in_html(html, url_map)
+        # 3. 先替换占位符 (editor://xxx -> 签名 URL)
+        html = RichText.replace_in_html(html, url_map)
+
+        # 4. 再替换脏 URL (/bucket/editor/xxx?sig -> 新签名 URL / /editor/xxx?sig -> 新签名 URL)
+        html = self._replace_legacy_signed_urls(html, url_map)
+
+        return html
+
+    def _replace_legacy_signed_urls(
+        self,
+        html: str,
+        url_map: dict[str, str],
+    ) -> str:
+        """刷新已签名的脏 URL。匹配两种格式：
+
+        - src="/{bucket}/editor/{path}?X-Amz-..."
+        - src="/editor/{path}?X-Amz-..."
+        """
+        bucket = re.escape(self._storage._bucket)
+        # 匹配 (src=")  + (前缀) + /editor/{path} + (可选 query) + (")
+        legacy_pattern = re.compile(
+            rf'(src=["\'])(?:/{bucket})?/editor/([^"\'?\s&]+)(?:\?[^"\']*)?(["\'])',
+            flags=re.IGNORECASE,
+        )
+
+        def _sub(match):
+            prefix = match.group(1)
+            path = match.group(2)
+            suffix = match.group(3)
+            return f"{prefix}{url_map.get(path, '')}{suffix}"
+
+        return legacy_pattern.sub(_sub, html)
 
     # ---- 保存时：签名 URL -> 占位符 ----
 
-    def process_html(
+    async def process_html(
         self,
         html: Optional[str],
         entity_type: str,
@@ -148,7 +177,7 @@ class RichTextService:
                         src_key, dst_key,
                     )
                 else:
-                    self._storage.delete(src_key)
+                    await self._storage.delete(src_key)
 
                 dst_placeholder = f"editor://{entity_type}/{entity_id}/{filename}"
             else:

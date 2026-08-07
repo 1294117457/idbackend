@@ -32,7 +32,8 @@ async_engine = create_async_engine(
     pool_recycle=1800,
     connect_args={
         "timeout": 5,                 # asyncpg 连接超时 5s
-        "command_timeout": 10,        # 单个 SQL 命令超时 10s（慢查询直接杀）
+        "command_timeout": 30,        # 单个 SQL 命令超时 30s（修复 issue：UPDATE_TEMPLATE 触发 PG 锁等待时被 10s 误杀）
+        "statement_cache_size": 0,    # 禁用 prepared statement 缓存，兼容 PgBouncer/PG 13+ prepared 失效场景
     },
 )
 

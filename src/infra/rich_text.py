@@ -17,6 +17,17 @@ _EMPTY_IMG_PATTERN = re.compile(
     r"""<img\b[^>]*?\bsrc=["']["'][^>]*?/?>""",
     flags=re.IGNORECASE,
 )
+# 兜底：从脏数据中识别"残留的预签名 URL"，提取 path
+# 匹配：
+#   /{bucket}/editor/{path}?X-Amz-...
+#   /editor/{path}?X-Amz-...
+#   /{bucket}/editor/{path}
+#   /editor/{path}
+# 全部截到第一个 ? / " / ' / 空白为止
+_DIRTY_SRC_PATTERN = re.compile(
+    r"""(src=["'])(?:/[^/"'\s]+)?/editor/([^"'\s?>]+)(?:\?[^"']*)?["']""",
+    flags=re.IGNORECASE,
+)
 
 
 class RichText:
@@ -25,12 +36,31 @@ class RichText:
     @staticmethod
     def extract_filenames(html: Optional[str]) -> list[str]:
         """从 HTML 提取所有占位符路径（去重）。
-        
+
         返回完整路径，如 "temp/abc.png" 或 "template/123/abc.png"。
         """
         if not html:
             return []
         return list(set(match.group(2) for match in _IMG_SRC_PATTERN.finditer(html)))
+
+    @staticmethod
+    def extract_paths_from_dirty_urls(html: Optional[str]) -> list[str]:
+        """兜底：从 DB 里残留的预签名 URL 中提取 ObjectKey 路径。
+
+        用于兼容历史脏数据：DB 里直接存了 /{bucket}/editor/...?X-Amz-...
+        却没有经过 process_html 转占位符的场景。修复后这些脏 URL 应当被
+        业务侧脚本清理；这里是渲染时的最后一道防线。
+
+        返回值是完整 key（不含 "editor/" 前缀），例如
+        "template/39/1fce624e69f3417b9af6b726600c8b64.png"。
+
+        行为与 extract_filenames 互不重叠：
+        - extract_filenames 匹配 editor://...
+        - 本方法匹配 /editor/... 或 /{bucket}/editor/...
+        """
+        if not html:
+            return []
+        return list(set(m.group(2) for m in _DIRTY_SRC_PATTERN.finditer(html)))
 
     @staticmethod
     def build_storage_key(entity_type: str, entity_id: int, filename: str) -> str:

@@ -71,8 +71,10 @@ class TemplateService:
             offset=(req.pageNum - 1) * req.pageSize,
             limit=req.pageSize,
         )
+        # ★FIX: 不要写回 ORM.description（否则 framework commit 会把预签名 URL 写回 DB）。
+        # 把 signed_description 暂存到 ORM 的临时属性，VO 构造时取它。
         for t in templates:
-            t.description = rich_text_service.sign_html(
+            t._signed_description = rich_text_service.sign_html(
                 t.description,
                 entity_type="template",
                 entity_id=t.id,
@@ -94,8 +96,10 @@ class TemplateService:
         templates = await TemplateRepository.list_by_category(
             db, category_id, is_active=is_active,
         )
+        # ★FIX: 不要写回 ORM.description（避免 framework commit 写回 DB）。
+        # 暂存到 _signed_description，VO 构造时取它。
         for t in templates:
-            t.description = rich_text_service.sign_html(
+            t._signed_description = rich_text_service.sign_html(
                 t.description,
                 entity_type="template",
                 entity_id=t.id,
@@ -112,11 +116,13 @@ class TemplateService:
         """单条查询，找不到抛 NotFoundError。
 
         返回前做富文本占位替换。
+        ★FIX：sign_html 写到临时属性 _signed_description，不污染 ORM.description，
+        否则框架 commit 时会把预签名 URL 写回 DB（破坏占位符语义）。
         """
         template = await TemplateRepository.get_by_id(db, template_id)
         if template is None:
             raise NotFoundError(f"模板(id={template_id})不存在")
-        template.description = rich_text_service.sign_html(
+        template._signed_description = rich_text_service.sign_html(
             template.description,
             entity_type="template",
             entity_id=template_id,
@@ -135,11 +141,13 @@ class TemplateService:
         使用 selectinload，3 条 SQL 拿到全部数据，无 N+1。
 
         返回前做富文本占位替换。
+        ★FIX：sign_html 写到临时属性 _signed_description，不污染 ORM.description，
+        否则框架 commit 时会把预签名 URL 写回 DB（破坏占位符语义）。
         """
         template = await TemplateRepository.get_with_rules(db, template_id)
         if template is None:
             raise NotFoundError(f"模板(id={template_id})不存在")
-        template.description = rich_text_service.sign_html(
+        template._signed_description = rich_text_service.sign_html(
             template.description,
             entity_type="template",
             entity_id=template_id,
@@ -187,7 +195,7 @@ class TemplateService:
         db.add(template)
 
         # v10：占位迁移 temp->最终路径
-        template.description = rich_text_service.process_html(
+        template.description = await rich_text_service.process_html(
             template.description,
             entity_type="template",
             entity_id=template.id,
@@ -198,7 +206,9 @@ class TemplateService:
         await TemplateCategoryService.bind_template(db, req.categoryId)
 
         # v9：占位替换（新建场景通常没有富文本，但保持接口一致性）
-        template.description = rich_text_service.sign_html(
+        # ★FIX：sign_html 写到临时属性 _signed_description，不污染 ORM.description，
+        # 否则 framework commit 会把预签名 URL 写回 DB（破坏占位符语义）。
+        template._signed_description = rich_text_service.sign_html(
             template.description,
             entity_type="template",
             entity_id=template.id,
@@ -227,7 +237,7 @@ class TemplateService:
         modified = req.apply_to(template)
         if modified:
             # v10：占位迁移 temp->最终路径
-            template.description = rich_text_service.process_html(
+            template.description = await rich_text_service.process_html(
                 template.description,
                 entity_type="template",
                 entity_id=template_id,
@@ -368,7 +378,7 @@ class TemplateService:
         template_id = template.id
 
         # v10：占位迁移 temp->最终路径
-        template.description = rich_text_service.process_html(
+        template.description = await rich_text_service.process_html(
             template.description,
             entity_type="template",
             entity_id=template_id,
@@ -401,6 +411,7 @@ class TemplateService:
         template = await TemplateService.get_by_id(
             db, storage, rich_text_service, req.templateId,
         )
+
         old_category_id = template.category_id
 
         if template.category_id != req.template.categoryId:
@@ -410,7 +421,7 @@ class TemplateService:
         req.template.apply_to(template)
 
         # v10：占位迁移 temp->最终路径
-        template.description = rich_text_service.process_html(
+        template.description = await rich_text_service.process_html(
             template.description,
             entity_type="template",
             entity_id=req.templateId,
@@ -495,16 +506,30 @@ class TemplateService:
         """加载 template（含 rules）→ 组装 TemplateSaveResponse
 
         复用 get_with_rules + is_mixed_type 的逻辑（v9：含 description 占位替换）。
+
+        ★重要：不要调用 TemplateService.get_with_rules（它会 sign_html 修改 ORM.description，
+        进而被框架 commit 写回 DB）。这里用 repo.get_with_rules 拿 ORM，
+        然后**只对返回值局部变量做 sign_html**，不污染 ORM。
         """
-        template = await TemplateService.get_with_rules(
-            db, storage, rich_text_service, template_id,
-        )
+        template = await TemplateRepository.get_with_rules(db, template_id)
+        if template is None:
+            raise NotFoundError(f"模板(id={template_id})不存在")
         is_mixed = await TemplateService.is_mixed_type(db, template_id)
 
         sorted_rules = sorted(template.rules, key=lambda r: r.sort_order)
+        # ★关键：sign_html 只对局部变量做，不污染 ORM
+        # 用 dict 形式覆盖 description 字段，构造临时对象给 VO 用
+        signed_description = rich_text_service.sign_html(
+            template.description,
+            entity_type="template",
+            entity_id=template_id,
+        )
         detail_vo = TemplateDetailVO.from_template_with_rules(
             template, sorted_rules, is_mixed
         )
+        # 直接覆盖 VO 的 description（VO 是新的，不会写回 DB）
+        if signed_description is not None:
+            detail_vo.description = signed_description
         bound_ids = [rule.id for rule in sorted_rules]
 
         return TemplateSaveResponse(

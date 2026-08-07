@@ -240,31 +240,42 @@ class TemplateRepository:
         template_id: int,
         new_rule_ids: List[int],
     ) -> None:
-        """全量替换 template 已绑 rule（DIFF 语义，依赖外层事务）
+        """全量替换 template 已绑 rule（依赖外层事务）
 
         流程：
-        1. 清旧：delete from template_rule where template_id = ?
-        2. 插新：insert 一批 (template_id, rule_id)（去重 + 过滤 None）
-        3. 不返回 rowcount；调用方决定何时 commit
+        1. 去重 + 过滤 None / 非法 int
+        2. 一条 delete 清旧
+        3. ORM insert(TemplateRule).values([...]) 一次性 batch 插新
+           （SA asyncpg dialect 走 executemany，比手写 VALUES list 更稳）
 
-        设计决策：
-        - 不用 DIFF（计算差集 + 局部 INSERT/DELETE）的原因：单条 SQL 容易理解，
-          一删一插在事务里原子完成，PG 上 N≤几十条 rule 的删除/插入开销可忽略
-        - 去重由 UNIQUE 约束兜底；为减少冲突仍预先去重
-        - 过滤 None：防止前端误传 null 进列表
+        为什么不继续用"DELETE RETURNING + INSERT SELECT unnest(...)" 单 SQL：
+        - SA 2.0 asyncpg dialect 在 bindparam(expanding=True) 处理单元素 list 时
+          会错误标量化，PG 端报 unnest(integer) does not exist。
+        - 单 SQL 路线对 PG 锁场景的稳定性收益其实很小——delete 和 insert 在同一
+          async session 的同一事务里串行执行，对调用方是原子的。
+        - ORM values() 写法不需要动态拼 SQL，list 长度为 0/1/N 都自然支持。
         """
-        # 1. 清旧
+        deduped_ids: List[int] = sorted({
+            int(r) for r in new_rule_ids if r is not None
+        })
+        if not deduped_ids:
+            # 仅删旧
+            await db.execute(
+                delete(TemplateRule).where(TemplateRule.template_id == template_id)
+            )
+            return
+
+        # 1) 清旧
         await db.execute(
             delete(TemplateRule).where(TemplateRule.template_id == template_id)
         )
-
-        # 2. 插新（去重 + 过滤 None）
-        deduped_ids = list({rid for rid in new_rule_ids if rid is not None})
-        if deduped_ids:
-            await db.execute(
-                insert(TemplateRule),
-                [{"template_id": template_id, "rule_id": rid} for rid in deduped_ids],
-            )
+        # 2) 一次性 batch 插新（SA 会按 dialect 自动选择 executemany）
+        await db.execute(
+            insert(TemplateRule).values([
+                {"template_id": template_id, "rule_id": rid}
+                for rid in deduped_ids
+            ])
+        )
 
     @staticmethod
     async def get_bound_rule_ids(
