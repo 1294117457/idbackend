@@ -78,56 +78,89 @@ class ApplicationService:
         )
 
     @staticmethod
-    async def _build_attribute_info(
+    async def _build_rule_info(
         db: AsyncSession,
         template_id: int,
         submitted_info: Optional[Dict[str, Any]],
     ) -> Dict[str, Any]:
-        """校验 + 清理 attribute_info 快照。
+        """校验 + 清理 rule_info 快照（v7 扁平结构）。
 
         行为：
           - submitted_info 为空时直接返回 {}
-          - 加载 template → rules → attributes，收集所有 active 的 attribute.name
-          - 只保留 key in valid_attr_names 的项；非法 key 静默过滤
-          - value 原样保留（不做类型转换）
+          - 加载 template → rules → attributes，建立 attr.name → rule.name 映射
+          - 校验顶层 key 必须是 rule.name（合法）
+          - 校验 value 必须是该 rule 下的 attribute.name（合法）
+          - 非法 key/value 静默过滤
 
-        为什么存 attribute.name 而不是 attribute.id：
+        输入结构（v7 扁平）：
+          {
+            "rule.name1": "attribute.name1",
+            "rule.name2": "attribute.name2"
+          }
+
+        为什么存 rule.name 而不是 attribute.id：
           - 读取时直接可读（不用解码）
-          - attribute 改名/删除不影响 application（快照独立）
+          - rule 改名/删除不影响 application（快照独立）
+          - CONDITION 单选语义：每个 rule 只对应一个 attribute.name
+          - TRANSFORM 不存 rule_info（apply_score / gain_score 已承载分数）
 
         Args:
             db: 异步会话
             template_id: 模板 ID
-            submitted_info: 前端提交的 attribute 快照
+            submitted_info: 前端提交的 rule 快照（扁平 {rule.name: attribute.name}）
 
         Returns:
-            校验通过后的 attribute_info 字典
+            校验通过后的 rule_info 字典（单层扁平 {rule.name: attribute.name}）
         """
         import logging
         logger = logging.getLogger(__name__)
 
         if not submitted_info:
-            logger.warning(f"[attribute_info] submitted_info 为空, template_id={template_id}")
+            logger.warning(f"[rule_info] submitted_info 为空, template_id={template_id}")
             return {}
 
         template = await TemplateRepository.get_with_rules(db, template_id)
         if template is None:
-            logger.warning(f"[attribute_info] template {template_id} 不存在")
+            logger.warning(f"[rule_info] template {template_id} 不存在")
             return {}
 
-        valid_attr_names: set[str] = set()
+        # 构建 rule.name → {attribute.name} 映射（v7 扁平：每个 rule 只关心它的 attr 集合）
+        valid_rules: dict[str, set[str]] = {}
         for rule in (template.rules or []):
+            if not getattr(rule, "is_active", True):
+                continue
+            attr_names: set[str] = set()
             for attr in (rule.attributes or []):
                 if getattr(attr, "is_active", True):
-                    valid_attr_names.add(attr.name)
+                    attr_names.add(attr.name)
+            if attr_names:
+                valid_rules[rule.name] = attr_names
 
-        result = {k: v for k, v in submitted_info.items() if k in valid_attr_names}
+        # ★ v7 扁平校验：value 必须是 string（attribute.name），且属于该 rule 下的 attribute
+        result: dict[str, str] = {}
+        for rule_name, attr_name in submitted_info.items():
+            if rule_name not in valid_rules:
+                # 兼容旧嵌套数据：如果 value 是 dict（旧数据残留），跳过
+                if isinstance(attr_name, dict):
+                    logger.warning(f"[rule_info] 顶层 value 是 dict（疑似嵌套旧数据），跳过: rule={rule_name}")
+                else:
+                    logger.info(f"[rule_info] rule.name 不合法: {rule_name}")
+                continue
+            if not isinstance(attr_name, str):
+                logger.warning(f"[rule_info] value 类型不是 str（rule={rule_name}, type={type(attr_name).__name__}）")
+                continue
+            valid_attrs = valid_rules[rule_name]
+            if attr_name not in valid_attrs:
+                logger.info(f"[rule_info] attribute.name 不在该 rule 下: rule={rule_name}, attr={attr_name}")
+                continue
+            # 同 rule.name 多次出现时，后者覆盖前者（前端逻辑）
+            result[rule_name] = attr_name
 
         logger.info(
-            f"[attribute_info] template_id={template_id} "
-            f"submitted_keys={list(submitted_info.keys())} "
-            f"valid_attr_names={sorted(valid_attr_names)} "
-            f"filtered_result={result}"
+            f"[rule_info] template_id={template_id} "
+            f"submitted={list(submitted_info.keys())} "
+            f"valid_rule_names={sorted(valid_rules.keys())} "
+            f"result={list(result.keys())}"
         )
 
         return result
@@ -142,9 +175,9 @@ class ApplicationService:
         """保存草稿（新建或更新 DRAFT）"""
         user_id = ApplicationService._current_user_id()
 
-        # ★ 校验并清理 attribute_info 快照（写入前过滤非法 key）
-        cleaned_attribute_info = await ApplicationService._build_attribute_info(
-            db, payload.templateId, payload.attributeInfo,
+        # ★ v7 校验并清理 rule_info 快照（两层嵌套：{rule.name: {attr.name: value}}）
+        cleaned_rule_info = await ApplicationService._build_rule_info(
+            db, payload.templateId, payload.ruleInfo,
         )
 
         if payload.applicationId is None:
@@ -152,7 +185,7 @@ class ApplicationService:
                 user_id=user_id,
                 status=ApplicationStatus.DRAFT.value,
             )
-            application.attribute_info = cleaned_attribute_info   # ★ 覆盖为过滤后的快照
+            application.rule_info = cleaned_rule_info       # ★ v7：覆盖为过滤后的快照
             await ApplicationRepository.insert(db, application)
 
             for proof in payload.build_proofs(application.id):
@@ -170,7 +203,7 @@ class ApplicationService:
                 )
 
             payload.apply_to_model(application, new_status=None)
-            application.attribute_info = cleaned_attribute_info   # ★ 覆盖为过滤后的快照
+            application.rule_info = cleaned_rule_info       # ★ v7：覆盖为过滤后的快照
 
             await ApplicationService._replace_proofs(db, application.id, payload.proofList)
 
@@ -193,16 +226,16 @@ class ApplicationService:
         )
         operator_name = await ApplicationService._user_full_name(db, user_id)
 
-        # ★ 校验并清理 attribute_info 快照
-        cleaned_attribute_info = await ApplicationService._build_attribute_info(
-            db, payload.templateId, payload.attributeInfo,
+        # ★ v7 校验并清理 rule_info 快照
+        cleaned_rule_info = await ApplicationService._build_rule_info(
+            db, payload.templateId, payload.ruleInfo,
         )
 
         application = payload.to_application_model(
             user_id=user_id,
             status=ApplicationStatus.APPLYING.value,
         )
-        application.attribute_info = cleaned_attribute_info   # ★ 覆盖为过滤后的快照
+        application.rule_info = cleaned_rule_info       # ★ v7：覆盖为过滤后的快照
         await ApplicationRepository.insert(db, application)
 
         for proof in payload.build_proofs(application.id):
@@ -244,12 +277,12 @@ class ApplicationService:
         event = application.submit(operator_id=user_id, operator_name=operator_name)  # 领域方法：状态校验 + 重置投票 + 返回事件
         payload.apply_to_model(application)
 
-        # ★ 校验并清理 attribute_info 快照（重提时允许修改快照）
-        if payload.attributeInfo is not None:
-            cleaned_attribute_info = await ApplicationService._build_attribute_info(
-                db, application.template_id, payload.attributeInfo,
+        # ★ v7 校验并清理 rule_info 快照（重提时允许修改快照）
+        if payload.ruleInfo is not None:
+            cleaned_rule_info = await ApplicationService._build_rule_info(
+                db, application.template_id, payload.ruleInfo,
             )
-            application.attribute_info = cleaned_attribute_info
+            application.rule_info = cleaned_rule_info
 
         await ApplicationService._replace_proofs(db, application.id, payload.proofList)
 

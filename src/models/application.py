@@ -143,11 +143,13 @@ class Application(Base, TimestampMixin):
         JSONB, nullable=True, default=list,
     )
 
-    # ★ attribute 快照（v6 新增）
-    # 提交时把用户在表单上选择/填写的 attribute 原样存为 {attribute.name: value}
-    # - 提交后与 attribute 表完全无关（attribute 改名/删除不影响 application）
-    # - 详见 docs/docs-backend/导出表格/attribute_info快照方案.md
-    attribute_info: Mapped[dict] = mapped_column(
+    # ★ rule 快照（v7 字段重命名 + 结构简化）
+    # 提交时把学生在表单上选择的 attribute 按 rule 分组，
+    # 存为 {rule.name: attribute.name} 的扁平结构
+    # - 一条 application 的每个 rule 只对应一个 attribute.name（CONDITION 单选语义）
+    # - TRANSFORM 类型不存 rule_info（apply_score / gain_score 已承载分数）
+    # - 提交后与 rule/attribute 表完全无关（rule 改名/删除不影响 application 快照）
+    rule_info: Mapped[dict] = mapped_column(
         JSONB,
         nullable=False,
         default=dict,
