@@ -29,9 +29,13 @@ APPLICATION_ATTR = "application_attr"       # app.rule_info[rule_name] → attri
 APPLICATION_STATUS = "application_status"   # app.status
 APPLICATION_REMARK = "application_remark"   # app.remark
 APPLICATION_FIELD = "application_field"     # app.<任意字段>（白名单）
+APPLICATION_WEIGHTED_SUM = "application_weighted_sum"  # 同 parent 下其他 application_* 列的加权求和（Excel 公式实现）
 
 # 容器节点（不直接出值，承载子列）
 CATEGORY = "category"
+
+# 自定义容器根列（前端"新增根列"按钮创建；只能作为父节点承载子列，不能直接出值）
+CUSTOM = "custom"
 
 ColumnSource = Literal[
     "user_basic",
@@ -42,7 +46,9 @@ ColumnSource = Literal[
     "application_status",
     "application_remark",
     "application_field",
+    "application_weighted_sum",
     "category",
+    "custom",
 ]
 
 # 必须挂 category 节点下的 source（"application 不能离开 template"）
@@ -53,6 +59,7 @@ CONSTRAINED_SOURCES = frozenset({
     APPLICATION_STATUS,
     APPLICATION_REMARK,
     APPLICATION_FIELD,
+    APPLICATION_WEIGHTED_SUM,
 })
 
 
@@ -92,6 +99,14 @@ class ExportColumnNode(BaseModel):
 
     # === 仅 application_field 列（Application ORM 白名单字段名） ===
     appField: Optional[str] = Field(default=None, max_length=50)
+
+    # === 仅 application_weighted_sum 列（加权求和） ===
+    # 通过 weightedColumnIds + weightedWeights 由后端生成 Excel 公式：
+    #   = w1 * B2:B5 + w2 * C2:C5 + ...
+    # 前端 chip 流程：用户在编辑弹窗内多选 sibling 子列 + 输入每个权重（0-1 比例），
+    # 生成新子列。前端根据 weightedColumnIds 自动生成 default label。
+    weightedColumnIds: Optional[List[str]] = Field(default=None, max_length=20)
+    weightedWeights: Optional[List[float]] = Field(default=None, max_length=20)
 
     # === 仅 user_basic 列 ===
     basicField: Optional[str] = Field(default=None, max_length=50)

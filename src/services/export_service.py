@@ -35,8 +35,10 @@ from src.app.schemas.export import (
     APPLICATION_GAIN,
     APPLICATION_REMARK,
     APPLICATION_STATUS,
+    APPLICATION_WEIGHTED_SUM,
     CATEGORY,
     CONSTRAINED_SOURCES,
+    CUSTOM,
     ExportColumnNode,
     ExportUsersRequest,
     USER_BASIC,
@@ -149,7 +151,7 @@ def _validate_columns(columns: List[ExportColumnNode]) -> None:
     抛出 BadRequestError 时直接返回 400 + 错误信息。
     """
     seen_ids: Set[str] = set()
-    valid_sources = set(CONSTRAINED_SOURCES) | {USER_BASIC, USER_EXTRA, CATEGORY}
+    valid_sources = set(CONSTRAINED_SOURCES) | {USER_BASIC, USER_EXTRA, CATEGORY, CUSTOM}
 
     def walk(node: ExportColumnNode, parent: Optional[ExportColumnNode]) -> None:
         # 1. source 白名单（理论上 Pydantic Literal 已拦截，这里防御性再校验）
@@ -228,6 +230,13 @@ def _validate_columns(columns: List[ExportColumnNode]) -> None:
             if node.basicField or node.fieldPath:
                 raise BadRequestError(
                     f"category 节点 '{node.label}' 不应携带 basicField / fieldPath"
+                )
+
+        # 9b. custom 节点必须是容器（必须有至少 1 个子列），否则成为空列
+        if node.source == CUSTOM:
+            if not node.children:
+                raise BadRequestError(
+                    f"自定义根列 '{node.label}' 必须至少包含 1 个子列（请在编辑弹窗中添加子列后再导出）"
                 )
 
         # 10. 递归子列
@@ -349,6 +358,73 @@ def _resolve_app_value(app: Application, col: ExportColumnNode) -> Any:
         # appField 指向 Application ORM 的任意白名单字段
         return _resolve_application_field(app, col.appField)
     return ""
+
+
+def _resolve_weighted_sum_formula(
+    col: ExportColumnNode,
+    coords: List[NodeCoord],
+    start_row: int,
+    row_count: int,
+) -> Optional[str]:
+    """构造 application_weighted_sum 列在某个学生的公式
+
+    返回形如 "=IFERROR(0.3*B2:B5,0) + IFERROR(0.7*C2:C5,0)" 的字符串（带等号）。
+
+    每一项都包裹 IFERROR(..,0)，原因：
+    - 加权列可能引用 application_attr（属性，文本）/ application_status（状态，文本）/
+      application_remark（备注，文本）。这些子列的值不是数字，Excel 在
+      `weight * 文本` 时会返回 #VALUE!，并污染整个 `+` 表达式。
+    - 用 IFERROR 把每一项独立兜底为 0，整列仍可正常求和（且不会显示 #VALUE!）。
+    - 如果用户选的都是 application_apply / application_gain / application_field(数字)，
+      IFERROR 不会触发，正常计算。
+
+    Args:
+        col: 当前 weighted_sum 列节点（含 weightedColumnIds + weightedWeights）
+        coords: 当前渲染范围内所有 coord（用于按 id 找 sibling）
+        start_row: 当前学生在 Excel 中的起始行（0-based）
+        row_count: 当前学生展开的总行数（max_count）
+    """
+    if not col.weightedColumnIds or not col.weightedWeights:
+        return None
+    if len(col.weightedColumnIds) != len(col.weightedWeights):
+        logger.warning(
+            "weighted_sum 列 '%s' 的 weightedColumnIds (%d) 和 weightedWeights (%d) 长度不一致",
+            col.label,
+            len(col.weightedColumnIds),
+            len(col.weightedWeights),
+        )
+        return None
+
+    from openpyxl.utils import get_column_letter
+
+    # 按 id 找 sibling coord 的快速查找
+    coords_by_id = {c.node.id: c for c in coords}
+
+    parts: List[str] = []
+    for child_id, weight in zip(col.weightedColumnIds, col.weightedWeights):
+        sibling_coord = coords_by_id.get(child_id)
+        if not sibling_coord:
+            logger.warning(
+                "weighted_sum 列 '%s' 引用了不存在的 sibling id: %s",
+                col.label,
+                child_id,
+            )
+            continue
+        col_letter = get_column_letter(sibling_coord.col_start + 1)
+        first_row = start_row + 1  # openpyxl 1-based
+        last_row = start_row + row_count
+        # 每项用 IFERROR(..,0) 独立兜底，避免任一非数字项污染整列
+        parts.append(
+            f"IFERROR({weight}*{col_letter}{first_row}:{col_letter}{last_row},0)"
+        )
+
+    if not parts:
+        return None
+    # 整体再用 IFERROR(..,"") 兜底：
+    # - 当整行所有项都为空/无效时（如某学生没有任何 application 数据，
+    #   所有 IFERROR 都返回 0），结果会是 0——这里改成 "" 显示空。
+    # - 任一正常数字项仍正常求和（IFERROR 不触发）。
+    return f"=IFERROR({' + '.join(parts)},\"\")"
 
 
 def _resolve_application_field(app: Application, app_field: Optional[str]) -> Any:
@@ -622,6 +698,28 @@ def _render_data(
         for coord in coords:
             node = coord.node
             if not node.children:
+                # application_weighted_sum 列：只写第 0 行公式
+                # （其他行留空 + 行高由后续 smart height 处理）
+                if node.source == APPLICATION_WEIGHTED_SUM:
+                    if r == 0:
+                        formula = _resolve_weighted_sum_formula(
+                            col=node,
+                            coords=coords,
+                            start_row=start_row,
+                            row_count=max_count,
+                        )
+                        if formula:
+                            cell = ws.cell(
+                                row=excel_row + 1,
+                                column=coord.col_start + 1,
+                                value=formula,
+                            )
+                            # 视觉上让单行公式在 N 行高度内居中显示
+                            cell.alignment = Alignment(
+                                horizontal="center", vertical="center", wrap_text=True
+                            )
+                    continue  # weighted_sum 列不进入普通 _resolve_leaf_value 逻辑
+
                 # 叶子节点：写值（即使 user_basic/user_extra 在多行重复也没关系，
                 # 后续 _merge_repeated_user_columns 会把相同值的连续 cell 合并）
                 value = _resolve_leaf_value(
@@ -653,6 +751,32 @@ def _render_data(
             row_count=max_count,
             coords=coords,
         )
+
+    # ══════ application_weighted_sum 列：合并 N 行 × 1 列 → 占满展开区域 ══════
+    # application_* 列在 max_count 个 application 行展开。weighted_sum 列如果只是
+    # 在第 0 行写公式 + 调高行高，视觉上只有左上角一个小单元格、内容很短。
+    # 这里把 weighted_sum 列在 (start_row+1, start_row+row_count) 这 N 个 cell
+    # 合并成一个，让"加权公式"视觉上占满整片展开区域（与 user_basic / user_extra
+    # 展开时的处理方式一致），并把行高恢复为普通单行高度（不强制放大）。
+    if max_count > 1:
+        for coord in coords:
+            if coord.node.source != APPLICATION_WEIGHTED_SUM:
+                continue
+            col_idx = coord.col_start + 1  # openpyxl 1-based
+            first_row = start_row + 1
+            last_row = start_row + max_count
+            ws.merge_cells(
+                start_row=first_row,
+                end_row=last_row,
+                start_column=col_idx,
+                end_column=col_idx,
+            )
+            # 合并后只在第一个 cell 有值，alignment 已是 center，写一次确保生效
+            ws.cell(
+                row=first_row, column=col_idx
+            ).alignment = Alignment(
+                horizontal="center", vertical="center", wrap_text=True
+            )
 
     return start_row + max_count
 
