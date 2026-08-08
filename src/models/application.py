@@ -21,7 +21,7 @@ from typing import Optional, List
 
 from sqlalchemy import (
     String, Integer, ForeignKey, DECIMAL, Numeric, Text, Enum as SAEnum, Index,
-    Boolean,
+    Boolean, text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -141,6 +141,17 @@ class Application(Base, TimestampMixin):
     # 用于"我是否审核过"的业务判断，辅助列表互斥分流
     reviewer_ids: Mapped[Optional[list[int]]] = mapped_column(
         JSONB, nullable=True, default=list,
+    )
+
+    # ★ attribute 快照（v6 新增）
+    # 提交时把用户在表单上选择/填写的 attribute 原样存为 {attribute.name: value}
+    # - 提交后与 attribute 表完全无关（attribute 改名/删除不影响 application）
+    # - 详见 docs/docs-backend/导出表格/attribute_info快照方案.md
+    attribute_info: Mapped[dict] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'::jsonb"),
     )
 
     # 关系

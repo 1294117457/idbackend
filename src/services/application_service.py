@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -38,6 +38,7 @@ from src.repositories import ApplicationRepository
 from src.services.score_data_service import ScoreDataService
 from src.services.template_service import TemplateService
 from src.repositories.template_repo import TemplateRepository
+from src.models.template import Template
 from src.app.context import get_user_id as _get_user_id, get_username as _get_username
 
 
@@ -76,6 +77,61 @@ class ApplicationService:
             remark=event.remark,
         )
 
+    @staticmethod
+    async def _build_attribute_info(
+        db: AsyncSession,
+        template_id: int,
+        submitted_info: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """校验 + 清理 attribute_info 快照。
+
+        行为：
+          - submitted_info 为空时直接返回 {}
+          - 加载 template → rules → attributes，收集所有 active 的 attribute.name
+          - 只保留 key in valid_attr_names 的项；非法 key 静默过滤
+          - value 原样保留（不做类型转换）
+
+        为什么存 attribute.name 而不是 attribute.id：
+          - 读取时直接可读（不用解码）
+          - attribute 改名/删除不影响 application（快照独立）
+
+        Args:
+            db: 异步会话
+            template_id: 模板 ID
+            submitted_info: 前端提交的 attribute 快照
+
+        Returns:
+            校验通过后的 attribute_info 字典
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+
+        if not submitted_info:
+            logger.warning(f"[attribute_info] submitted_info 为空, template_id={template_id}")
+            return {}
+
+        template = await TemplateRepository.get_with_rules(db, template_id)
+        if template is None:
+            logger.warning(f"[attribute_info] template {template_id} 不存在")
+            return {}
+
+        valid_attr_names: set[str] = set()
+        for rule in (template.rules or []):
+            for attr in (rule.attributes or []):
+                if getattr(attr, "is_active", True):
+                    valid_attr_names.add(attr.name)
+
+        result = {k: v for k, v in submitted_info.items() if k in valid_attr_names}
+
+        logger.info(
+            f"[attribute_info] template_id={template_id} "
+            f"submitted_keys={list(submitted_info.keys())} "
+            f"valid_attr_names={sorted(valid_attr_names)} "
+            f"filtered_result={result}"
+        )
+
+        return result
+
     # ── 学生端 ───────────────────────────────────────────────────────────
 
     @staticmethod
@@ -86,11 +142,17 @@ class ApplicationService:
         """保存草稿（新建或更新 DRAFT）"""
         user_id = ApplicationService._current_user_id()
 
+        # ★ 校验并清理 attribute_info 快照（写入前过滤非法 key）
+        cleaned_attribute_info = await ApplicationService._build_attribute_info(
+            db, payload.templateId, payload.attributeInfo,
+        )
+
         if payload.applicationId is None:
             application = payload.to_application_model(
                 user_id=user_id,
                 status=ApplicationStatus.DRAFT.value,
             )
+            application.attribute_info = cleaned_attribute_info   # ★ 覆盖为过滤后的快照
             await ApplicationRepository.insert(db, application)
 
             for proof in payload.build_proofs(application.id):
@@ -107,7 +169,8 @@ class ApplicationService:
                     f"申请当前状态 {application.status}，仅 DRAFT 可编辑",
                 )
 
-            payload.apply_to_model(application)
+            payload.apply_to_model(application, new_status=None)
+            application.attribute_info = cleaned_attribute_info   # ★ 覆盖为过滤后的快照
 
             await ApplicationService._replace_proofs(db, application.id, payload.proofList)
 
@@ -130,10 +193,16 @@ class ApplicationService:
         )
         operator_name = await ApplicationService._user_full_name(db, user_id)
 
+        # ★ 校验并清理 attribute_info 快照
+        cleaned_attribute_info = await ApplicationService._build_attribute_info(
+            db, payload.templateId, payload.attributeInfo,
+        )
+
         application = payload.to_application_model(
             user_id=user_id,
             status=ApplicationStatus.APPLYING.value,
         )
+        application.attribute_info = cleaned_attribute_info   # ★ 覆盖为过滤后的快照
         await ApplicationRepository.insert(db, application)
 
         for proof in payload.build_proofs(application.id):
@@ -174,6 +243,13 @@ class ApplicationService:
         operator_name = await ApplicationService._user_full_name(db, user_id)
         event = application.submit(operator_id=user_id, operator_name=operator_name)  # 领域方法：状态校验 + 重置投票 + 返回事件
         payload.apply_to_model(application)
+
+        # ★ 校验并清理 attribute_info 快照（重提时允许修改快照）
+        if payload.attributeInfo is not None:
+            cleaned_attribute_info = await ApplicationService._build_attribute_info(
+                db, application.template_id, payload.attributeInfo,
+            )
+            application.attribute_info = cleaned_attribute_info
 
         await ApplicationService._replace_proofs(db, application.id, payload.proofList)
 

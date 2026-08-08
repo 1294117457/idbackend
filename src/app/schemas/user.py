@@ -46,7 +46,10 @@ class UserQueryRequest(BaseModel):
 
 
 class UpdateUserMeRequest(BaseModel):
-    """更新用户账户信息（PUT /api/users/me）"""
+    """更新用户账户信息（PUT /api/users/me）
+
+    字段均为可选；空值不会被写入（前端不传 + 服务端 exclude_unset 过滤）。
+    """
     phone: Optional[str] = Field(default=None, max_length=15)
     full_name: Optional[str] = Field(default=None, max_length=100)
     avatar: Optional[str] = Field(default=None, max_length=500)
@@ -54,6 +57,20 @@ class UpdateUserMeRequest(BaseModel):
     enrollment_year: Optional[int] = Field(default=None, ge=2000, le=2100)
     graduation_year: Optional[int] = Field(default=None, ge=2000, le=2100)
     major: Optional[str] = Field(default=None, max_length=100)
+
+    # 导出表扁平字段（daily.md 238-239）
+    department: Optional[str] = Field(default=None, max_length=100, description="所在系")
+    student_id: Optional[str] = Field(default=None, max_length=50, description="学号")
+    gender: Optional[str] = Field(
+        default=None,
+        max_length=10,
+        description="性别：M（男）/ F（女）/ OTHER（其他）",
+    )
+    id_card_number: Optional[str] = Field(
+        default=None,
+        max_length=18,
+        description="身份证号",
+    )
 
 
 class UpdateUserExtraInfoRequest(BaseModel):
@@ -113,8 +130,13 @@ class UserAdminListItemVO(BaseModel):
     status: str
     lastLoginAt: Optional[str]
     fullName: Optional[str]
+    # ★ 来源语义变更：优先 users.student_id 列，为空 fallback 到 extract_student_id(username)
     studentId: Optional[str]
     major: Optional[str]
+    # 导出表扁平字段（daily.md 238-239）
+    department: Optional[str] = None
+    gender: Optional[str] = None
+    idCardNumber: Optional[str] = None
     grade: Optional[int]
     graduationYear: Optional[int]
     enrollmentYear: Optional[int]
@@ -131,8 +153,11 @@ class UserAdminListItemVO(BaseModel):
             status=obj.status,
             lastLoginAt=obj.last_login_at,
             fullName=obj.full_name,
-            studentId=obj.extract_student_id(obj.username),
+            studentId=obj.student_id or obj.extract_student_id(obj.username),
             major=obj.major,
+            department=obj.department,
+            gender=obj.gender,
+            idCardNumber=obj.id_card_number,
             grade=obj.grade,
             graduationYear=obj.graduation_year,
             enrollmentYear=obj.enrollment_year,
@@ -149,6 +174,7 @@ class UserAdminListVO(Page[UserAdminListItemVO]):
 class UserProfileVO(BaseModel):
     """用户账户信息 VO（GET /api/users/me）"""
     id: int
+    # ★ 来源语义变更：优先 users.student_id 列，为空 fallback 到 extract_student_id(username)
     studentId: Optional[str]
     username: str
     fullName: Optional[str]
@@ -158,6 +184,10 @@ class UserProfileVO(BaseModel):
     enrollmentYear: Optional[int]
     graduationYear: Optional[int]
     major: Optional[str]
+    # 导出表扁平字段（daily.md 238-239）
+    department: Optional[str] = None
+    gender: Optional[str] = None
+    idCardNumber: Optional[str] = None
     extraInfo: Optional[dict] = Field(default_factory=dict)
     scoreInfo: Optional[dict] = Field(default_factory=dict)
     extraInfoFieldDefs: Optional[List[dict]] = Field(default_factory=list, description="扩展信息字段定义")
@@ -177,9 +207,12 @@ class UserProfileVO(BaseModel):
         elif "scores" not in score_info:
             score_info["tree"] = []
 
+        # ★ 学号来源：优先 students.student_id 列，为空时 fallback 到 username 推导
+        student_id = obj.student_id or obj.extract_student_id(obj.username)
+
         return cls(
             id=obj.id,
-            studentId=obj.extract_student_id(obj.username),
+            studentId=student_id,
             username=obj.username,
             fullName=obj.full_name,
             phone=obj.phone,
@@ -188,6 +221,9 @@ class UserProfileVO(BaseModel):
             enrollmentYear=obj.enrollment_year,
             graduationYear=obj.graduation_year,
             major=obj.major,
+            department=obj.department,
+            gender=obj.gender,
+            idCardNumber=obj.id_card_number,
             extraInfo=obj.extra_info or {},
             scoreInfo=score_info,
             extraInfoFieldDefs=extra_info_field_defs or [],

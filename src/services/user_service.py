@@ -295,7 +295,7 @@ class UserService:
             return False
 
         forbidden = {
-            "id", "username", "student_id", "score_info",
+            "id", "username", "score_info",
             "password", "status", "created_at", "updated_at"
         }
 

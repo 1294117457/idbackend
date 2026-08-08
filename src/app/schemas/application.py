@@ -83,6 +83,11 @@ class ApplicationPayload(BaseModel):
     reviewAction: Optional[str] = Field(default=None, description="审核动作：pass/reject（仅 action=review 时生效）")
     reviewCount: int = Field(default=1, description="审核人数，从 template 获取")
 
+    # ★ attribute 快照（v6 新增）：{attribute.name: 用户填的值}
+    # - save/submit/edit 时由前端填入，后端校验后写入
+    # - 详情/列表返回时由 VO.from_orm_to_vo 读取
+    attributeInfo: dict = Field(default_factory=dict, description="attribute 快照，{name: value}")
+
     def to_application_model(
         self,
         user_id: int,
@@ -105,6 +110,7 @@ class ApplicationPayload(BaseModel):
             review_count=self.reviewCount or 1,
             approved_count=0,
             rejected_count=0,
+            attribute_info=self.attributeInfo or {},     # ★ 新增：attribute 快照
         )
 
     def apply_to_model(self, app: Application, new_status: Optional[str] = None) -> None:
@@ -119,6 +125,8 @@ class ApplicationPayload(BaseModel):
         app.category_id = self.categoryId
         app.apply_score = Decimal(str(self.applyScore))
         app.remark = self.remark
+        if self.attributeInfo is not None:
+            app.attribute_info = self.attributeInfo   # ★ 新增：同步 attribute 快照
         if new_status is not None:
             app.status = new_status
 
@@ -285,6 +293,7 @@ class ApplicationVO(BaseModel):
     approvedCount: int = 0
     rejectedCount: int = 0
     reviewerIds: List[int] = Field(default_factory=list)
+    attributeInfo: dict = Field(default_factory=dict)        # ★ 新增：attribute 快照
     createdAt: Optional[str] = None
     updatedAt: Optional[str] = None
     proofs: List[ProofVO] = Field(default_factory=list)
@@ -317,6 +326,7 @@ class ApplicationVO(BaseModel):
             approvedCount=app.approved_count or 0,
             rejectedCount=app.rejected_count or 0,
             reviewerIds=app.reviewer_ids or [],
+            attributeInfo=app.attribute_info or {},       # ★ 新增：attribute 快照
             createdAt=app.created_at.isoformat() if app.created_at else None,
             updatedAt=app.updated_at.isoformat() if app.updated_at else None,
         )

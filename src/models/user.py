@@ -112,12 +112,27 @@ class User(Base, TimestampMixin):
     last_login_at: Mapped[Optional[str]] = mapped_column(String(50))
 
     # 学生信息
-    # 学号不冗余成列，按需用 User.extract_student_id(username) 从 username 前缀实时解析。
     full_name: Mapped[Optional[str]] = mapped_column(String(100))
     grade: Mapped[Optional[int]] = mapped_column(Integer)
     graduation_year: Mapped[Optional[int]] = mapped_column(Integer)
     enrollment_year: Mapped[Optional[int]] = mapped_column(Integer)
     major: Mapped[Optional[str]] = mapped_column(String(100))
+
+    # 导出表扁平字段（daily.md 238-239）
+    # - 学生可在「个人中心」自助修改
+    # - 暂不做基于 username / 身份证号的推导
+    department: Mapped[Optional[str]] = mapped_column(
+        String(100), doc="所在系"
+    )
+    student_id: Mapped[Optional[str]] = mapped_column(
+        String(50), doc="学号（自填；为空时 fallback 到 extract_student_id(username)）"
+    )
+    gender: Mapped[Optional[str]] = mapped_column(
+        String(10), doc="性别：M / F / OTHER"
+    )
+    id_card_number: Mapped[Optional[str]] = mapped_column(
+        String(18), doc="身份证号"
+    )
 
     # 成绩快照（由 recalculate 写入）
     score_info: Mapped[Optional[dict]] = mapped_column(JSON, default=dict)
