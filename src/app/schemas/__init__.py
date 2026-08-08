@@ -91,6 +91,15 @@ from src.app.schemas.user import (  # noqa: E402, F401
     UserAdminListVO,
 )
 
+# ========== 学生数据导出（v8.1） ==========
+from src.app.schemas.export import (  # noqa: E402, F401
+    ExportColumnNode,
+    ExportUserFilters,
+    ExportUsersRequest,
+    USER_BASIC_FIELDS,
+    CONSTRAINED_SOURCES,
+)
+
 # ========== 角色 ==========
 
 from src.app.schemas.role import (  # noqa: E402, F401

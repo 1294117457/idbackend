@@ -17,6 +17,7 @@ from src.app.routes.permission import router as permission_router
 from src.app.routes.system_config import router as system_config_router
 from src.app.routes.embedding import router as embedding_router
 from src.app.routes.ai_chat import router as ai_chat_router
+from src.app.routes.export import router as export_router
 
 
 # ============== 注册顺序（按业务分组） ==============
@@ -48,6 +49,8 @@ ROUTERS = [
     system_config_router,
     # AI Chat
     ai_chat_router,
+    # 学生数据导出（v8.1）
+    export_router,
 ]
 
 
@@ -77,5 +80,6 @@ __all__ = [
     "system_config_router",
     "embedding_router",
     "ai_chat_router",
+    "export_router",
     "register_all_routes",
 ]

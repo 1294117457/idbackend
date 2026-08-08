@@ -7,7 +7,7 @@
 - DTO ↔ ORM 转换由 schema 完成（to_orm / apply_to）
 
 权限码（init_rbac_data.py 中注册）：
-  template:list        - GET /list, /by-category
+  template:list        - GET /list, /by-category, /rules
   template:detail      - GET /detail
   template:create      - POST /save
   template:update      - POST /update
