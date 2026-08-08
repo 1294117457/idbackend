@@ -30,6 +30,8 @@ from src.app.schemas.errors import BadRequestError
 from src.app.schemas.export import (
     APPLICATION_APPLY,
     APPLICATION_ATTR,
+    APPLICATION_FIELDS,
+    APPLICATION_FIELD,
     APPLICATION_GAIN,
     APPLICATION_REMARK,
     APPLICATION_STATUS,
@@ -86,7 +88,11 @@ def _assign_coordinates(columns: List[ExportColumnNode]) -> List[NodeCoord]:
                 register_all(n.children)
 
     register_all(columns)
-    coords = [get_or_create(n) for n in columns]
+    # ══════ FIX: 顶级 cols 按 sortOrder 排序 ══════
+    # 前端拖拽后可能存在"数组顺序 = DOM 顺序"但 sortOrder 与数组顺序不一致的情况，
+    # 必须显式按 sortOrder 排序保证正确性（dfs_col 内部对 children 已排序）
+    sorted_columns = sorted(columns, key=lambda n: n.sortOrder)
+    coords = [get_or_create(n) for n in sorted_columns]
 
     # DFS col 范围（后序）
     def dfs_col(coord: NodeCoord, start_col: int) -> int:
@@ -180,6 +186,18 @@ def _validate_columns(columns: List[ExportColumnNode]) -> None:
             raise BadRequestError(
                 f"application_attr 列 '{node.label}' 必须指定 ruleName"
             )
+
+        # 5b. application_field 必须有 appField 且在白名单内
+        if node.source == APPLICATION_FIELD:
+            if not node.appField:
+                raise BadRequestError(
+                    f"application_field 列 '{node.label}' 必须指定 appField"
+                )
+            if node.appField not in APPLICATION_FIELDS:
+                raise BadRequestError(
+                    f"application_field 列 '{node.label}' 的 appField='{node.appField}' "
+                    f"不在白名单 {sorted(APPLICATION_FIELDS)} 内"
+                )
 
         # 6. user_extra 必须有 fieldPath
         if node.source == USER_EXTRA and not node.fieldPath:
@@ -327,7 +345,32 @@ def _resolve_app_value(app: Application, col: ExportColumnNode) -> Any:
         # Application ORM 无 remark 字段（remark 在 ApplicationOperation 表），
         # v8.1 暂时返回空；未来如需可从 ApplicationOperation 拼装最近一条 remark。
         return ""
+    if col.source == APPLICATION_FIELD:
+        # appField 指向 Application ORM 的任意白名单字段
+        return _resolve_application_field(app, col.appField)
     return ""
+
+
+def _resolve_application_field(app: Application, app_field: Optional[str]) -> Any:
+    """application_field 列取值（按 appField 指向 Application ORM 字段）"""
+    if not app_field:
+        return ""
+    value = getattr(app, app_field, None)
+    if value is None:
+        return ""
+    # datetime → ISO 字符串
+    if hasattr(value, "isoformat"):
+        try:
+            return value.isoformat(sep=" ", timespec="seconds")
+        except TypeError:
+            return value.isoformat()
+    # Decimal → float
+    if hasattr(value, "__class__") and value.__class__.__name__ == "Decimal":
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return str(value)
+    return value
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -538,16 +581,12 @@ def _render_data(
     extra_field_map: Dict[str, int],
     by_id: Dict[str, ExportColumnNode],
     max_per_cat: int,
-) -> None:
+) -> int:
     """渲染单个学生的数据行。
 
-    算法：
-    1. 收集所有 category 节点
-    2. 对每个 category 判断"按 application 展开"还是"按 single 展开"
-    3. 总行数 = max(所有 application 类 category 的 PASSED 数, 1)
-    4. 对每行 r，每个叶子列算值
-       - user_basic / user_extra → 用 user 自身（每行重复同一值）
-       - application_* → 用所在 category 的第 r 个 application（如果 r 超出，补空）
+    Returns:
+        下一个可用的 start_row（即 start_row + max_count），
+        让外层循环能在多个 user 间正确推进，避免互相覆盖。
     """
     # 提取所有 category 节点
     category_nodes: List[ExportColumnNode] = []
@@ -567,8 +606,13 @@ def _render_data(
         else:
             cat_target_rows[cat_id] = 1
 
-    # 取所有 application 类 category 行数最大值（行对齐）
-    max_count = max((c for c in cat_target_rows.values() if c > 1), default=1)
+    # ══════ FIX: max_count 取所有"按 application 展开"的 category 的最大值 ══════
+    # 只对含 application_* 子列的 category 计算展开行数；
+    # user_basic / user_extra 列不参与行展开（每行重复同样的 user 值是 bug）
+    max_count = max(
+        (rows for rows in cat_target_rows.values() if rows > 1),
+        default=1,
+    )
     if max_count < 1:
         max_count = 1
 
@@ -578,7 +622,8 @@ def _render_data(
         for coord in coords:
             node = coord.node
             if not node.children:
-                # 叶子节点：写值
+                # 叶子节点：写值（即使 user_basic/user_extra 在多行重复也没关系，
+                # 后续 _merge_repeated_user_columns 会把相同值的连续 cell 合并）
                 value = _resolve_leaf_value(
                     user=user,
                     col=node,
@@ -596,6 +641,69 @@ def _render_data(
             else:
                 # 非叶子节点：什么都不做（merge 已完成）
                 pass
+
+    # ══════ FIX: 合并 user_basic/user_extra 列在多行展开时的重复单元格 ══════
+    # 当 application 列展开成 N 行时，user_basic/user_extra 列每个 user 的值在 N 行重复
+    # 视觉效果差，需要把 (start_row, start_row+N-1) 这 N 个相同值的 cell 合并，
+    # 且 vertical_alignment='center' 让内容垂直居中
+    if max_count > 1:
+        _merge_repeated_user_columns(
+            ws=ws,
+            start_row=start_row,
+            row_count=max_count,
+            coords=coords,
+        )
+
+    return start_row + max_count
+
+
+def _merge_repeated_user_columns(
+    ws: Worksheet,
+    start_row: int,
+    row_count: int,
+    coords: List[NodeCoord],
+) -> None:
+    """合并 user_basic/user_extra 列在多行展开时的重复单元格。
+
+    对每个 user_basic/user_extra 叶子节点：
+    - 范围是 start_row+1 到 start_row+row_count（openpyxl 1-based）
+    - 只有当所有 cell 值都相同时才合并
+    - 合并后设置 vertical_alignment='center' 让内容垂直居中
+    """
+    from openpyxl.styles import Alignment
+
+    center_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    for coord in coords:
+        node = coord.node
+        if node.children:
+            continue  # 跳过非叶子（已被表头 merge 处理）
+        if node.source not in (USER_BASIC, USER_EXTRA):
+            continue  # 只处理 user_basic/user_extra
+
+        col_idx = coord.col_start + 1  # openpyxl 1-based
+        first_row = start_row + 1     # openpyxl 1-based
+        last_row = start_row + row_count
+
+        # 收集所有 cell 的值
+        values: List[Any] = []
+        for r in range(first_row, last_row + 1):
+            cell = ws.cell(row=r, column=col_idx)
+            values.append(cell.value)
+
+        # 全部相同（且非 None）才合并
+        if not values or any(v is None for v in values):
+            continue
+        if len(set(values)) == 1:
+            # 合并范围：first_row ~ last_row
+            ws.merge_cells(
+                start_row=first_row,
+                end_row=last_row,
+                start_column=col_idx,
+                end_column=col_idx,
+            )
+            # 让内容垂直居中
+            ws.cell(row=first_row, column=col_idx).alignment = center_align
 
 
 def _resolve_leaf_value(
@@ -706,10 +814,14 @@ class ExportService:
 
         # 10. 渲染数据
         max_per_cat = req.maxApplicationsPerCategory
+        # ══════ FIX: start_row 必须推进 ══════
+        # 原 bug: 每个 user 都从 header_row_count 开始写，后一个 user 覆盖前一个
+        # 修复: 累积 current_row，每次 _render_data 后推进
+        current_row = header_row_count
         for user in users:
-            _render_data(
+            current_row = _render_data(
                 ws=ws,
-                start_row=header_row_count,
+                start_row=current_row,
                 user=user,
                 coords=coords,
                 app_cache=app_cache,
@@ -721,6 +833,26 @@ class ExportService:
         # 11. 冻结表头
         if header_row_count > 0:
             ws.freeze_panes = ws.cell(row=header_row_count + 1, column=1)
+
+        # ══════ DEBUG: 打印关键信息 ══════
+        logger.info(
+            f"[export-debug] users.count={len(users)}, "
+            f"columns={len(req.columns)}, "
+            f"coords.count={len(coords)}, "
+            f"header_row_count={header_row_count}, "
+            f"max_per_cat={req.maxApplicationsPerCategory}"
+        )
+        if users:
+            sample = users[0]
+            logger.info(
+                f"[export-debug] sample user: id={sample.id}, username={sample.username}, "
+                f"major={sample.major!r}, department={sample.department!r}, "
+                f"extra_info_keys={list((sample.extra_info or {}).keys())[:5]}"
+            )
+
+        # ══════ DEBUG: 打印每个 leaf 列的写入位置 ══════
+        leaf_coords = [(c.col_start, c.node.label, c.node.source, c.node.fieldPath) for c in coords if not c.node.children]
+        logger.info(f"[export-debug] leaf coords ({len(leaf_coords)}): {leaf_coords}")
 
         # 12. 写入 bytes
         buf = io.BytesIO()

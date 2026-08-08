@@ -28,6 +28,7 @@ APPLICATION_GAIN = "application_gain"       # app.gain_score
 APPLICATION_ATTR = "application_attr"       # app.rule_info[rule_name] → attribute.name
 APPLICATION_STATUS = "application_status"   # app.status
 APPLICATION_REMARK = "application_remark"   # app.remark
+APPLICATION_FIELD = "application_field"     # app.<任意字段>（白名单）
 
 # 容器节点（不直接出值，承载子列）
 CATEGORY = "category"
@@ -40,6 +41,7 @@ ColumnSource = Literal[
     "application_attr",
     "application_status",
     "application_remark",
+    "application_field",
     "category",
 ]
 
@@ -50,6 +52,7 @@ CONSTRAINED_SOURCES = frozenset({
     APPLICATION_ATTR,
     APPLICATION_STATUS,
     APPLICATION_REMARK,
+    APPLICATION_FIELD,
 })
 
 
@@ -87,6 +90,9 @@ class ExportColumnNode(BaseModel):
     # === 仅 application_attr 列 ===
     ruleName: Optional[str] = Field(default=None, max_length=100)
 
+    # === 仅 application_field 列（Application ORM 白名单字段名） ===
+    appField: Optional[str] = Field(default=None, max_length=50)
+
     # === 仅 user_basic 列 ===
     basicField: Optional[str] = Field(default=None, max_length=50)
 
@@ -119,6 +125,26 @@ USER_BASIC_FIELDS = frozenset({
     "gender",
     "idCardNumber",
     "lastLoginAt",
+})
+
+
+# ========== application 字段白名单（application_field 列能引用的字段名） ==========
+# 与 Application ORM 模型字段一一对应（src/models/application.py）
+APPLICATION_FIELDS = frozenset({
+    "id",
+    "user_id",
+    "template_id",
+    "template_name",
+    "category_id",
+    "apply_score",
+    "gain_score",
+    "status",
+    "review_count",
+    "approved_count",
+    "rejected_count",
+    "created_at",
+    "updated_at",
+    "rule_info",
 })
 
 
