@@ -1,13 +1,16 @@
 
 from typing import Annotated
+import io
+import openpyxl
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.dependencies import get_db
 from src.app.context import get_user_roles
 from src.app import response as R
 from src.services import UserService
+from src.services.student_import_service import StudentImportService
 from src.services.rbac_service import RbacService
 from src.app.schemas.user import (
     UpdateUserStatusRequest,
@@ -19,6 +22,7 @@ from src.app.schemas.user import (
     UserAdminListVO,
     CurrentUserInfoVO,
     UpdateUserMeRequest,
+    StudentImportResultVO,
     UpdateUserExtraInfoRequest,
     AssignUserRolesRequest,
 )
@@ -164,6 +168,58 @@ async def admin_batch_create_users(
     return R.success_resp(
         {"created": created, "failed": failed},
         msg=f"批量创建完成：成功 {len(created)} 个，失败 {len(failed)} 个",
+    )
+
+@router.post("/admin/import")
+async def admin_import_students(
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    管理员导入学生数据
+
+    上传 Excel 文件
+    """
+
+    # 读取上传文件
+    content = await file.read()
+
+    workbook = openpyxl.load_workbook(
+        io.BytesIO(content)
+    )
+
+    sheet = workbook.active
+
+    students = []
+
+    # 第一行为标题，从第二行开始读取
+    for row in sheet.iter_rows(
+        min_row=2,
+        values_only=True
+    ):
+
+        # 跳过空行
+        if not row[1]:
+            continue
+
+        student = {
+            "student_id": str(row[1]),
+            "name": row[2],
+            "grade": row[3],
+            "major": row[4],
+            "class_name": row[5],
+        }
+
+        students.append(student)
+
+    result = await StudentImportService.import_students(
+        db,
+        students,
+    )
+
+    return R.success_resp(
+        StudentImportResultVO(**result).model_dump(),
+        msg="学生导入完成",
     )
 
 

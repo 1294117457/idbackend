@@ -94,6 +94,24 @@ class AssignUserRolesRequest(BaseModel):
 
 # ========== 响应 VO ==========
 
+# ========== 响应 VO ==========
+
+
+class StudentImportResultVO(BaseModel):
+    """
+    学生Excel导入结果
+    """
+
+    created: List[str] = Field(
+        default_factory=list,
+        description="成功导入的学号"
+    )
+
+    failed: List[dict] = Field(
+        default_factory=list,
+        description="失败记录"
+    )
+
 class CurrentUserInfoVO(BaseModel):
     """当前登录用户（GET /api/system/user/me）"""
     userId: int
@@ -243,4 +261,5 @@ __all__ = [
     "UserAdminListItemVO",
     "UserAdminListVO",
     "UserProfileVO",
+    "StudentImportResultVO",
 ]
