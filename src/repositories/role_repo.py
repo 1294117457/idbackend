@@ -159,6 +159,30 @@ class RoleRepository:
         return list(result.scalars().all())
 
     @staticmethod
+    async def list_user_role_codes_by_user_ids(
+        db: AsyncSession,
+        user_ids: List[int],
+    ) -> Dict[int, List[str]]:
+        """批量查询：给定 user_id 列表，返回 {user_id: [role_code, ...]} 映射
+
+        替代 N+1：用一次 IN 查询替代逐个 user 一次查询。
+        注意：Role.status == True 过滤条件保持与 get_user_roles 一致。
+        """
+        if not user_ids:
+            return {}
+        result = await db.execute(
+            select(UserRole.user_id, Role.role_code)
+            .join(Role, Role.id == UserRole.role_id)
+            .where(UserRole.user_id.in_(user_ids))
+            .where(Role.status == True)
+        )
+        role_map: Dict[int, List[str]] = {uid: [] for uid in user_ids}
+        for uid, code in result.all():
+            if uid in role_map and code:
+                role_map[uid].append(code)
+        return role_map
+
+    @staticmethod
     async def get_user_role_ids(
         db: AsyncSession,
         user_id: int,

@@ -160,6 +160,8 @@ APPLICATION_FIELDS = frozenset({
     "created_at",
     "updated_at",
     "rule_info",
+    # ★ v10：学生备注（Application.student_remark，学生提交申请时填写的说明文本）
+    "student_remark",
 })
 
 
