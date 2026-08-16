@@ -23,6 +23,54 @@ def generate_password(length: int = 12) -> str:
     )
 
 
+# ========== 学生 Excel 导入：列名映射 & 值解析 ==========
+
+IMPORT_BASIC_COLS: Dict[str, str] = {
+    "学号": "student_id",
+    "姓名": "full_name",
+    "专业": "major",
+    "年级": "grade",
+    "入学年份": "enrollment_year",
+    "毕业年份": "graduation_year",
+    "手机号": "phone",
+}
+
+_GRADE_MAP: Dict[str, int] = {
+    "大一": 1, "大二": 2, "大三": 3, "大四": 4, "大五": 5,
+    "一年级": 1, "二年级": 2, "三年级": 3, "四年级": 4, "五年级": 5,
+}
+
+
+def _parse_grade(value) -> Optional[int]:
+    """解析年级：支持「大一..大五」「一年级..五年级」「1..10」"""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text in _GRADE_MAP:
+        return _GRADE_MAP[text]
+    try:
+        num = int(float(text))
+    except (ValueError, TypeError):
+        return None
+    return num if 1 <= num <= 10 else None
+
+
+def _parse_year(value) -> Optional[int]:
+    """解析年份：4 位数字，限定 2000~2100"""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        num = int(float(text))
+    except (ValueError, TypeError):
+        return None
+    return num if 2000 <= num <= 2100 else None
+
+
 class UserService:
     @staticmethod
     async def verify_account_active(user_id: int) -> bool:
@@ -548,3 +596,174 @@ class UserService:
         await db.delete(user)
         await db.commit()
         await RbacService.clear_user_cache(user_id)
+
+    @staticmethod
+    async def import_students_from_excel(
+        db: AsyncSession,
+        content: bytes,
+        filename: str,
+    ) -> Dict[str, Any]:
+        """从 Excel 导入学生（基础字段 + 动态扩展字段），返回导入汇总。
+
+        - 首个 sheet 首行为表头，按列名匹配基础列与已启用扩展字段名。
+        - 「学号」必填，用于生成 username = "{学号}@stu.xmu.edu.cn"。
+        - 学号已存在 → 覆盖更新其基础信息与扩展字段（不动账号/密码/状态/角色）。
+        - 学号不存在 → 创建账号（自动生成密码，分配 "user" 角色）。
+        """
+        from io import BytesIO
+        from openpyxl import load_workbook
+        from src.models.extra_info_field import ExtraInfoField
+
+        def _empty_failed(reason: str) -> Dict[str, Any]:
+            return {
+                "total": 0, "createdCount": 0, "updatedCount": 0, "failedCount": 1,
+                "failed": [{"row": 0, "studentId": "", "reason": reason}],
+            }
+
+        wb = None
+        try:
+            wb = load_workbook(BytesIO(content), read_only=True, data_only=True)
+            rows = [tuple(r) for r in wb.worksheets[0].iter_rows(values_only=True)]
+        except Exception as e:
+            return _empty_failed(f"无法解析文件（请上传 .xlsx）：{e}")
+        finally:
+            if wb is not None:
+                wb.close()
+
+        if not rows:
+            return _empty_failed("文件为空")
+
+        header = ["" if c is None else str(c).strip() for c in rows[0]]
+        basic_col_map: Dict[str, int] = {}
+        extra_col_map: Dict[int, int] = {}
+
+        field_result = await db.execute(
+            select(ExtraInfoField).where(ExtraInfoField.is_active == True)
+            .order_by(ExtraInfoField.sort_order, ExtraInfoField.id)
+        )
+        active_fields = list(field_result.scalars().all())
+        field_by_name = {f.name.strip(): f for f in active_fields}
+
+        for idx, name in enumerate(header):
+            if name in IMPORT_BASIC_COLS:
+                basic_col_map[IMPORT_BASIC_COLS[name]] = idx
+            elif name in field_by_name:
+                extra_col_map[field_by_name[name].id] = idx
+
+        if "student_id" not in basic_col_map:
+            return _empty_failed("缺少「学号」列")
+
+        def _cell(row: tuple, field: str) -> str:
+            idx = basic_col_map.get(field)
+            if idx is None or idx >= len(row):
+                return ""
+            val = row[idx]
+            return "" if val is None else str(val).strip()
+
+        parsed: List[Dict[str, Any]] = []
+        for row_idx, row in enumerate(rows[1:], start=2):
+            if all(c is None or str(c).strip() == "" for c in row):
+                continue
+            student_id = _cell(row, "student_id")
+            if not student_id:
+                parsed.append({"row": row_idx, "studentId": "", "reason": "学号为空", "_skip": True})
+                continue
+            if student_id.endswith(".0"):
+                student_id = student_id[:-2]
+
+            extra_info: Dict[str, Any] = {}
+            for field_id, col_idx in extra_col_map.items():
+                if col_idx >= len(row):
+                    continue
+                raw = row[col_idx]
+                if raw is None:
+                    continue
+                raw_text = str(raw).strip()
+                if raw_text == "":
+                    continue
+                field = next((f for f in active_fields if f.id == field_id), None)
+                if field is not None and field.type == "NUMBER":
+                    try:
+                        extra_info[f"f_{field_id}"] = float(raw_text)
+                    except ValueError:
+                        extra_info[f"f_{field_id}"] = raw_text
+                else:
+                    extra_info[f"f_{field_id}"] = raw_text
+
+            parsed.append({
+                "row": row_idx,
+                "studentId": student_id,
+                "full_name": _cell(row, "full_name") or None,
+                "major": _cell(row, "major") or None,
+                "phone": _cell(row, "phone") or None,
+                "grade": _parse_grade(row[basic_col_map["grade"]] if "grade" in basic_col_map else None),
+                "enrollment_year": _parse_year(row[basic_col_map["enrollment_year"]] if "enrollment_year" in basic_col_map else None),
+                "graduation_year": _parse_year(row[basic_col_map["graduation_year"]] if "graduation_year" in basic_col_map else None),
+                "extra_info": extra_info,
+            })
+
+        # 预查已存在账号（去重）
+        usernames = [f"{p['studentId']}@stu.xmu.edu.cn" for p in parsed if not p.get("_skip")]
+        existing_map: Dict[str, User] = {}
+        if usernames:
+            result = await db.execute(select(User).where(User.username.in_(usernames)))
+            existing_map = {u.username: u for u in result.scalars().all()}
+
+        role_result = await db.execute(select(Role).where(Role.role_code == "user"))
+        user_role = role_result.scalar_one_or_none()
+
+        created_count = 0
+        updated_count = 0
+        failed: List[Dict[str, Any]] = []
+        seen: set = set()
+
+        for p in parsed:
+            if p.get("_skip"):
+                failed.append({"row": p["row"], "studentId": p["studentId"], "reason": p["reason"]})
+                continue
+            username = f"{p['studentId']}@stu.xmu.edu.cn"
+            if username in seen:
+                failed.append({"row": p["row"], "studentId": p["studentId"], "reason": "文件内学号重复"})
+                continue
+            seen.add(username)
+
+            user = existing_map.get(username)
+            if user is not None:
+                user.full_name = p["full_name"]
+                user.major = p["major"]
+                user.phone = p["phone"]
+                user.grade = p["grade"]
+                user.enrollment_year = p["enrollment_year"]
+                user.graduation_year = p["graduation_year"]
+                merged = dict(user.extra_info or {})
+                merged.update(p["extra_info"])
+                user.extra_info = merged
+                updated_count += 1
+            else:
+                new_user = User(
+                    username=username,
+                    password=hash_password(generate_password()),
+                    status=UserStatus.ACTIVE.value,
+                    full_name=p["full_name"],
+                    major=p["major"],
+                    phone=p["phone"],
+                    grade=p["grade"],
+                    enrollment_year=p["enrollment_year"],
+                    graduation_year=p["graduation_year"],
+                    extra_info=p["extra_info"],
+                )
+                db.add(new_user)
+                await db.flush()
+                if user_role is not None:
+                    db.add(UserRole(user_id=new_user.id, role_id=user_role.id))
+                created_count += 1
+
+        await db.commit()
+
+        return {
+            "total": len(parsed),
+            "createdCount": created_count,
+            "updatedCount": updated_count,
+            "failedCount": len(failed),
+            "failed": failed,
+        }
