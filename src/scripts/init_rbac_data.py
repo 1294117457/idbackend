@@ -63,6 +63,7 @@ PERMISSIONS_DATA = [
     ("user:read",             "查看用户列表",   "/api/user/admin/list",                     "user", "用户管理", 10),
     ("user:create",           "创建用户",       "/api/user/admin/create",                   "user", "用户管理", 11),
     ("user:batch_create",     "批量创建用户",   "/api/user/admin/batch-create",             "user", "用户管理", 12),
+    ("user:import",           "导入学生数据",   "/api/user/admin/import",                   "user", "用户管理", 13),
     ("user:update",           "修改用户状态",   "/api/user/admin/{user_id}/status",         "user", "用户管理", 13),
     ("user:delete",           "删除用户",       "/api/user/admin/{user_id}",                "user", "用户管理", 14),
     ("user:assign_role",      "分配用户角色",   "/api/user/{user_id}/roles",                "user", "用户管理", 15),
@@ -191,6 +192,7 @@ ROLE_PERMISSIONS = {
         "auth:admin_login",
         # user 管理端（不含 create/delete/assign_role）
         "user:read", "user:update",
+        "user:import",
         # user 学生端
         "user:read_self", "user:update_self", "user:update_extra",
         "user:read_my_roles",

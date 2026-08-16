@@ -1,7 +1,7 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, File, Query, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.dependencies import get_db
@@ -165,6 +165,38 @@ async def admin_batch_create_users(
     return R.success_resp(
         {"created": created, "failed": failed},
         msg=f"批量创建完成：成功 {len(created)} 个，失败 {len(failed)} 个",
+    )
+
+
+@router.post("/admin/import")
+async def admin_import_students(
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """导入学生数据（Excel）
+
+    - 请求：multipart/form-data，字段 file
+    - 支持 .xlsx / .xls
+    - 返回 { total, createdCount, updatedCount, failedCount, failed:[{row, studentId, reason}] }
+    """
+    content = await file.read()
+    if not content:
+        return R.bad_request_resp("上传文件为空")
+
+    from src.infra.config import get_settings
+    settings = get_settings()
+    if len(content) > settings.MAX_FILE_SIZE:
+        return R.bad_request_resp(f"文件大小不能超过 {settings.MAX_FILE_SIZE // (1024 * 1024)}MB")
+
+    summary = await UserService.import_students_from_excel(
+        db, content, file.filename or "students.xlsx"
+    )
+    return R.success_resp(
+        summary,
+        msg=(
+            f"导入完成：新增 {summary['createdCount']}，"
+            f"更新 {summary['updatedCount']}，失败 {summary['failedCount']}"
+        ),
     )
 
 
