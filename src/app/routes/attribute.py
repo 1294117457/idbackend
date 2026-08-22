@@ -9,8 +9,10 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app import response as R
+from src.app.dependencies import get_db
 from src.app.schemas.template import (
     AttributeCreateRequest,
     AttributeUpdateRequest,
@@ -47,10 +49,12 @@ async def list_attributes(
     isActive: bool | None = Query(default=True),
     pageNum: int = Query(default=1, ge=1),
     pageSize: int = Query(default=20, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
 ):
     """分页列表（Page[AttributeVO]）"""
     type_upper = type.upper() if type else None
     attributes, total = await AttributeService.list_paged(
+        db,
         is_active=isActive,
         attr_type=type_upper,
         group_code=groupCode,
@@ -69,9 +73,10 @@ async def list_attributes(
 @router.get("/detail")
 async def get_attribute_detail(
     id: int = Query(..., ge=1),
+    db: AsyncSession = Depends(get_db),
 ):
     """属性详情"""
-    attribute = await AttributeService.get_by_id(id)
+    attribute = await AttributeService.get_by_id(db, id)
     return R.query_resp(AttributeVO.from_orm_to_vo(attribute).model_dump())
 
 
@@ -82,9 +87,10 @@ async def get_attribute_detail(
 @router.post("", status_code=201)
 async def create_attribute(
     req: AttributeCreateRequest,
+    db: AsyncSession = Depends(get_db),
 ):
     """创建属性（service 内部校验 type / formula / group_name）"""
-    attribute = await AttributeService.create(req)
+    attribute = await AttributeService.create(db, req)
     return R.created_resp(
         AttributeVO.from_orm_to_vo(attribute).model_dump(),
         msg="属性创建成功",
@@ -94,9 +100,10 @@ async def create_attribute(
 @router.post("/update")
 async def update_attribute(
     req: AttributeUpdateRequest,
+    db: AsyncSession = Depends(get_db),
 ):
     """修改属性（service 校验 type 变化时的 value / 区间）"""
-    attribute = await AttributeService.update(req.id, req)
+    attribute = await AttributeService.update(db, req.id, req)
     return R.success_resp(
         AttributeVO.from_orm_to_vo(attribute).model_dump(),
         msg="更新成功",
@@ -106,7 +113,8 @@ async def update_attribute(
 @router.post("/delete")
 async def delete_attribute(
     req: AttributeDeleteRequest,
+    db: AsyncSession = Depends(get_db),
 ):
     """删除属性（FK CASCADE 自动清理 rule_attribute 行，不影响 application 历史）"""
-    await AttributeService.delete(req.id)
+    await AttributeService.delete(db, req.id)
     return R.success_resp(msg="删除成功")
