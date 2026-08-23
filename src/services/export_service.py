@@ -57,7 +57,7 @@ logger = logging.getLogger(__name__)
 # ════════════════════════════════════════════════════════════════════════
 
 class NodeCoord:
-    """列树节点的 Excel 坐标（后端运行时计算，前端不感知）"""
+    """列树节点的 Excel 坐标（后端运行时计算，前端不感知）"""  # 记录节点在 Excel 中的行列范围
     __slots__ = ("node", "col_start", "col_end", "row_start", "row_end")
 
     def __init__(self, node: ExportColumnNode) -> None:
@@ -73,17 +73,19 @@ def _assign_coordinates(columns: List[ExportColumnNode]) -> List[NodeCoord]:
 
     col 范围：后序遍历，叶子 [start,start]；父 [first.start, last.end]
     row 范围：前序遍历，父 row=r，子 row=r+1；父 row_end=r（父只占 1 行）
-    """
+    """  # 计算每个列树节点在 Excel 中的占位范围（横向列区间 + 纵向行区间）
     # 先建全树 coord 映射（确保子节点在递归时已注册）
     coords_map: Dict[str, NodeCoord] = {}
 
     def get_or_create(node: ExportColumnNode) -> NodeCoord:
+        """按节点 id 获取或新建一个 NodeCoord（DFS 期间惰性创建子节点 coord）"""  # 获取或惰性创建节点的 coord 容器
         if node.id not in coords_map:
             coords_map[node.id] = NodeCoord(node)
         return coords_map[node.id]
 
     # 先注册全部节点
     def register_all(nodes: List[ExportColumnNode]) -> None:
+        """递归注册整棵子树所有节点到 coords_map（先建索引再做分配）"""  # 预先把整棵树的节点都登记到 coords_map
         for n in nodes:
             get_or_create(n)
             if n.children:
@@ -98,6 +100,7 @@ def _assign_coordinates(columns: List[ExportColumnNode]) -> List[NodeCoord]:
 
     # DFS col 范围（后序）
     def dfs_col(coord: NodeCoord, start_col: int) -> int:
+        """DFS 计算 col 范围（后序），返回下一个可用 col 游标"""  # 自底向上算出当前节点及其子树的列起止
         children_sorted = sorted(coord.node.children, key=lambda c: c.sortOrder)
         if not children_sorted:
             coord.col_start = start_col
@@ -113,6 +116,7 @@ def _assign_coordinates(columns: List[ExportColumnNode]) -> List[NodeCoord]:
 
     # DFS row 范围（前序）：父 row=r，子 row=r+1；父 row_end=r（占 1 行）
     def dfs_row(coord: NodeCoord, row: int) -> int:
+        """DFS 计算 row 范围（前序），返回当前子树最终行下标"""  # 自顶向下算出当前节点及其子树的行起止
         coord.row_start = row
         children_sorted = sorted(coord.node.children, key=lambda c: c.sortOrder)
         if not children_sorted:
@@ -149,11 +153,12 @@ def _validate_columns(columns: List[ExportColumnNode]) -> None:
     """递归校验列树合法性（白名单 + 层级约束 + 字段完整性）。
 
     抛出 BadRequestError 时直接返回 400 + 错误信息。
-    """
+    """  # 校验列树合法性（白名单 + 层级约束 + 必填字段），不合规直接 400
     seen_ids: Set[str] = set()
     valid_sources = set(CONSTRAINED_SOURCES) | {USER_BASIC, USER_EXTRA, CATEGORY, CUSTOM}
 
     def walk(node: ExportColumnNode, parent: Optional[ExportColumnNode]) -> None:
+        """DFS 递归校验每个节点及其子树"""  # DFS 校验单个节点并递归处理子树
         # 1. source 白名单（理论上 Pydantic Literal 已拦截，这里防御性再校验）
         if node.source not in valid_sources:
             raise BadRequestError(
@@ -252,14 +257,14 @@ def _validate_columns(columns: List[ExportColumnNode]) -> None:
 # ════════════════════════════════════════════════════════════════════════
 
 def _walk_descendants(node: ExportColumnNode):
-    """DFS 遍历 node 全部后代（含 node 自己）"""
+    """DFS 遍历 node 全部后代（含 node 自己）"""  # 递归产出某节点及其所有后代
     yield node
     for child in node.children:
         yield from _walk_descendants(child)
 
 
 def _category_has_application_columns(cat_node: ExportColumnNode) -> bool:
-    """判断 category 节点的子树里是否含 application_* 字段"""
+    """判断 category 节点的子树里是否含 application_* 字段"""  # 判断某 category 子树是否需要按 application 展开行
     for n in _walk_descendants(cat_node):
         if n.source in CONSTRAINED_SOURCES:
             return True
@@ -272,7 +277,7 @@ def _infer_max_app_count(
     user_id: int,
     max_per_cat: int,
 ) -> int:
-    """对单个学生，返回所有"按 application 展开"的 category 中 PASSED application 数的最大值"""
+    """对单个学生，返回所有"按 application 展开"的 category 中 PASSED application 数的最大值"""  # 计算单个学生在所有 category 中需要展开的最大 application 行数
     max_count = 0
     for cat in category_nodes:
         if not _category_has_application_columns(cat):
@@ -290,7 +295,7 @@ def _infer_max_app_count(
 # ════════════════════════════════════════════════════════════════════════
 
 def _resolve_user_basic_value(user: User, basic_field: str) -> Any:
-    """user_basic 列取值"""
+    """user_basic 列取值"""  # 按 basicField 白名单从 User 模型取基础字段值
     # studentId 特殊处理：优先 users.student_id，fallback 到 extract_student_id(username)
     if basic_field == "studentId":
         if user.student_id:
@@ -322,7 +327,7 @@ def _resolve_user_basic_value(user: User, basic_field: str) -> Any:
 
 
 def _transform_grade(value: Any) -> Any:
-    """grade 1/2/3/4 → "大一"/"大二"/"大三"/"大四"（≤4）"""
+    """grade 1/2/3/4 → "大一"/"大二"/"大三"/"大四"（≤4）"""  # 把年级数字转中文显示文本
     if isinstance(value, int) and 1 <= value <= 4:
         return {1: "大一", 2: "大二", 3: "大三", 4: "大四"}.get(value, value)
     return value
@@ -331,14 +336,14 @@ def _transform_grade(value: Any) -> Any:
 def _resolve_user_extra_value(
     user: User, field_path: str, extra_field_id: int
 ) -> Any:
-    """user_extra 列取值（extra_info JSON 中 f_{field_id} 取值）"""
+    """user_extra 列取值（extra_info JSON 中 f_{field_id} 取值）"""  # 按 fieldPath 对应 id 从 user.extra_info 读取扩展字段
     extra = user.extra_info or {}
     key = f"f_{extra_field_id}"
     return extra.get(key, "")
 
 
 def _resolve_app_value(app: Application, col: ExportColumnNode) -> Any:
-    """application_* 列取值（按 row_idx 已定位到 app）"""
+    """application_* 列取值（按 row_idx 已定位到 app）"""  # 按列 source 类型从已定位到的 application 取出对应字段值
     if col.source == APPLICATION_APPLY:
         return float(app.apply_score) if app.apply_score is not None else ""
     if col.source == APPLICATION_GAIN:
@@ -383,7 +388,7 @@ def _resolve_weighted_sum_formula(
         coords: 当前渲染范围内所有 coord（用于按 id 找 sibling）
         start_row: 当前学生在 Excel 中的起始行（0-based）
         row_count: 当前学生展开的总行数（max_count）
-    """
+    """  # 生成 application_weighted_sum 列在某学生展开区间的 Excel 公式（IFERROR 兜底）
     if not col.weightedColumnIds or not col.weightedWeights:
         return None
     if len(col.weightedColumnIds) != len(col.weightedWeights):
@@ -428,7 +433,7 @@ def _resolve_weighted_sum_formula(
 
 
 def _resolve_application_field(app: Application, app_field: Optional[str]) -> Any:
-    """application_field 列取值（按 appField 指向 Application ORM 字段）"""
+    """application_field 列取值（按 appField 指向 Application ORM 字段）"""  # 通用字段取值：按白名单内的 ORM 字段名读 application 属性
     if not app_field:
         return ""
     value = getattr(app, app_field, None)
@@ -459,7 +464,7 @@ async def _query_students(
     student_ids: Optional[List[int]],
     excluded_ids: Optional[List[int]],
 ) -> List[User]:
-    """按过滤条件查学生（admin 用）"""
+    """按过滤条件查学生（admin 用）"""  # 按 filters + studentIds/excludedIds 查学生列表（按 id 升序）
     stmt = select(User)
 
     if filters.username:
@@ -498,7 +503,7 @@ async def _preload_applications(
 
     注意：category_id 直接来自 application.category_id（外键到 template_category.id），
     而非 application.template.category_id。Application.category_id 字段已直接持有分类 id。
-    """
+    """  # 一次性预加载所有相关学生的 PASSED application，构建嵌套缓存 app_cache[user_id][category_id]
     if not user_ids or not category_ids:
         return {}
 
@@ -528,7 +533,7 @@ async def _preload_extra_field_map(
     """把 extra_info_field.name → id，建立映射
 
     若有同名（理论上不应有，业务侧保证），取最小 id。
-    """
+    """  # 预加载扩展字段 name → id 映射（同 name 取最小 id）
     if not field_paths:
         return {}
     stmt = select(ExtraInfoField).where(ExtraInfoField.name.in_(field_paths))
@@ -553,7 +558,7 @@ async def _preload_extra_field_map(
 # ════════════════════════════════════════════════════════════════════════
 
 def _collect_category_nodes(columns: List[ExportColumnNode]) -> List[ExportColumnNode]:
-    """收集列树里所有 category 节点（递归）"""
+    """收集列树里所有 category 节点（递归）"""  # 递归收集列树中所有 category 节点
     result: List[ExportColumnNode] = []
     for col in columns:
         if col.source == CATEGORY:
@@ -564,7 +569,7 @@ def _collect_category_nodes(columns: List[ExportColumnNode]) -> List[ExportColum
 
 
 def _collect_field_paths(columns: List[ExportColumnNode]) -> List[str]:
-    """收集所有 user_extra 列的 fieldPath（用于预加载）"""
+    """收集所有 user_extra 列的 fieldPath（用于预加载）"""  # 收集所有 user_extra 列的 fieldPath 并去重
     paths: List[str] = []
     for col in _walk_all(columns):
         if col.source == USER_EXTRA and col.fieldPath:
@@ -573,18 +578,18 @@ def _collect_field_paths(columns: List[ExportColumnNode]) -> List[str]:
 
 
 def _collect_category_ids(category_nodes: List[ExportColumnNode]) -> List[int]:
-    """收集所有 category 节点的 categoryId（用于预加载 application）"""
+    """收集所有 category 节点的 categoryId（用于预加载 application）"""  # 提取所有 category 节点的非空 categoryId 列表
     return [n.categoryId for n in category_nodes if n.categoryId is not None]
 
 
 def _walk_all(columns: List[ExportColumnNode]):
-    """遍历全部节点（含顶级和深层子列）"""
+    """遍历全部节点（含顶级和深层子列）"""  # DFS 产出列树中所有节点（含顶级）
     for col in columns:
         yield from _walk_descendants(col)
 
 
 def _build_by_id_map(columns: List[ExportColumnNode]) -> Dict[str, ExportColumnNode]:
-    """id → node 映射（用于祖先查找）"""
+    """id → node 映射（用于祖先查找）"""  # 把列树扁平化成 id → 节点的字典，便于 O(1) 祖先查找
     return {n.id: n for n in _walk_all(columns)}
 
 
@@ -592,7 +597,7 @@ def _find_ancestor_category_id_in_map(
     col: ExportColumnNode,
     by_id: Dict[str, ExportColumnNode],
 ) -> Optional[int]:
-    """向上找最近的 category 祖先，返回 categoryId（找不到返回 None）"""
+    """向上找最近的 category 祖先，返回 categoryId（找不到返回 None）"""  # 在 id 映射中沿 parentId 向上找最近的 category 祖先
     node = col
     while node is not None:
         if node.source == CATEGORY and node.categoryId is not None:
@@ -614,7 +619,7 @@ _HEADER_ALIGN = Alignment(horizontal="center", vertical="center", wrap_text=True
 
 
 def _render_header(ws: Worksheet, coords: List[NodeCoord]) -> int:
-    """渲染多级表头 + merge_cells。返回表头总行数。"""
+    """渲染多级表头 + merge_cells。返回表头总行数。"""  # 渲染多级表头并按 coord 范围合并单元格，返回表头总行数
     if not coords:
         return 0
 
@@ -663,7 +668,7 @@ def _render_data(
     Returns:
         下一个可用的 start_row（即 start_row + max_count），
         让外层循环能在多个 user 间正确推进，避免互相覆盖。
-    """
+    """  # 渲染单个学生的数据行（含 application 展开 + 重复列合并），返回下一个可用行号
     # 提取所有 category 节点
     category_nodes: List[ExportColumnNode] = []
     for coord in coords:
@@ -793,7 +798,7 @@ def _merge_repeated_user_columns(
     - 范围是 start_row+1 到 start_row+row_count（openpyxl 1-based）
     - 只有当所有 cell 值都相同时才合并
     - 合并后设置 vertical_alignment='center' 让内容垂直居中
-    """
+    """  # 把 user_basic/user_extra 列在多行展开时重复的相同值垂直合并居中
     from openpyxl.styles import Alignment
 
     center_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
@@ -839,7 +844,7 @@ def _resolve_leaf_value(
     by_id: Dict[str, ExportColumnNode],
     max_per_cat: int,
 ) -> Any:
-    """计算单个叶子节点在指定 row 的值"""
+    """计算单个叶子节点在指定 row 的值"""  # 根据列 source 分发到对应取值函数，得到某行某列单元格的具体值
     if col.source == USER_BASIC:
         v = _resolve_user_basic_value(user, col.basicField or "")
         if col.cellTransform == "grade":
@@ -876,7 +881,7 @@ class ExportService:
 
     提供一个静态方法 stream_students_xlsx，返回 (bytes, filename)。
     调用方把 bytes 包成 StreamingResponse。
-    """
+    """  # 对外暴露的导出服务入口（当前仅提供 stream_students_xlsx 一个静态方法）
 
     @staticmethod
     async def stream_students_xlsx(
@@ -887,7 +892,7 @@ class ExportService:
 
         Returns:
             (xlsx_bytes, filename_with_extension)
-        """
+        """  # 主流程：校验→预加载→算坐标→渲染表头→渲染数据→返回字节流和文件名
         # 1. 校验列树
         _validate_columns(req.columns)
 
@@ -993,7 +998,7 @@ class ExportService:
 
 
 def _sanitize_filename(name: str) -> str:
-    """清洗文件名（去路径分隔符、特殊字符）"""
+    """清洗文件名（去路径分隔符、特殊字符）"""  # 清洗非法文件名字符并截断长度，保证安全文件名
     # Windows 不允许的字符: < > : " / \ | ? *
     bad_chars = '<>:"/\\|?*'
     result = "".join("_" if c in bad_chars else c for c in name).strip()
@@ -1003,6 +1008,7 @@ def _sanitize_filename(name: str) -> str:
 
 
 def _today_yyyymmdd() -> str:
+    """生成当前日期的 YYYYMMDD 字符串，用于文件名后缀"""  # 取当前日期的 YYYYMMDD 字符串
     from datetime import datetime
     return datetime.now().strftime("%Y%m%d")
 
