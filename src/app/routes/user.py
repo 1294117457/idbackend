@@ -1,13 +1,16 @@
 
 from typing import Annotated
+import io
+import openpyxl
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.dependencies import get_db
 from src.app.context import get_user_roles
 from src.app import response as R
 from src.services import UserService
+from src.services.student_import_service import StudentImportService
 from src.services.rbac_service import RbacService
 from src.app.schemas.user import (
     UpdateUserStatusRequest,
@@ -19,6 +22,7 @@ from src.app.schemas.user import (
     UserAdminListVO,
     CurrentUserInfoVO,
     UpdateUserMeRequest,
+    StudentImportResultVO,
     UpdateUserExtraInfoRequest,
     AssignUserRolesRequest,
 )
@@ -165,6 +169,63 @@ async def admin_batch_create_users(
         {"created": created, "failed": failed},
         msg=f"批量创建完成：成功 {len(created)} 个，失败 {len(failed)} 个",
     )
+
+@router.post("/admin/import")
+async def admin_import_students(
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    管理员导入学生数据
+    当前适配老师提供的实际推免学生登记表格式
+    """
+
+    content = await file.read()
+
+    workbook = openpyxl.load_workbook(
+        io.BytesIO(content),
+        data_only=False,
+    )
+
+    sheet = workbook.active
+
+    students = []
+
+    # 第1行为总标题，第2~4行为多级表头
+    # 第5行开始是学生数据
+    for row in sheet.iter_rows(
+        min_row=5,
+        values_only=True,
+    ):
+        # D列是学号，Python索引为3
+        student_id = row[3]
+
+        # 同一学生后续奖项明细行没有学号，直接跳过
+        if student_id is None:
+            continue
+
+        student = {
+            "student_id": str(student_id).strip(),
+            "name": str(row[4]).strip() if row[4] is not None else None,
+            "department": str(row[1]).strip() if row[1] is not None else None,
+            "major": str(row[2]).strip() if row[2] is not None else None,
+            "gender": str(row[5]).strip() if row[5] is not None else None,
+            "id_card_number": str(row[6]).strip() if row[6] is not None else None,
+            "phone": str(row[34]).strip() if row[34] is not None else None,
+        }
+
+        students.append(student)
+
+    result = await StudentImportService.import_students(
+        db,
+        students,
+    )
+
+    return R.success_resp(
+        StudentImportResultVO(**result).model_dump(),
+        msg="学生导入完成",
+    )
+
 
 
 # ========== 系统级接口（无 prefix） ==========
