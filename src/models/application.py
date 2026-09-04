@@ -143,7 +143,7 @@ class Application(Base, TimestampMixin):
         JSONB, nullable=True, default=list,
     )
 
-    # ★ rule 快照（v7 字段重命名 + 结构简化）
+    # ★ v7 字段重命名 + 结构简化
     # 提交时把学生在表单上选择的 attribute 按 rule 分组，
     # 存为 {rule.name: attribute.name} 的扁平结构
     # - 一条 application 的每个 rule 只对应一个 attribute.name（CONDITION 单选语义）
@@ -154,6 +154,17 @@ class Application(Base, TimestampMixin):
         nullable=False,
         default=dict,
         server_default=text("'{}'::jsonb"),
+    )
+
+    # ★ v10：学生备注（学生提交申请时录入的说明性文本）
+    # - 选填，≤500 字符（与前端 maxlength 对齐）
+    # - 写入时机：save / submit / edit（apply_to_model 处理 None 时不动 DB）
+    # - 不进 application_operation 审计日志
+    # - 仅申请本身快照属性，与审核员备注（ApplicationPayload.remark → ApplicationOperation.remark）完全独立
+    student_remark: Mapped[Optional[str]] = mapped_column(
+        String(500),
+        nullable=True,
+        default=None,
     )
 
     # 关系

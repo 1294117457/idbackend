@@ -94,6 +94,16 @@ class ApplicationPayload(BaseModel):
         description="rule 快照，{rule.name: attribute.name}",
     )
 
+    # ★ v10：学生备注（仅学生端填写）
+    # - save / submit / edit 时由前端填入
+    # - 详情 / 列表 VO 中读取为 studentRemark
+    # - 与 ApplicationPayload.remark（审核员备注）语义不同，不可复用
+    studentRemark: Optional[str] = Field(
+        default=None,
+        max_length=500,
+        description="学生备注（选填，≤500 字符）",
+    )
+
     def to_application_model(
         self,
         user_id: int,
@@ -117,6 +127,7 @@ class ApplicationPayload(BaseModel):
             approved_count=0,
             rejected_count=0,
             rule_info=self.ruleInfo or {},           # ★ v7：rule 快照
+            student_remark=self.studentRemark,       # ★ v10：学生备注
         )
 
     def apply_to_model(self, app: Application, new_status: Optional[str] = None) -> None:
@@ -133,6 +144,8 @@ class ApplicationPayload(BaseModel):
         app.remark = self.remark
         if self.ruleInfo is not None:
             app.rule_info = self.ruleInfo           # ★ v7：同步 rule 快照
+        if self.studentRemark is not None:
+            app.student_remark = self.studentRemark  # ★ v10：学生备注（None 时不动 DB）
         if new_status is not None:
             app.status = new_status
 
@@ -300,6 +313,7 @@ class ApplicationVO(BaseModel):
     rejectedCount: int = 0
     reviewerIds: List[int] = Field(default_factory=list)
     ruleInfo: dict[str, str] = Field(default_factory=dict)  # ★ v7：rule 快照（扁平 {rule.name: attribute.name}）
+    studentRemark: Optional[str] = None                       # ★ v10：学生备注（仅学生端填写，审核员可见）
     createdAt: Optional[str] = None
     updatedAt: Optional[str] = None
     proofs: List[ProofVO] = Field(default_factory=list)
@@ -333,6 +347,7 @@ class ApplicationVO(BaseModel):
             rejectedCount=app.rejected_count or 0,
             reviewerIds=app.reviewer_ids or [],
             ruleInfo=app.rule_info or {},                # ★ v7：rule 快照
+            studentRemark=app.student_remark,            # ★ v10：学生备注
             createdAt=app.created_at.isoformat() if app.created_at else None,
             updatedAt=app.updated_at.isoformat() if app.updated_at else None,
         )

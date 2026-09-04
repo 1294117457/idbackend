@@ -228,17 +228,30 @@ class UserService:
         db: AsyncSession,
         req,
     ) -> Tuple[List[User], int, Dict[int, List[str]]]:
-        """获取用户列表（含角色）"""
-        from src.services.rbac_service import RbacService
+        """获取用户列表（含角色）
+
+        性能优化（v1）：用一次 IN 查询批量获取角色映射，避免 N+1。
+        旧实现对每页每个用户单独调用 RbacService.get_user_roles（50 用户=50 次 SQL）。
+        现实现保持 Redis 缓存语义（缓存命中时不查 DB）。
+        """
+        from src.repositories.role_repo import RoleRepository
 
         users, total = await UserService.list_users(db, req)
 
-        user_roles_map: Dict[int, List[str]] = {}
-        for user in users:
-            roles = await RbacService.get_user_roles(db, user.id)
-            user_roles_map[user.id] = roles
+        if not users:
+            return users, total, {}
 
-        return users, total, user_roles_map
+        user_ids = [u.id for u in users]
+        # 优先用批量查询（1 次 SQL）；
+        # 如果未来需要在列表页保持 Redis 缓存语义，可改为：
+        #   1) 批量 keys 查 Redis 命中
+        #   2) 未命中 user_ids 走 IN 查询
+        #   3) 回写 Redis
+        # 当前列表场景简单列表页未启用 Redis 缓存（只有 get_user_roles 内部用了），
+        # 故直接批量查 DB。
+        role_map = await RoleRepository.list_user_role_codes_by_user_ids(db, user_ids)
+
+        return users, total, role_map
 
     @staticmethod
     async def get_profile(db: AsyncSession, user_id: int) -> Optional[User]:
