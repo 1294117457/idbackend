@@ -177,37 +177,41 @@ async def admin_import_students(
 ):
     """
     管理员导入学生数据
-
-    上传 Excel 文件
+    当前适配老师提供的实际推免学生登记表格式
     """
 
-    # 读取上传文件
     content = await file.read()
 
     workbook = openpyxl.load_workbook(
-        io.BytesIO(content)
+        io.BytesIO(content),
+        data_only=False,
     )
 
     sheet = workbook.active
 
     students = []
 
-    # 第一行为标题，从第二行开始读取
+    # 第1行为总标题，第2~4行为多级表头
+    # 第5行开始是学生数据
     for row in sheet.iter_rows(
-        min_row=2,
-        values_only=True
+        min_row=5,
+        values_only=True,
     ):
+        # D列是学号，Python索引为3
+        student_id = row[3]
 
-        # 跳过空行
-        if not row[1]:
+        # 同一学生后续奖项明细行没有学号，直接跳过
+        if student_id is None:
             continue
 
         student = {
-            "student_id": str(row[1]),
-            "name": row[2],
-            "grade": row[3],
-            "major": row[4],
-            "class_name": row[5],
+            "student_id": str(student_id).strip(),
+            "name": str(row[4]).strip() if row[4] is not None else None,
+            "department": str(row[1]).strip() if row[1] is not None else None,
+            "major": str(row[2]).strip() if row[2] is not None else None,
+            "gender": str(row[5]).strip() if row[5] is not None else None,
+            "id_card_number": str(row[6]).strip() if row[6] is not None else None,
+            "phone": str(row[34]).strip() if row[34] is not None else None,
         }
 
         students.append(student)
@@ -221,6 +225,7 @@ async def admin_import_students(
         StudentImportResultVO(**result).model_dump(),
         msg="学生导入完成",
     )
+
 
 
 # ========== 系统级接口（无 prefix） ==========
