@@ -49,7 +49,18 @@ jobs:
             set -e
             TARGET_DIR=/home/project/idbackend
             mkdir -p "$TARGET_DIR"
-            printf 'services:\n  backend:\n    image: %s\n    container_name: idbackend\n    restart: unless-stopped\n    ports:\n      - "8000:8000"\n    networks:\n      - idnetwork\n    env_file:\n      - .env\n\nnetworks:\n  idnetwork:\n    external: true\n' "${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ALIYUN_NAMESPACE }}/idbackend:latest" > "$TARGET_DIR/docker-compose.yml"
+
+            # 说明：
+            # - PROMETHEUS_MULTIPROC_DIR：多 worker 模式下 prometheus_client 聚合指标的 mmap 目录
+            #   （必须与 src/app/middleware/metrics_middleware.py 中的 multiprocess_mode='livesum' 协同）
+            # - /home/project/idbackend/prom_multiproc：宿主机 bind mount，跨部署保留文件，
+            #   否则容器重启后旧 worker 写入的样本丢失，idprom scrape 会出现 Duplicated timeseries 警告
+            printf 'services:\n  backend:\n    image: %s\n    container_name: idbackend\n    restart: unless-stopped\n    ports:\n      - "8000:8000"\n    environment:\n      PROMETHEUS_MULTIPROC_DIR: /tmp/prom_multiproc\n    volumes:\n      - /home/project/idbackend/prom_multiproc:/tmp/prom_multiproc\n    networks:\n      - idnetwork\n    env_file:\n      - .env\n\nnetworks:\n  idnetwork:\n    external: true\n' "${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ALIYUN_NAMESPACE }}/idbackend:latest" > "$TARGET_DIR/docker-compose.yml"
+
+            # 创建多进程指标聚合目录（宿主机侧），确保权限可写
+            mkdir -p /home/project/idbackend/prom_multiproc
+            chmod 777 /home/project/idbackend/prom_multiproc
+
             if [ ! -f "$TARGET_DIR/.env" ]; then
               echo "WARNING: $TARGET_DIR/.env not found, please upload it manually"
             fi
@@ -73,7 +84,13 @@ jobs:
             set -e
             TARGET_DIR=/home/project/idbackend
             mkdir -p "$TARGET_DIR"
-            printf 'services:\n  backend:\n    image: %s\n    container_name: idbackend\n    restart: unless-stopped\n    ports:\n      - "8000:8000"\n    networks:\n      - idnetwork\n    env_file:\n      - .env\n\nnetworks:\n  idnetwork:\n    external: true\n' "${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ALIYUN_NAMESPACE }}/idbackend:latest" > "$TARGET_DIR/docker-compose.yml"
+
+            # 见 deploy-dev 注释
+            printf 'services:\n  backend:\n    image: %s\n    container_name: idbackend\n    restart: unless-stopped\n    ports:\n      - "8000:8000"\n    environment:\n      PROMETHEUS_MULTIPROC_DIR: /tmp/prom_multiproc\n    volumes:\n      - /home/project/idbackend/prom_multiproc:/tmp/prom_multiproc\n    networks:\n      - idnetwork\n    env_file:\n      - .env\n\nnetworks:\n  idnetwork:\n    external: true\n' "${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ALIYUN_NAMESPACE }}/idbackend:latest" > "$TARGET_DIR/docker-compose.yml"
+
+            mkdir -p /home/project/idbackend/prom_multiproc
+            chmod 777 /home/project/idbackend/prom_multiproc
+
             if [ ! -f "$TARGET_DIR/.env" ]; then
               echo "WARNING: $TARGET_DIR/.env not found, please upload it manually"
             fi
