@@ -18,10 +18,13 @@ from src.app.routes.system_config import router as system_config_router
 from src.app.routes.embedding import router as embedding_router
 from src.app.routes.ai_chat import router as ai_chat_router
 from src.app.routes.export import router as export_router
+from src.app.routes.metrics import router as metrics_router
 
 
 # ============== 注册顺序（按业务分组） ==============
 ROUTERS = [
+    # 可观测性（必须最先注册：/metrics 端点）
+    metrics_router,
     # 系统
     health_router,
     # 认证
@@ -61,6 +64,7 @@ def register_all_routes(app) -> None:
 
 
 __all__ = [
+    "metrics_router",
     "auth_router",
     "user_router",
     "user_profile_router",

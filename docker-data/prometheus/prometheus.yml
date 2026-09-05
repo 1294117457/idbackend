@@ -1,0 +1,44 @@
+global:
+  scrape_interval: 15s          # 生产环境用 15s（开发可改 5s）
+  evaluation_interval: 15s
+  external_labels:
+    cluster: production
+    service: idbackend
+
+scrape_configs:
+  # ──────────────────────────────────────────
+  # idbackend 主应用（FastAPI）
+  # ──────────────────────────────────────────
+  - job_name: idbackend
+    metrics_path: /metrics
+    scrape_interval: 10s
+    static_configs:
+      # idbackend 跑在宿主机（python main.py），不是 docker 容器。
+      # host.docker.internal 由 docker-compose 的 extra_hosts 解析为宿主机网关。
+      - targets: ["host.docker.internal:8000"]
+        labels:
+          instance: idbackend-1
+          env: production
+
+      # 如果 idbackend 以后也用 docker-compose 起，改用 service 名：
+      # - targets: ["idbackend:8000"]
+      #   labels:
+      #     instance: idbackend-container
+
+  # ──────────────────────────────────────────
+  # Prometheus 自监控（看 Prometheus 自己的健康度）
+  # ──────────────────────────────────────────
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+        labels:
+          instance: idprom-self
+
+  # ──────────────────────────────────────────
+  # 节点机器指标（可选：装 node-exporter 后启用）
+  # ──────────────────────────────────────────
+  # - job_name: node
+  #   static_configs:
+  #     - targets: ["host.docker.internal:9100"]
+  #       labels:
+  #         instance: server-223.109.49.63

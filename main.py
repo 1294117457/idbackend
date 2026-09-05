@@ -1,5 +1,7 @@
 from contextlib import asynccontextmanager
 import logging
+import os
+import shutil
 import sys
 
 import uvicorn
@@ -20,6 +22,34 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
     stream=sys.stdout,
 )
+
+
+# ============ Prometheus 多进程指标目录（必须在 import prometheus_client 之前设置） ============
+
+def _ensure_prometheus_multiproc_dir(settings) -> None:
+    """多 worker 模式下，prometheus_client 需要 mmap 目录聚合指标。
+
+    规则：
+    - WORKERS == 1：不做任何事（默认进程内模式即可）
+    - WORKERS > 1 + PROMETHEUS_MULTIPROC_DIR 已设：启动时清空目录（旧 stale 文件会污染）
+    - WORKERS > 1 + PROMETHEUS_MULTIPROC_DIR 未设：警告并自动设为 /tmp/prom_multiproc
+
+    ⚠️ 必须在 import prometheus_client 之前设置环境变量。
+    详见 docs/dewu/04-multi-worker-pitfall.md
+    """
+    if settings.WORKERS <= 1:
+        return
+
+    multiproc = os.environ.get("PROMETHEUS_MULTIPROC_DIR")
+    if not multiproc:
+        multiproc = "/tmp/prom_multiproc"
+        os.environ["PROMETHEUS_MULTIPROC_DIR"] = multiproc
+        print(f"[idpython] WORKERS={settings.WORKERS} > 1，自动设置 PROMETHEUS_MULTIPROC_DIR={multiproc}")
+
+    if os.path.exists(multiproc):
+        shutil.rmtree(multiproc)
+    os.makedirs(multiproc, exist_ok=True)
+    print(f"[idpython] Prometheus 多进程目录已就绪: {multiproc}")
 
 
 # ============ Schema 同步（幂等） ============
@@ -101,6 +131,9 @@ def main() -> None:
 
     settings = get_settings()
 
+    # 0. Prometheus 多进程指标目录（必须在 import prometheus_client 之前）
+    _ensure_prometheus_multiproc_dir(settings)
+
     # 1. Schema 同步（幂等，可重复跑）
     _sync_schema_blocking()
 
@@ -110,7 +143,7 @@ def main() -> None:
         host=settings.HOST,
         port=settings.PORT,
         reload=False,
-        workers=1,
+        workers=settings.WORKERS,
         log_level="info",
     )
 

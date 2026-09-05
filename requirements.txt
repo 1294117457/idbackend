@@ -47,3 +47,7 @@ simpleeval>=1.0.0
 
 # HTML 净化（防 XSS）—— 用于 Template.description 富文本字段
 nh3>=0.2.17
+
+# Observability（Prometheus + Grafana）
+prometheus-client>=0.20.0
+prometheus-fastapi-instrumentator>=7.0.0

@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     PORT: int = 8000
     HOST: str = "0.0.0.0"
     DEBUG: bool = False
+    WORKERS: int = 1                       # uvicorn workers；>1 时需启用 PROMETHEUS_MULTIPROC_DIR
 
     # ── PostgreSQL ──────────────────────────────────────────────
     DATABASE_URL: str = "postgresql://postgres:password@localhost:5432/idproject"

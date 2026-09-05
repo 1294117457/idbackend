@@ -22,6 +22,7 @@ from fastapi import FastAPI
 # ============== ASGI Middleware ==============
 from src.app.middleware.cors import register_cors
 from src.app.middleware.logging_middleware import LoggingMiddleware
+from src.app.middleware.metrics_middleware import MetricsMiddleware
 from src.app.middleware.auth_middleware import AuthMiddleware
 from src.app.middleware.permission_middleware import PermissionMiddleware
 
@@ -34,11 +35,12 @@ def register_middlewares(app: FastAPI) -> None:
 
     顺序遵循"洋葱模型"——后 add 的先执行。
     请求流：
-        CORS → Logging → Permission → Auth → 路由 → Auth → Permission → Logging → CORS
+        CORS → Logging → Metrics → Permission → Auth → 路由 → Auth → Permission → Metrics → Logging → CORS
 
     设计意图：
     - CORS 最外层：跨域请求（含 OPTIONS 预检）必须先于业务处理
     - Logging 次外层：捕获所有请求耗时（含 OPTIONS）
+    - Metrics 次内层：紧跟 Logging 之后，确保采集到业务真实耗时（受 Auth/Permission 影响的部分会被计为 401/403）
     - Permission 内层：在业务前鉴权（依赖 Auth 注入的 context）
     - Auth 最内层：最接近路由，注入用户 context 供 Permission / 业务使用
 
@@ -53,16 +55,20 @@ def register_middlewares(app: FastAPI) -> None:
     # 2. 日志中间件（次外层，记录所有请求耗时）
     app.add_middleware(LoggingMiddleware)
 
-    # 3. 权限中间件（内层，基于 Auth 注入的 context 做业务鉴权）
+    # 3. 指标中间件（次内层，自动跳过 /metrics 自身）
+    app.add_middleware(MetricsMiddleware)
+
+    # 4. 权限中间件（内层，基于 Auth 注入的 context 做业务鉴权）
     app.add_middleware(PermissionMiddleware)
 
-    # 4. 认证中间件（最内层，注入用户 context 供 Permission 使用）
+    # 5. 认证中间件（最内层，注入用户 context 供 Permission 使用）
     app.add_middleware(AuthMiddleware)
 
 
 __all__ = [
     # ASGI Middleware
     "LoggingMiddleware",
+    "MetricsMiddleware",
     "AuthMiddleware",
     "PermissionMiddleware",
     "register_middlewares",

@@ -1,0 +1,24 @@
+global:
+  scrape_interval: 5s          # 开发用 5s，生产改 15s
+  evaluation_interval: 5s
+  external_labels:
+    cluster: local-dev
+    service: idbackend
+
+scrape_configs:
+  # idbackend 主应用
+  - job_name: idbackend
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["host.docker.internal:8000"]    # Mac/Win Docker Desktop
+        labels:
+          instance: idbackend-1
+      # Linux 默认 bridge 网络下用网关地址：
+      # - targets: ["172.17.0.1:8000"]
+      # 同机直跑（非容器）：
+      # - targets: ["localhost:8000"]
+
+  # Prometheus 自身指标（自监控）
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

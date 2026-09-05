@@ -1,0 +1,101 @@
+services:
+  # ============== 基础设施层（运行时依赖） ==============
+  # 命名约定：id<service>，统一加入 idnetwork 网络
+  # 持久化卷全部挂到 ./docker-data/<service>/（由部署文档约束目录结构）
+
+  idpostgres:
+    image: eyeix/postgres-zh:v17  # 预装 pgvector + zhparser
+    container_name: idpostgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./docker-data/postgres/data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: zhouch
+      POSTGRES_PASSWORD: zhouchenhui
+      POSTGRES_DB: iddata
+    command: ["postgres", "-c", "max_connections=200"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zhouch -d iddata"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - idnetwork
+
+  idredis:
+    image: redis:7-alpine
+    container_name: idredis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./docker-data/redis/data:/data
+    command: redis-server --requirepass zhouchenhui --appendonly yes
+    networks:
+      - idnetwork
+
+  idminio:
+    image: minio/minio:latest
+    container_name: idminio
+    restart: unless-stopped
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - ./docker-data/minio/data:/data
+    environment:
+      MINIO_ROOT_USER: zhouch
+      MINIO_ROOT_PASSWORD: zhouchenhui
+    command: server /data --console-address ":9001"
+    networks:
+      - idnetwork
+
+  # ============== 可观测性层（Prometheus + Grafana） ==============
+  # 部署理由：和基础设施同层、同生命周期、都需持久化；
+  # 不进入 idbackend 的 CI/CD 流程，配置变更走单独的脚本。
+
+  idprom:
+    image: prom/prometheus:latest
+    container_name: idprom
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      # 配置：宿主机 ./docker-data/prometheus/prometheus.yml
+      - ./docker-data/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      # 数据：宿主机 ./docker-data/prometheus/data（保留 30 天）
+      - ./docker-data/prometheus/data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=30d"
+      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
+      - "--web.console.templates=/usr/share/prometheus/consoles"
+    networks:
+      - idnetwork
+
+  idgrafana:
+    image: grafana/grafana:latest
+    container_name: idgrafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      # 配置：宿主机 ./docker-data/grafana/provisioning（自动加载数据源/Dashboard）
+      - ./docker-data/grafana/provisioning:/etc/grafana/provisioning
+      # 数据：宿主机 ./docker-data/grafana/data（用户/Dashboard/数据源状态）
+      - ./docker-data/grafana/data:/var/lib/grafana
+    depends_on:
+      - idprom
+    networks:
+      - idnetwork
+
+networks:
+  idnetwork:
+    name: idnetwork
+    driver: bridge

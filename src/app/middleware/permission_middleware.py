@@ -36,6 +36,7 @@ class PermissionMiddleware(BaseHTTPMiddleware):
         "/docs",
         "/openapi.json",
         "/redoc",
+        "/metrics",   # Prometheus scrape 端点
     }
 
     # 已登录即可访问，不校验具体权限码

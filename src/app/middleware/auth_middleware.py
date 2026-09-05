@@ -62,6 +62,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
         "/docs",
         "/openapi.json",
         "/redoc",
+        # 可观测性（Prometheus scrape）
+        "/metrics",
     ]
 
     async def dispatch(self, request: Request, call_next):
