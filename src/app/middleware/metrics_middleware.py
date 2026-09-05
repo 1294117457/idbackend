@@ -7,6 +7,7 @@
 4. 多 worker 模式：详见 docs/dewu/04-multi-worker-pitfall.md
    必须设置 PROMETHEUS_MULTIPROC_DIR 环境变量
 """
+import os
 import sys
 import time
 from typing import Awaitable, Callable
@@ -15,7 +16,9 @@ from prometheus_client import (
     CONTENT_TYPE_LATEST,
     Counter,
     Histogram,
+    CollectorRegistry,
     generate_latest,
+    multiprocess,
 )
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -35,6 +38,8 @@ REQ_COUNT = Counter(
     "http_requests_total",
     "HTTP 请求总数",
     labelnames=("method", "path", "status"),
+    # 多 worker 模式：所有 worker 累加，而不是各自取最大值
+    multiprocess_mode="livesum",
 )
 
 
@@ -90,8 +95,20 @@ async def metrics_endpoint(_: Request) -> Response:
 
     由 src/app/routes/metrics.py 单独注册到 FastAPI app，
     通过 AuthMiddleware / PermissionMiddleware 的白名单放行。
+
+    ⚠️ 多 worker 模式（uvicorn --workers N > 1）：
+    各 worker 进程内存独立，必须用 MultiProcessCollector + mmap 目录聚合，
+    否则每个 scrape 只能看到当前进程的指标 → 数据跳变/丢失。
+    判断标准：环境变量 PROMETHEUS_MULTIPROC_DIR 是否存在且非空。
     """
-    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+    if os.environ.get("PROMETHEUS_MULTIPROC_DIR"):
+        registry = CollectorRegistry()
+        multiprocess.MultiProcessCollector(registry)
+        data = generate_latest(registry)
+    else:
+        data = generate_latest()
+
+    return Response(data, media_type=CONTENT_TYPE_LATEST)
 
 
 __all__ = ["MetricsMiddleware", "metrics_endpoint", "REQ_LATENCY", "REQ_COUNT"]

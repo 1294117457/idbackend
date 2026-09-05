@@ -9,28 +9,23 @@ scrape_configs:
   # ──────────────────────────────────────────
   # idbackend 主应用（FastAPI）
   # ──────────────────────────────────────────
+  # 假设 idbackend 与 idprom 同在 idnetwork（docker-compose user-defined 网络），
+  # 因此可以用容器服务名直接访问，无需 host.docker.internal 之类的网关映射。
   - job_name: idbackend
     metrics_path: /metrics
     scrape_interval: 10s
     static_configs:
-      # idbackend 跑在宿主机（python main.py），不是 docker 容器。
-      # host.docker.internal 由 docker-compose 的 extra_hosts 解析为宿主机网关。
-      - targets: ["host.docker.internal:8000"]
+      - targets: ["idbackend:8000"]
         labels:
           instance: idbackend-1
           env: production
-
-      # 如果 idbackend 以后也用 docker-compose 起，改用 service 名：
-      # - targets: ["idbackend:8000"]
-      #   labels:
-      #     instance: idbackend-container
 
   # ──────────────────────────────────────────
   # Prometheus 自监控（看 Prometheus 自己的健康度）
   # ──────────────────────────────────────────
   - job_name: prometheus
     static_configs:
-      - targets: ["localhost:9090"]
+      - targets: ["idprom:9090"]
         labels:
           instance: idprom-self
 
@@ -39,6 +34,6 @@ scrape_configs:
   # ──────────────────────────────────────────
   # - job_name: node
   #   static_configs:
-  #     - targets: ["host.docker.internal:9100"]
+  #     - targets: ["idnode:9100"]
   #       labels:
   #         instance: server-223.109.49.63
